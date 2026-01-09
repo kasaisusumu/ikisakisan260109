@@ -33,9 +33,8 @@ type SearchHistoryItem = {
 };
 
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
-const API_BASE_URL = typeof window !== "undefined" 
-  ? `http://${window.location.hostname}:8000` 
-  : "http://localhost:8000";
+// 環境変数を優先し、なければlocalhostを使う（開発用）
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 const UD_COLORS = ['#F59E0B', '#3B82F6', '#10B981', '#EF4444', '#8B5CF6', '#EC4899', '#6366F1', '#14B8A6'];
 const getUDColor = (name: string) => {
