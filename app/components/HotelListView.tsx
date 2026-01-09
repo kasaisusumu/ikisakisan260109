@@ -13,9 +13,7 @@ import {
 // 設定
 const RAKUTEN_AFFILIATE_ID = "4fcc24e4.174bb117.4fcc24e5.5b178353";
 const MAPBOX_TOKEN = "pk.eyJ1Ijoia2FzYWlzdXN1bXUwMSIsImEiOiJjbWljb2E1cWEwb2d5MmpvaXkwdWhtNjhjIn0.wA6FIZGDGor8jXsx-RNosA";
-const API_BASE_URL = typeof window !== "undefined" 
-  ? `http://${window.location.hostname}:8000` 
-  : "http://localhost:8000";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 // 色生成ロジック
 const UD_COLORS = ['#F59E0B', '#3B82F6', '#10B981', '#EF4444', '#8B5CF6', '#EC4899', '#6366F1', '#14B8A6'];
