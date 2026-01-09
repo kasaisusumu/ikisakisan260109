@@ -35,6 +35,7 @@ type SearchHistoryItem = {
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 // 環境変数を優先し、なければlocalhostを使う（開発用）
 // 〇 これにする（環境変数を読み込む）
+// ⭕ これに書き換えてください！
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 const UD_COLORS = ['#F59E0B', '#3B82F6', '#10B981', '#EF4444', '#8B5CF6', '#EC4899', '#6366F1', '#14B8A6'];
