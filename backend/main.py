@@ -21,7 +21,13 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 MAPBOX_ACCESS_TOKEN = os.getenv("MAPBOX_ACCESS_TOKEN")
 GEOAPIFY_API_KEY = os.getenv("GEOAPIFY_API_KEY")
 
+# 1. このインポート行をファイルの一番上に追加してください
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI()
+
+# 2. app = FastAPI() のすぐ下に、このブロックを丸ごと追加してください
+
 
 app.add_middleware(
     CORSMiddleware,
