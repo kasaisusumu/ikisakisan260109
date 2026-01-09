@@ -6,10 +6,7 @@ import TinderCard from 'react-tinder-card';
 import { MapPin, RotateCcw, Sparkles, Loader2, Search, CheckCircle, ImageOff, Instagram, MapPinned, Globe, ExternalLink, ChevronDown, History } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
-const API_BASE_URL = typeof window !== "undefined" 
-  ? `http://${window.location.hostname}:8000` 
-  : "http://localhost:8000";
-
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 interface Props {
   spots: any[];
   spotVotes?: any[];
