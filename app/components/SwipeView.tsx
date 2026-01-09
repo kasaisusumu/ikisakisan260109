@@ -3,7 +3,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 // @ts-ignore
 import TinderCard from 'react-tinder-card';
-import { MapPin, RotateCcw, Sparkles, Loader2, Search, CheckCircle, ImageOff, Instagram, MapPinned, Globe, ExternalLink, ChevronDown } from 'lucide-react';
+import { MapPin, RotateCcw, Sparkles, Loader2, Search, CheckCircle, ImageOff, Instagram, MapPinned, Globe, ExternalLink, ChevronDown, History } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
 const API_BASE_URL = typeof window !== "undefined" 
@@ -326,6 +326,7 @@ export default function SwipeView({
             {!isSuggestionMode && (
                 <div className="absolute top-4 right-4 z-50 flex gap-3">
                 <button onClick={handleRewind} disabled={voteHistory.length === 0} className="p-3 rounded-full shadow-md border bg-white text-yellow-500 border-gray-200 hover:bg-gray-50"><RotateCcw size={20} /></button>
+                <button onClick={() => setIsHistoryMode(true)} className="bg-white text-gray-600 p-3 rounded-full border border-gray-200 shadow-md hover:bg-gray-50"><History size={20} /></button>
                 </div>
             )}
             <div className="relative w-full h-full max-w-md mx-auto flex items-center justify-center pointer-events-none">
@@ -348,6 +349,7 @@ export default function SwipeView({
                         </div>
                         <div className="mt-auto p-6 text-white relative z-10 flex flex-col gap-3 w-full pointer-events-none">
                            
+                            {/* バッジ表示部分: AI Suggestionのみに統一 */}
                             {isSuggestionMode && (
                                 <div className={`self-start text-white text-[10px] font-bold px-2 py-1 rounded-full flex items-center gap-1 mb-1 shadow-sm bg-purple-600`}>
                                     <Sparkles size={10}/> AI Suggestion
@@ -360,6 +362,7 @@ export default function SwipeView({
                             
                             <div className="flex justify-between items-end pt-2 border-t border-white/20 mt-1 pointer-events-auto">
                                 <div className="flex-1"/>
+                                {/* ホテルの場合のみ楽天ボタンを表示、AI提案の場合は非表示(空のdiv) */}
                                 {spot.is_hotel && (
                                     <button onTouchEnd={(e) => { e.stopPropagation(); window.open(getRakutenUrl(spot.query || spot.name), '_blank'); }} onClick={(e) => { e.stopPropagation(); window.open(getRakutenUrl(spot.query || spot.name), '_blank'); }} className="bg-gradient-to-r from-yellow-400 to-orange-500 text-black hover:scale-105 text-xs font-bold py-2 px-4 rounded-full flex items-center gap-1 shadow-lg backdrop-blur-sm transition active:scale-95">
                                         <Search size={14}/> 空室・料金をチェック (PR)
