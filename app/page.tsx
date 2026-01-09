@@ -1,7 +1,10 @@
-
 "use client";
+
+// ビルドエラー回避：動的レンダリングを強制
 export const dynamic = 'force-dynamic';
-import { useEffect, useRef, useState, useMemo } from 'react';
+
+// ReactとSuspenseを追加（ここが重要！）
+import React, { Suspense, useEffect, useRef, useState, useMemo } from 'react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -46,7 +49,7 @@ const isHotel = (name: string) => {
     return keywords.some(k => name.includes(k));
 };
 
-export default function Home() {
+function HomeContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const roomId = searchParams.get('room');
@@ -572,5 +575,14 @@ export default function Home() {
         </div>
       </div>
     </main>
+  );
+}
+
+// これをファイルの一番下に追加してください
+export default function Home() {
+  return (
+    <Suspense fallback={<div className="flex h-screen w-screen items-center justify-center">Loading...</div>}>
+      <HomeContent />
+    </Suspense>
   );
 }
