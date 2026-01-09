@@ -1,5 +1,6 @@
-"use client";
 
+"use client";
+export const dynamic = 'force-dynamic';
 import { useEffect, useRef, useState, useMemo } from 'react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
