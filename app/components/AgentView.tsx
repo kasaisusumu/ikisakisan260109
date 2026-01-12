@@ -6,9 +6,7 @@ import { supabase } from '@/lib/supabase';
 
 // const API_BASE_URL = "http://192.168.1.211:8000"; 
 // 現在のブラウザのホスト名を使ってAPIのURLを自動設定
-const API_BASE_URL = typeof window !== "undefined" 
-  ? `http://${window.location.hostname}:8000` 
-  : "http://localhost:8000";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 type Message = {
   id: string | number;
