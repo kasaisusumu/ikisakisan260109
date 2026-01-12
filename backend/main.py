@@ -20,11 +20,10 @@ import random
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 MAPBOX_ACCESS_TOKEN = os.getenv("MAPBOX_ACCESS_TOKEN")
 GEOAPIFY_API_KEY = os.getenv("GEOAPIFY_API_KEY")
-RAKUTEN_APP_ID = os.getenv("RAKUTEN_APP_ID") # ★追加: Renderの環境変数に設定してください
+RAKUTEN_APP_ID = os.getenv("RAKUTEN_APP_ID")
 
 app = FastAPI()
 
-# CORS設定: 全てのオリジンからのアクセスを許可
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -98,152 +97,129 @@ class OptimizeRequest(BaseModel):
     end_spot_name: Optional[str] = None
 
 # ---------------------------------------------------------
-# ユーティリティ: Geoapifyで座標取得
+# ユーティリティ
 # ---------------------------------------------------------
 async def fetch_spot_coordinates(client, spot_name: str, area_context: str = ""):
     try:
         clean_name = re.sub(r'[\(（].*?[\)）]', '', spot_name).strip()
         query = f"{clean_name} {area_context}".strip()
-        
         url = "https://api.geoapify.com/v1/geocode/search"
-        params = {
-            "text": query,
-            "apiKey": GEOAPIFY_API_KEY,
-            "lang": "ja",
-            "limit": 3,
-            "countrycode": "jp"
-        }
-        
+        params = {"text": query, "apiKey": GEOAPIFY_API_KEY, "lang": "ja", "limit": 3, "countrycode": "jp"}
         res = await client.get(url, params=params, timeout=10.0)
-        
         if res.status_code == 200:
             data = res.json()
             if "features" in data:
                 for feat in data["features"]:
                     props = feat["properties"]
                     result_name = props.get("name", "")
-                    
-                    # 簡易フィルタ: 名前が含まれているか確認
                     def normalize(s): return s.replace(" ", "").replace("　", "")
                     n_query = normalize(clean_name)
                     n_result = normalize(result_name)
-
-                    if n_query not in n_result and n_result not in n_query:
-                        continue
-
+                    if n_query not in n_result and n_result not in n_query: continue
                     formatted_addr = props.get("formatted", "")
                     desc = formatted_addr.replace(clean_name, "").replace(area_context, "").strip(", ")
-
-                    return {
-                        "name": result_name,
-                        "description": desc or "AIおすすめスポット",
-                        "coordinates": feat["geometry"]["coordinates"],
-                    }
-                return None
-        else:
-            print(f"Geoapify Error {res.status_code}")
+                    return {"name": result_name, "description": desc or "AIおすすめスポット", "coordinates": feat["geometry"]["coordinates"]}
     except Exception as e:
         print(f"Coord fetch failed for {spot_name}: {e}")
     return None
 
 # ---------------------------------------------------------
-# API: 楽天トラベル 空室/ホテル検索 (本番実装)
+# API: 楽天トラベル (修正版)
 # ---------------------------------------------------------
 @app.post("/api/search_hotels_vacant")
 async def search_hotels_vacant(req: VacantSearchRequest):
-    """
-    楽天トラベルAPI (SimpleHotelSearch) を使用して周辺のホテルを検索します。
-    """
     if not RAKUTEN_APP_ID:
-        return {"error": "サーバー側で楽天Application IDが設定されていません。"}
+        return {"error": "サーバー設定エラー: RAKUTEN_APP_IDが設定されていません"}
 
     async with httpx.AsyncClient(verify=False) as client:
-        # 1. 楽天APIのリクエストパラメータ構築
         params = {
             "applicationId": RAKUTEN_APP_ID,
             "format": "json",
             "latitude": req.latitude,
             "longitude": req.longitude,
-            "searchRadius": req.radius, # 0.1 ~ 3.0 (単位: km)
-            "datumType": 1, # WGS84
-            "hits": 30, # 取得件数
+            "searchRadius": req.radius,
+            "datumType": 1,
+            "hits": 30,
             "sort": "standard",
         }
-
-        # 絞り込み条件 (API仕様に合わせて設定)
-        # ※SimpleHotelSearchではsqueezeConditionで1つだけ指定可能などが一般的
-        if "large_bath" in req.squeeze:
-            params["squeezeCondition"] = "large_bath"
-        elif "breakfast" in req.squeeze:
-            params["squeezeCondition"] = "breakfast"
+        if "large_bath" in req.squeeze: params["squeezeCondition"] = "large_bath"
+        elif "breakfast" in req.squeeze: params["squeezeCondition"] = "breakfast"
         
         try:
-            # 2. API呼び出し
             url = "https://app.rakuten.co.jp/services/api/Travel/SimpleHotelSearch/20170426"
             res = await client.get(url, params=params, timeout=10.0)
+            
+            # ステータスコードチェック
+            if res.status_code != 200:
+                print(f"Rakuten API Error Status: {res.status_code}")
+                try:
+                    err_data = res.json()
+                    return {"error": f"楽天APIエラー: {err_data.get('error_description', '不明なエラー')}"}
+                except:
+                    return {"error": f"楽天API通信エラー: HTTP {res.status_code}"}
+
             data = res.json()
-
-            if "error" in data:
-                print(f"Rakuten API Error: {data['error_description']}")
-                return {"error": f"楽天APIエラー: {data['error_description']}"}
-
             hotels = []
+            
             if "hotels" in data:
                 for h_group in data["hotels"]:
-                    # 楽天APIのレスポンス構造: [ {hotelBasicInfo}, {hotelRatingInfo} ]
-                    basic = h_group[0]["hotelBasicInfo"]
-                    rating_info = h_group[1]["hotelRatingInfo"] if len(h_group) > 1 and "hotelRatingInfo" in h_group[1] else {}
+                    basic = None
+                    rating_info = {}
+                    
+                    try:
+                        # ★ここを修正: リスト型と辞書型、両方に対応させる
+                        if isinstance(h_group, list) and len(h_group) > 0:
+                            basic = h_group[0].get("hotelBasicInfo")
+                            if len(h_group) > 1:
+                                rating_info = h_group[1].get("hotelRatingInfo", {})
+                        elif isinstance(h_group, dict):
+                            basic = h_group.get("hotelBasicInfo")
+                            rating_info = h_group.get("hotelRatingInfo", {})
+                        
+                        if not basic: continue
 
-                    price = basic.get("hotelMinCharge", 0) # 最安値
+                        price = basic.get("hotelMinCharge", 0)
+                        if price == 0: continue
+                        if req.min_price and price < req.min_price: continue
+                        if req.max_price and price > req.max_price: continue
 
-                    # 3. サーバーサイドでの価格フィルタリング
-                    # (APIのSimpleHotelSearchには価格フィルタがない場合があるため)
-                    if price == 0: continue # 価格不明は除外
-                    if req.min_price and price < req.min_price: continue
-                    if req.max_price and price > req.max_price: continue
-
-                    hotels.append({
-                        "id": str(basic["hotelNo"]),
-                        "name": basic["hotelName"],
-                        "description": basic.get("hotelSpecial", "")[:60] + "...",
-                        "coordinates": [basic["longitude"], basic["latitude"]],
-                        "image_url": basic.get("hotelImageUrl"),
-                        "url": basic.get("hotelInformationUrl"),
-                        "price": price,
-                        "rating": rating_info.get("serviceAverage", 0) or 3.0, # 評価がない場合は3.0
-                        "review_count": rating_info.get("reviewCount", 0),
-                        "source": "rakuten",
-                        "is_hotel": True
-                    })
-            
-            # 価格が安い順、または評価順などでソートする場合はここで
-            # hotels.sort(key=lambda x: x['price']) 
+                        hotels.append({
+                            "id": str(basic["hotelNo"]),
+                            "name": basic["hotelName"],
+                            "description": basic.get("hotelSpecial", "")[:60] + "...",
+                            "coordinates": [basic["longitude"], basic["latitude"]],
+                            "image_url": basic.get("hotelImageUrl"),
+                            "url": basic.get("hotelInformationUrl"),
+                            "price": price,
+                            "rating": rating_info.get("serviceAverage", 0) or 3.0,
+                            "review_count": rating_info.get("reviewCount", 0),
+                            "source": "rakuten",
+                            "is_hotel": True
+                        })
+                    except Exception as parse_err:
+                        print(f"Skipping a hotel due to parse error: {parse_err}")
+                        continue
 
             return {"hotels": hotels}
 
         except Exception as e:
-            print(f"Rakuten Search Failed: {e}")
+            print(f"Rakuten Search Critical Error: {e}")
             traceback.print_exc()
-            # エラーの正体を画面に返してあげる
-            return {"error": f"システムエラー詳細: {str(e)}"}
+            # エラーの詳細を画面に返す
+            return {"error": f"システムエラー: {str(e)}"}
 
 # ---------------------------------------------------------
-# API: AIスポット提案
+# API: AI提案
 # ---------------------------------------------------------
 @app.post("/api/suggest_spots")
 async def suggest_spots(req: SuggestRequest):
     formatted_spots = []
-    
     prompt = f"""
     場所: {req.theme}
     タスク: 観光客に人気の「超有名・王道観光スポット」を15個挙げてください。
-    条件: 
-    - **ホテルや宿泊施設は絶対に含めないでください。**
-    - 飲食店単体は含めないでください（食べ歩きエリアなどは可）。
-    - 既にリストにある {", ".join(req.existing_spots) if req.existing_spots else "なし"} は除外してください。
+    条件: ホテルや宿泊施設は除外。既存リスト: {", ".join(req.existing_spots)} は除外。
     出力: JSON形式 {{ "spots": ["名称1", "名称2"...] }}
     """
-
     async with httpx.AsyncClient(verify=False) as client:
         try:
             ai_res = await aclient.chat.completions.create(
@@ -254,28 +230,15 @@ async def suggest_spots(req: SuggestRequest):
             )
             spot_names = json.loads(ai_res.choices[0].message.content).get("spots", [])
             target_names = list(dict.fromkeys(spot_names))[:10]
-            
             tasks = [fetch_spot_coordinates(client, name, req.theme) for name in target_names]
             results = await asyncio.gather(*tasks)
-            
-            seen_coords = []
+            seen = []
             for res in results:
-                if res and res["coordinates"] and res["coordinates"] != [0.0, 0.0]:
-                    if res["coordinates"] in seen_coords: continue
-                    formatted_spots.append({
-                        "name": res["name"],
-                        "description": res["description"],
-                        "coordinates": res["coordinates"],
-                        "stay_time": 90,
-                        "source": "ai",
-                        "is_hotel": False 
-                    })
-                    seen_coords.append(res["coordinates"])
-
+                if res and res["coordinates"] != [0.0, 0.0] and res["coordinates"] not in seen:
+                    formatted_spots.append({**res, "stay_time": 90, "source": "ai", "is_hotel": False})
+                    seen.append(res["coordinates"])
         except Exception as e:
-            print(f"AI Suggestion Error: {e}")
-            pass
-            
+            print(f"AI Error: {e}")
     return {"spots": formatted_spots}
 
 @app.post("/api/verify_spots")
@@ -285,62 +248,35 @@ async def verify_spots(req: VerifyRequest):
 # ---------------------------------------------------------
 # ルート最適化
 # ---------------------------------------------------------
-def generate_google_maps_url(origin_name, dest_name):
-    base = "https://www.google.com/maps/dir/?api=1"
-    return f"{base}&origin={urllib.parse.quote(origin_name)}&destination={urllib.parse.quote(dest_name)}&travelmode=driving"
-
 async def calculate_route_fallback(client, ordered_spots, start_min, limit_min):
     if not ordered_spots: return {"error": "スポットがありません"}
-    
-    coords_string = ";".join([f"{s.coordinates[0]},{s.coordinates[1]}" for s in ordered_spots])
-    url = f"https://api.mapbox.com/directions/v5/mapbox/driving/{coords_string}"
-    params = {"access_token": MAPBOX_ACCESS_TOKEN, "geometries": "geojson"}
-    
-    res = await client.get(url, params=params)
+    coords = ";".join([f"{s.coordinates[0]},{s.coordinates[1]}" for s in ordered_spots])
+    url = f"https://api.mapbox.com/directions/v5/mapbox/driving/{coords}"
+    res = await client.get(url, params={"access_token": MAPBOX_ACCESS_TOKEN, "geometries": "geojson"})
     data = res.json()
+    if "routes" not in data or not data['routes']: return {"error": "ルート計算失敗"}
     
-    if "routes" not in data or not data['routes']:
-            return {"error": "ルート計算失敗"}
-
     route = data['routes'][0]
-    legs = route['legs']
     timeline = []
-    current_time = start_min
-    
+    current = start_min
     for i, spot in enumerate(ordered_spots):
-        stay_min = spot.stay_time if spot.stay_time > 0 else 60
-        arrival_time = current_time
-        departure_time = arrival_time + stay_min
-        if departure_time > limit_min: break
-        
+        stay = spot.stay_time or 60
+        arr = current
+        dep = arr + stay
+        if dep > limit_min: break
         timeline.append({
-            "type": "spot",
-            "spot": {**spot.model_dump(), "stay_time": stay_min},
-            "stay_min": stay_min,
-            "arrival": f"{int(arrival_time//60):02d}:{int(arrival_time%60):02d}",
-            "departure": f"{int(departure_time//60):02d}:{int(departure_time%60):02d}",
+            "type": "spot", "spot": {**spot.model_dump(), "stay_time": stay},
+            "arrival": f"{int(arr//60):02d}:{int(arr%60):02d}",
+            "departure": f"{int(dep//60):02d}:{int(dep%60):02d}"
         })
-
-        if i < len(legs):
-            travel_min = math.ceil(legs[i]['duration'] / 60)
+        if i < len(route['legs']):
+            dur = math.ceil(route['legs'][i]['duration'] / 60)
             if i+1 < len(ordered_spots):
-                next_spot = ordered_spots[i+1]
-                g_url = generate_google_maps_url(spot.name, next_spot.name)
-                timeline.append({
-                    "type": "travel",
-                    "duration_min": travel_min,
-                    "google_maps_url": g_url
-                })
-            current_time = departure_time + travel_min
-
-    used_names = set(t['spot']['name'] for t in timeline if t['type'] == 'spot')
-    final_unused = [s for s in ordered_spots if s.name not in used_names]
-
-    return {
-        "timeline": timeline,
-        "unused_spots": final_unused,
-        "route_geometry": route['geometry']
-    }
+                gurl = f"https://www.google.com/maps/dir/?api=1&origin={urllib.parse.quote(spot.name)}&destination={urllib.parse.quote(ordered_spots[i+1].name)}&travelmode=driving"
+                timeline.append({"type": "travel", "duration_min": dur, "google_maps_url": gurl})
+            current = dep + dur
+    used = set(t['spot']['name'] for t in timeline if t['type']=='spot')
+    return {"timeline": timeline, "unused_spots": [s for s in ordered_spots if s.name not in used], "route_geometry": route['geometry']}
 
 @app.post("/api/optimize_route")
 @app.post("/api/calculate_route")
@@ -349,10 +285,8 @@ async def calculate_route_endpoint(req: OptimizeRequest):
     if len(spots) < 2: return {"error": "2箇所以上必要"}
     try:
         sh, sm = map(int, req.start_time.split(':'))
-        start_min = sh * 60 + sm
         eh, em = map(int, req.end_time.split(':'))
-        limit_min = eh * 60 + em
-    except: start_min, limit_min = 540, 1080
-
+        start, limit = sh*60+sm, eh*60+em
+    except: start, limit = 540, 1080
     async with httpx.AsyncClient(verify=False) as client:
-        return await calculate_route_fallback(client, spots, start_min, limit_min)
+        return await calculate_route_fallback(client, spots, start, limit)
