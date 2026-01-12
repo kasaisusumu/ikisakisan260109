@@ -124,7 +124,7 @@ async def fetch_spot_coordinates(client, spot_name: str, area_context: str = "")
     return None
 
 # ---------------------------------------------------------
-# API: 楽天トラベル (修正版)
+# API: 楽天トラベル (絞り込み機能削除版)
 # ---------------------------------------------------------
 @app.post("/api/search_hotels_vacant")
 async def search_hotels_vacant(req: VacantSearchRequest):
@@ -142,14 +142,14 @@ async def search_hotels_vacant(req: VacantSearchRequest):
             "hits": 30,
             "sort": "standard",
         }
-        if "large_bath" in req.squeeze: params["squeezeCondition"] = "large_bath"
-        elif "breakfast" in req.squeeze: params["squeezeCondition"] = "breakfast"
+        
+        # ★削除: squeezeCondition (絞り込み) がエラーの原因だったため削除しました。
+        # 今後は指定範囲内のすべてのホテルを返します。
         
         try:
             url = "https://app.rakuten.co.jp/services/api/Travel/SimpleHotelSearch/20170426"
             res = await client.get(url, params=params, timeout=10.0)
             
-            # ステータスコードチェック
             if res.status_code != 200:
                 print(f"Rakuten API Error Status: {res.status_code}")
                 try:
@@ -167,7 +167,6 @@ async def search_hotels_vacant(req: VacantSearchRequest):
                     rating_info = {}
                     
                     try:
-                        # ★ここを修正: リスト型と辞書型、両方に対応させる
                         if isinstance(h_group, list) and len(h_group) > 0:
                             basic = h_group[0].get("hotelBasicInfo")
                             if len(h_group) > 1:
@@ -205,7 +204,6 @@ async def search_hotels_vacant(req: VacantSearchRequest):
         except Exception as e:
             print(f"Rakuten Search Critical Error: {e}")
             traceback.print_exc()
-            # エラーの詳細を画面に返す
             return {"error": f"システムエラー: {str(e)}"}
 
 # ---------------------------------------------------------
