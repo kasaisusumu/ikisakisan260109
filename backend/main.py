@@ -124,7 +124,7 @@ async def fetch_spot_coordinates(client, spot_name: str, area_context: str = "")
     return None
 
 # ---------------------------------------------------------
-# API: 楽天トラベル (404対策版)
+# API: 楽天トラベル (超デバッグ版)
 # ---------------------------------------------------------
 @app.post("/api/search_hotels_vacant")
 async def search_hotels_vacant(req: VacantSearchRequest):
@@ -144,23 +144,19 @@ async def search_hotels_vacant(req: VacantSearchRequest):
         }
         
         try:
-            print(f"🔍 Rakuten Search: Lat={req.latitude}, Lng={req.longitude}, Rad={req.radius}")
+            # 受信した条件をログに出す
+            print(f"🔍 Request: Min={req.min_price}, Max={req.max_price}, Rad={req.radius}")
             
             url = "https://app.rakuten.co.jp/services/api/Travel/SimpleHotelSearch/20170426"
             res = await client.get(url, params=params, timeout=10.0)
             
-            # ★修正ポイント: 404エラーは「0件」として扱う
             if res.status_code == 404:
                 print("⚠️ Rakuten API 404: No hotels found in this area.")
                 return {"hotels": []}
 
             if res.status_code != 200:
-                print(f"Rakuten API Error Status: {res.status_code}")
-                try:
-                    err_data = res.json()
-                    return {"error": f"楽天APIエラー: {err_data.get('error_description', '不明なエラー')}"}
-                except:
-                    return {"error": f"楽天API通信エラー: HTTP {res.status_code}"}
+                print(f"❌ API Error: {res.status_code} {res.text}")
+                return {"error": f"楽天APIエラー: {res.status_code}"}
 
             data = res.json()
             hotels = []
@@ -169,7 +165,7 @@ async def search_hotels_vacant(req: VacantSearchRequest):
                 raw_hotels = data["hotels"]
                 print(f"✅ Hits from API: {len(raw_hotels)} hotels")
 
-                for h_group in raw_hotels:
+                for i, h_group in enumerate(raw_hotels):
                     basic = None
                     rating_info = {}
                     
@@ -182,19 +178,30 @@ async def search_hotels_vacant(req: VacantSearchRequest):
                             basic = h_group.get("hotelBasicInfo")
                             rating_info = h_group.get("hotelRatingInfo", {})
                         
-                        if not basic: continue
+                        if not basic:
+                            print(f"🏨 Check [{i}]: No basic info -> Skip")
+                            continue
 
+                        name = basic["hotelName"]
                         price = basic.get("hotelMinCharge", 0)
 
+                        # デバッグログ: ホテルごとの判定を表示
+                        log_msg = f"🏨 Check [{i}] {name}: Price={price}"
+
+                        # フィルタリング判定
                         if price > 0:
-                            if req.min_price and price < req.min_price:
+                            if req.min_price is not None and price < req.min_price:
+                                print(f"{log_msg} -> ❌ DROP (Too Cheap < {req.min_price})")
                                 continue
-                            if req.max_price and price > req.max_price: 
+                            if req.max_price is not None and price > req.max_price: 
+                                print(f"{log_msg} -> ❌ DROP (Too Expensive > {req.max_price})")
                                 continue
+                        
+                        print(f"{log_msg} -> ⭕ KEEP")
                         
                         hotels.append({
                             "id": str(basic["hotelNo"]),
-                            "name": basic["hotelName"],
+                            "name": name,
                             "description": basic.get("hotelSpecial", "")[:60] + "...",
                             "coordinates": [basic["longitude"], basic["latitude"]],
                             "image_url": basic.get("hotelImageUrl"),
@@ -206,14 +213,16 @@ async def search_hotels_vacant(req: VacantSearchRequest):
                             "is_hotel": True
                         })
                     except Exception as parse_err:
-                        print(f"Skipping a hotel due to parse error: {parse_err}")
+                        print(f"⚠️ Parse Error at index {i}: {parse_err}")
                         continue
+            else:
+                print("⚠️ No 'hotels' key in response")
 
             print(f"🚀 Returning {len(hotels)} hotels to frontend")
             return {"hotels": hotels}
 
         except Exception as e:
-            print(f"Rakuten Search Critical Error: {e}")
+            print(f"🔥 Critical Error: {e}")
             traceback.print_exc()
             return {"error": f"システムエラー: {str(e)}"}
 
