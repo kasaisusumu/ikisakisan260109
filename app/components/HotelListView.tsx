@@ -46,7 +46,9 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
   const [selectedHotel, setSelectedHotel] = useState<any>(null);
 
   const [radius, setRadius] = useState(3.0); 
-  const [priceRange, setPriceRange] = useState<[number, number]>([0, 15000]); 
+  
+  // ★修正ポイント: 初期値を20000（上限なし）に変更しました
+  const [priceRange, setPriceRange] = useState<[number, number]>([0, 20000]); 
 
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
@@ -103,7 +105,7 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
         } else if (data.error) {
             alert(`検索エラー: ${data.error}`);
         } else {
-            alert("条件に合う宿が見つかりませんでした。\n条件（距離・予算）を広げてみてください。");
+            alert("条件に合う宿が見つかりませんでした。\n検索条件（距離・予算）を変更してみてください。");
         }
     } catch (e) {
         alert("サーバー通信エラーが発生しました。");
@@ -325,7 +327,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                           <label className="text-xs font-bold text-gray-500 flex items-center gap-1"><MapPin size={14}/> 重心からの距離 (API上限 3km)</label>
                           <span className="text-sm font-bold text-blue-600">{radius}km</span>
                       </div>
-                      {/* 修正点: idとnameを追加 */}
                       <input 
                         id="radius-slider"
                         name="radius"
@@ -340,7 +341,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                           <label className="text-xs font-bold text-gray-500 flex items-center gap-1"><DollarSign size={14}/> 予算 (1泊)</label>
                           <span className={`text-sm font-bold ${priceRange[1] >= 20000 ? "text-green-600" : "text-blue-600"}`}>{priceDisplay}</span>
                       </div>
-                      {/* 修正点: idとnameを追加 */}
                       <input 
                         id="price-slider"
                         name="price"
