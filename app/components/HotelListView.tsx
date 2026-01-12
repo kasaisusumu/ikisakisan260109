@@ -10,9 +10,17 @@ import {
   Maximize2, Minimize2, Bath, Coffee, Loader2
 } from 'lucide-react';
 
-// 設定
-const RAKUTEN_AFFILIATE_ID = "4fcc24e4.174bb117.4fcc24e5.5b178353";
+// ==========================================
+// 🔑 設定エリア
+// ==========================================
+// ここにあなたの「楽天アフィリエイトID」を設定すると、リンクが収益化されます。
+// (形式例: "g_id.s_id.g_id.s_id" のような文字列)
+// 未設定でも検索は動きますが、報酬は発生しません。
+const RAKUTEN_AFFILIATE_ID = "4fcc24e4.174bb117.4fcc24e5.5b178353"; 
+
 const MAPBOX_TOKEN = "pk.eyJ1Ijoia2FzYWlzdXN1bXUwMSIsImEiOiJjbWljb2E1cWEwb2d5MmpvaXkwdWhtNjhjIn0.wA6FIZGDGor8jXsx-RNosA";
+
+// 環境変数を優先し、なければlocalhostを使う
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 // 色生成ロジック
@@ -129,7 +137,7 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
         pitch: 0,
     });
 
-    // ★ 重心マーカー (視認性向上版)
+    // ★ 重心マーカー
     if (centerOfGravity.valid) {
         const el = document.createElement('div');
         el.innerHTML = `
@@ -230,12 +238,16 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
       }
   };
 
+  // ★ アフィリエイトリンク生成ロジック
   const getAffiliateUrl = (hotel: any) => {
-      let url = hotel.url || `https://search.travel.rakuten.co.jp/ds/hotel/search?f_teikei=&f_query=${encodeURIComponent(hotel.name)}`;
+      // APIから返ってきたURL、なければ検索ページへのリンク
+      let targetUrl = hotel.url || `https://search.travel.rakuten.co.jp/ds/hotel/search?f_teikei=&f_query=${encodeURIComponent(hotel.name)}`;
+      
+      // アフィリエイトIDがあれば、楽天のアフィリエイトリンク形式に変換
       if (RAKUTEN_AFFILIATE_ID) {
-          return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent(url)}&m=${encodeURIComponent(url)}`;
+          return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent(targetUrl)}&m=${encodeURIComponent(targetUrl)}`;
       }
-      return url;
+      return targetUrl;
   };
 
   // 散布図
@@ -279,6 +291,7 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                   })}
               </svg>
 
+              {/* 散布図上でホテルを選択したときのポップアップ */}
               {selectedHotel && (
                   <div className="absolute top-2 left-1/2 transform -translate-x-1/2 bg-white p-3 rounded-xl shadow-xl border border-gray-100 w-64 animate-in fade-in zoom-in slide-in-from-bottom-2 z-20">
                       <div className="flex justify-between items-start mb-2">
@@ -291,6 +304,7 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                       </div>
                       <div className="flex gap-2">
                           <button onClick={() => handleAddCandidate(selectedHotel)} className="flex-1 bg-blue-600 text-white text-[10px] py-1.5 rounded-lg font-bold hover:bg-blue-700">候補に追加</button>
+                          {/* ★ ここがアフィリエイトリンクのボタンです */}
                           <a href={getAffiliateUrl(selectedHotel)} target="_blank" className="flex-1 bg-gray-100 text-gray-600 text-[10px] py-1.5 rounded-lg font-bold flex items-center justify-center gap-1 hover:bg-gray-200">
                               楽天 <ExternalLink size={10}/>
                           </a>
