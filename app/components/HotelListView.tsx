@@ -4,26 +4,22 @@ import { useState, useMemo, useEffect, useRef } from 'react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { 
-  BedDouble, Search, ExternalLink, MapPin, 
-  Sparkles, Copy, X, Instagram, Map as MapIcon, 
-  Crown, Star, Plus, Check, Filter, TrendingUp, DollarSign,
-  Maximize2, Minimize2, Bath, Coffee, Loader2
+  Search, ExternalLink, MapPin, 
+  X, TrendingUp, DollarSign,
+  Maximize2, Minimize2, Star, Loader2,
+  // Bath, Coffee は使わなくなるので削除してもOKですが、残っていてもエラーにはなりません
 } from 'lucide-react';
 
 // ==========================================
 // 🔑 設定エリア
 // ==========================================
-// ここにあなたの「楽天アフィリエイトID」を設定すると、リンクが収益化されます。
-// (形式例: "g_id.s_id.g_id.s_id" のような文字列)
-// 未設定でも検索は動きますが、報酬は発生しません。
+// 楽天アフィリエイトID
 const RAKUTEN_AFFILIATE_ID = "4fcc24e4.174bb117.4fcc24e5.5b178353"; 
 
 const MAPBOX_TOKEN = "pk.eyJ1Ijoia2FzYWlzdXN1bXUwMSIsImEiOiJjbWljb2E1cWEwb2d5MmpvaXkwdWhtNjhjIn0.wA6FIZGDGor8jXsx-RNosA";
 
-// 環境変数を優先し、なければlocalhostを使う
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-// 色生成ロジック
 const UD_COLORS = ['#F59E0B', '#3B82F6', '#10B981', '#EF4444', '#8B5CF6', '#EC4899', '#6366F1', '#14B8A6'];
 const getUDColor = (name: string) => {
   if (!name) return '#9CA3AF';
@@ -50,15 +46,13 @@ interface Props {
 export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot, roomId }: Props) {
   const [hotels, setHotels] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [isExpanded, setIsExpanded] = useState(false); // 散布図全画面モード
+  const [isExpanded, setIsExpanded] = useState(false); 
   const [selectedHotel, setSelectedHotel] = useState<any>(null);
 
-  // フィルタ状態
-  const [radius, setRadius] = useState(3.0); // API上限の3km
-  const [priceRange, setPriceRange] = useState<[number, number]>([0, 15000]); // 初期値1.5万
-  const [options, setOptions] = useState<string[]>([]); // large_bath, breakfast
+  // フィルタ状態 (絞り込みオプションは削除しました)
+  const [radius, setRadius] = useState(3.0); 
+  const [priceRange, setPriceRange] = useState<[number, number]>([0, 15000]); 
 
-  // マップ参照
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
   const hotelMarkersRef = useRef<mapboxgl.Marker[]>([]);
@@ -88,7 +82,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
     setHotels([]);
     setSelectedHotel(null);
 
-    // ★ 予算20000円なら上限なし
     const maxPriceLimit = 20000;
     const requestMaxPrice = priceRange[1] >= maxPriceLimit ? undefined : priceRange[1];
 
@@ -99,7 +92,7 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
             radius: radius,
             min_price: priceRange[0] > 0 ? priceRange[0] : undefined,
             max_price: requestMaxPrice,
-            squeeze: options
+            squeeze: [] // 絞り込み条件は空で送信
         };
 
         const res = await fetch(`${API_BASE_URL}/api/search_hotels_vacant`, {
@@ -137,7 +130,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
         pitch: 0,
     });
 
-    // ★ 重心マーカー
     if (centerOfGravity.valid) {
         const el = document.createElement('div');
         el.innerHTML = `
@@ -238,12 +230,9 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
       }
   };
 
-  // ★ アフィリエイトリンク生成ロジック
+  // アフィリエイトリンク生成
   const getAffiliateUrl = (hotel: any) => {
-      // APIから返ってきたURL、なければ検索ページへのリンク
       let targetUrl = hotel.url || `https://search.travel.rakuten.co.jp/ds/hotel/search?f_teikei=&f_query=${encodeURIComponent(hotel.name)}`;
-      
-      // アフィリエイトIDがあれば、楽天のアフィリエイトリンク形式に変換
       if (RAKUTEN_AFFILIATE_ID) {
           return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent(targetUrl)}&m=${encodeURIComponent(targetUrl)}`;
       }
@@ -291,7 +280,7 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                   })}
               </svg>
 
-              {/* 散布図上でホテルを選択したときのポップアップ */}
+              {/* ポップアップ */}
               {selectedHotel && (
                   <div className="absolute top-2 left-1/2 transform -translate-x-1/2 bg-white p-3 rounded-xl shadow-xl border border-gray-100 w-64 animate-in fade-in zoom-in slide-in-from-bottom-2 z-20">
                       <div className="flex justify-between items-start mb-2">
@@ -304,7 +293,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                       </div>
                       <div className="flex gap-2">
                           <button onClick={() => handleAddCandidate(selectedHotel)} className="flex-1 bg-blue-600 text-white text-[10px] py-1.5 rounded-lg font-bold hover:bg-blue-700">候補に追加</button>
-                          {/* ★ ここがアフィリエイトリンクのボタンです */}
                           <a href={getAffiliateUrl(selectedHotel)} target="_blank" className="flex-1 bg-gray-100 text-gray-600 text-[10px] py-1.5 rounded-lg font-bold flex items-center justify-center gap-1 hover:bg-gray-200">
                               楽天 <ExternalLink size={10}/>
                           </a>
@@ -365,20 +353,7 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                       />
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3">
-                      <button 
-                        onClick={() => setOptions(prev => prev.includes('large_bath') ? prev.filter(o => o !== 'large_bath') : [...prev, 'large_bath'])}
-                        className={`p-3 rounded-xl border font-bold text-xs flex items-center justify-center gap-2 transition ${options.includes('large_bath') ? 'bg-blue-50 border-blue-200 text-blue-600' : 'bg-white border-gray-200 text-gray-500'}`}
-                      >
-                          <Bath size={16}/> 大浴場あり
-                      </button>
-                      <button 
-                        onClick={() => setOptions(prev => prev.includes('breakfast') ? prev.filter(o => o !== 'breakfast') : [...prev, 'breakfast'])}
-                        className={`p-3 rounded-xl border font-bold text-xs flex items-center justify-center gap-2 transition ${options.includes('breakfast') ? 'bg-orange-50 border-orange-200 text-orange-600' : 'bg-white border-gray-200 text-gray-500'}`}
-                      >
-                          <Coffee size={16}/> 朝食付き
-                      </button>
-                  </div>
+                  {/* 以前ここにあった絞り込みボタン（大浴場・朝食）は削除されました */}
 
                   <button 
                     onClick={searchHotels}
