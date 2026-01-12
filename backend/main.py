@@ -124,7 +124,7 @@ async def fetch_spot_coordinates(client, spot_name: str, area_context: str = "")
     return None
 
 # ---------------------------------------------------------
-# API: 楽天トラベル (絞り込み機能削除版)
+# API: 楽天トラベル (フィルター緩和版)
 # ---------------------------------------------------------
 @app.post("/api/search_hotels_vacant")
 async def search_hotels_vacant(req: VacantSearchRequest):
@@ -132,28 +132,28 @@ async def search_hotels_vacant(req: VacantSearchRequest):
         return {"error": "サーバー設定エラー: RAKUTEN_APP_IDが設定されていません"}
 
     async with httpx.AsyncClient(verify=False) as client:
+        # ★検索半径を少し広げてもいいかもしれません (現在は req.radius をそのまま使用)
         params = {
             "applicationId": RAKUTEN_APP_ID,
             "format": "json",
             "latitude": req.latitude,
             "longitude": req.longitude,
-            "searchRadius": req.radius,
+            "searchRadius": req.radius, 
             "datumType": 1,
             "hits": 30,
             "sort": "standard",
         }
         
-        # ★削除: squeezeCondition (絞り込み) がエラーの原因だったため削除しました。
-        # 今後は指定範囲内のすべてのホテルを返します。
-        
         try:
+            print(f"🔍 Rakuten Search: Lat={req.latitude}, Lng={req.longitude}, Rad={req.radius}") # ログ出力
+            
             url = "https://app.rakuten.co.jp/services/api/Travel/SimpleHotelSearch/20170426"
             res = await client.get(url, params=params, timeout=10.0)
             
             if res.status_code != 200:
-                print(f"Rakuten API Error Status: {res.status_code}")
                 try:
                     err_data = res.json()
+                    print(f"❌ API Error: {err_data}")
                     return {"error": f"楽天APIエラー: {err_data.get('error_description', '不明なエラー')}"}
                 except:
                     return {"error": f"楽天API通信エラー: HTTP {res.status_code}"}
@@ -162,7 +162,10 @@ async def search_hotels_vacant(req: VacantSearchRequest):
             hotels = []
             
             if "hotels" in data:
-                for h_group in data["hotels"]:
+                raw_hotels = data["hotels"]
+                print(f"✅ Hits from API: {len(raw_hotels)} hotels") # 何件ヒットしたかログに出す
+
+                for h_group in raw_hotels:
                     basic = None
                     rating_info = {}
                     
@@ -178,9 +181,13 @@ async def search_hotels_vacant(req: VacantSearchRequest):
                         if not basic: continue
 
                         price = basic.get("hotelMinCharge", 0)
-                        if price == 0: continue
-                        if req.min_price and price < req.min_price: continue
-                        if req.max_price and price > req.max_price: continue
+
+                        # ★ここを変更: 価格が0円でも許可する (除外しない)
+                        # ★ここを変更: 価格フィルタも「価格情報がある場合のみ」適用する
+                        if price > 0:
+                            if req.min_price and price < req.min_price: continue
+                            # 上限フィルタは、priceが0(不明)の場合は適用しない（表示させるため）
+                            if req.max_price and price > req.max_price: continue
 
                         hotels.append({
                             "id": str(basic["hotelNo"]),
@@ -198,7 +205,10 @@ async def search_hotels_vacant(req: VacantSearchRequest):
                     except Exception as parse_err:
                         print(f"Skipping a hotel due to parse error: {parse_err}")
                         continue
+            else:
+                print("⚠️ No 'hotels' key in response")
 
+            print(f"🚀 Returning {len(hotels)} hotels to frontend")
             return {"hotels": hotels}
 
         except Exception as e:
