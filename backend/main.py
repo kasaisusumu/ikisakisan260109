@@ -224,7 +224,8 @@ async def search_hotels_vacant(req: VacantSearchRequest):
         except Exception as e:
             print(f"Rakuten Search Failed: {e}")
             traceback.print_exc()
-            return {"error": "ホテル検索中にエラーが発生しました"}
+            # エラーの正体を画面に返してあげる
+            return {"error": f"システムエラー詳細: {str(e)}"}
 
 # ---------------------------------------------------------
 # API: AIスポット提案
