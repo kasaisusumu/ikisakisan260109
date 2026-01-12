@@ -6,18 +6,14 @@ import 'mapbox-gl/dist/mapbox-gl.css';
 import { 
   Search, ExternalLink, MapPin, 
   X, TrendingUp, DollarSign,
-  Maximize2, Minimize2, Star, Loader2,
-  // Bath, Coffee は使わなくなるので削除してもOKですが、残っていてもエラーにはなりません
+  Maximize2, Minimize2, Star, Loader2
 } from 'lucide-react';
 
 // ==========================================
 // 🔑 設定エリア
 // ==========================================
-// 楽天アフィリエイトID
 const RAKUTEN_AFFILIATE_ID = "4fcc24e4.174bb117.4fcc24e5.5b178353"; 
-
 const MAPBOX_TOKEN = "pk.eyJ1Ijoia2FzYWlzdXN1bXUwMSIsImEiOiJjbWljb2E1cWEwb2d5MmpvaXkwdWhtNjhjIn0.wA6FIZGDGor8jXsx-RNosA";
-
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 const UD_COLORS = ['#F59E0B', '#3B82F6', '#10B981', '#EF4444', '#8B5CF6', '#EC4899', '#6366F1', '#14B8A6'];
@@ -49,7 +45,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
   const [isExpanded, setIsExpanded] = useState(false); 
   const [selectedHotel, setSelectedHotel] = useState<any>(null);
 
-  // フィルタ状態 (絞り込みオプションは削除しました)
   const [radius, setRadius] = useState(3.0); 
   const [priceRange, setPriceRange] = useState<[number, number]>([0, 15000]); 
 
@@ -92,7 +87,7 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
             radius: radius,
             min_price: priceRange[0] > 0 ? priceRange[0] : undefined,
             max_price: requestMaxPrice,
-            squeeze: [] // 絞り込み条件は空で送信
+            squeeze: [] 
         };
 
         const res = await fetch(`${API_BASE_URL}/api/search_hotels_vacant`, {
@@ -150,7 +145,7 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
      if(map.current) map.current.flyTo({ center: [centerOfGravity.lng, centerOfGravity.lat] });
   }, [centerOfGravity]);
 
-  // 既存スポット表示
+  // マーカー更新
   useEffect(() => {
       if (!map.current) return;
       spotMarkersRef.current.forEach(m => m.remove());
@@ -187,7 +182,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
       });
   }, [spots, spotVotes]);
 
-  // ホテルマーカー更新
   const updateHotelMarkers = (hotelList: any[]) => {
       if (!map.current) return;
       hotelMarkersRef.current.forEach(m => m.remove());
@@ -230,7 +224,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
       }
   };
 
-  // アフィリエイトリンク生成
   const getAffiliateUrl = (hotel: any) => {
       let targetUrl = hotel.url || `https://search.travel.rakuten.co.jp/ds/hotel/search?f_teikei=&f_query=${encodeURIComponent(hotel.name)}`;
       if (RAKUTEN_AFFILIATE_ID) {
@@ -239,7 +232,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
       return targetUrl;
   };
 
-  // 散布図
   const ScatterPlot = () => {
       if (hotels.length === 0) return <div className="h-full flex items-center justify-center text-gray-400 text-sm">条件を指定して検索してください</div>;
 
@@ -280,7 +272,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                   })}
               </svg>
 
-              {/* ポップアップ */}
               {selectedHotel && (
                   <div className="absolute top-2 left-1/2 transform -translate-x-1/2 bg-white p-3 rounded-xl shadow-xl border border-gray-100 w-64 animate-in fade-in zoom-in slide-in-from-bottom-2 z-20">
                       <div className="flex justify-between items-start mb-2">
@@ -334,7 +325,10 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                           <label className="text-xs font-bold text-gray-500 flex items-center gap-1"><MapPin size={14}/> 重心からの距離 (API上限 3km)</label>
                           <span className="text-sm font-bold text-blue-600">{radius}km</span>
                       </div>
+                      {/* 修正点: idとnameを追加 */}
                       <input 
+                        id="radius-slider"
+                        name="radius"
                         type="range" min="0.5" max="3.0" step="0.5" value={radius} 
                         onChange={(e) => setRadius(parseFloat(e.target.value))}
                         className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
@@ -346,14 +340,15 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                           <label className="text-xs font-bold text-gray-500 flex items-center gap-1"><DollarSign size={14}/> 予算 (1泊)</label>
                           <span className={`text-sm font-bold ${priceRange[1] >= 20000 ? "text-green-600" : "text-blue-600"}`}>{priceDisplay}</span>
                       </div>
+                      {/* 修正点: idとnameを追加 */}
                       <input 
+                        id="price-slider"
+                        name="price"
                         type="range" min="3000" max="20000" step="1000" value={priceRange[1]} 
                         onChange={(e) => setPriceRange([0, parseInt(e.target.value)])}
                         className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-green-600"
                       />
                   </div>
-
-                  {/* 以前ここにあった絞り込みボタン（大浴場・朝食）は削除されました */}
 
                   <button 
                     onClick={searchHotels}
