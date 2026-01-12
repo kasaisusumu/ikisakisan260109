@@ -124,7 +124,7 @@ async def fetch_spot_coordinates(client, spot_name: str, area_context: str = "")
     return None
 
 # ---------------------------------------------------------
-# API: 楽天トラベル (詳細ログ付き)
+# API: 楽天トラベル (404対策版)
 # ---------------------------------------------------------
 @app.post("/api/search_hotels_vacant")
 async def search_hotels_vacant(req: VacantSearchRequest):
@@ -149,6 +149,11 @@ async def search_hotels_vacant(req: VacantSearchRequest):
             url = "https://app.rakuten.co.jp/services/api/Travel/SimpleHotelSearch/20170426"
             res = await client.get(url, params=params, timeout=10.0)
             
+            # ★修正ポイント: 404エラーは「0件」として扱う
+            if res.status_code == 404:
+                print("⚠️ Rakuten API 404: No hotels found in this area.")
+                return {"hotels": []}
+
             if res.status_code != 200:
                 print(f"Rakuten API Error Status: {res.status_code}")
                 try:
@@ -181,13 +186,10 @@ async def search_hotels_vacant(req: VacantSearchRequest):
 
                         price = basic.get("hotelMinCharge", 0)
 
-                        # フィルタリング
                         if price > 0:
                             if req.min_price and price < req.min_price:
-                                print(f"  ❌ Dropped {basic['hotelName']} (Price {price} < {req.min_price})")
                                 continue
                             if req.max_price and price > req.max_price: 
-                                print(f"  ❌ Dropped {basic['hotelName']} (Price {price} > {req.max_price})")
                                 continue
                         
                         hotels.append({
@@ -206,8 +208,6 @@ async def search_hotels_vacant(req: VacantSearchRequest):
                     except Exception as parse_err:
                         print(f"Skipping a hotel due to parse error: {parse_err}")
                         continue
-            else:
-                print("⚠️ No 'hotels' key in response")
 
             print(f"🚀 Returning {len(hotels)} hotels to frontend")
             return {"hotels": hotels}
