@@ -10,6 +10,10 @@ import TinderCard from 'react-tinder-card';
 
 const MAPBOX_TOKEN = "pk.eyJ1Ijoia2FzYWlzdXN1bXUwMSIsImEiOiJjbWljb2E1cWEwb2d5MmpvaXkwdWhtNjhjIn0.wA6FIZGDGor8jXsx-RNosA";
 
+// ★★★ ここを修正しました！ ★★★
+// 環境変数を読み込むように変更（これでMixed Contentエラーが直ります）
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
 interface Props {
   spots: any[];
   onRemove: (spot: any) => void;
@@ -141,14 +145,10 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId }: Pro
     if (spots.length < 2) return alert("スポットを2つ以上選んでください");
     setIsProcessing(true);
     try {
-      // ★ ここで現在のIPを自動取得（魔法の1行）
-      const baseUrl = typeof window !== 'undefined' 
-        ? `http://${window.location.hostname}:8000` 
-        : "http://localhost:8000";
-
+      // ★★★ ここを修正：共通の API_BASE_URL を使用 ★★★
       const targetSpots = [...spots].sort((a, b) => (b.votes || 0) - (a.votes || 0));
       
-      const res = await fetch(`${baseUrl}/api/optimize_route`, {
+      const res = await fetch(`${API_BASE_URL}/api/optimize_route`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -183,12 +183,8 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId }: Pro
     }
     setIsProcessing(true);
     try {
-        // ★ ここでも自動取得
-        const baseUrl = typeof window !== 'undefined' 
-          ? `http://${window.location.hostname}:8000` 
-          : "http://localhost:8000";
-
-        const res = await fetch(`${baseUrl}/api/calculate_route`, {
+        // ★★★ ここを修正：共通の API_BASE_URL を使用 ★★★
+        const res = await fetch(`${API_BASE_URL}/api/calculate_route`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ spots: activeSpots, start_time: startTime }),
