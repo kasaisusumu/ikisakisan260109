@@ -124,7 +124,7 @@ async def fetch_spot_coordinates(client, spot_name: str, area_context: str = "")
     return None
 
 # ---------------------------------------------------------
-# API: 楽天トラベル (超デバッグ版)
+# API: 楽天トラベル (データ構造修正版)
 # ---------------------------------------------------------
 @app.post("/api/search_hotels_vacant")
 async def search_hotels_vacant(req: VacantSearchRequest):
@@ -144,7 +144,6 @@ async def search_hotels_vacant(req: VacantSearchRequest):
         }
         
         try:
-            # 受信した条件をログに出す
             print(f"🔍 Request: Min={req.min_price}, Max={req.max_price}, Rad={req.radius}")
             
             url = "https://app.rakuten.co.jp/services/api/Travel/SimpleHotelSearch/20170426"
@@ -170,13 +169,20 @@ async def search_hotels_vacant(req: VacantSearchRequest):
                     rating_info = {}
                     
                     try:
-                        if isinstance(h_group, list) and len(h_group) > 0:
-                            basic = h_group[0].get("hotelBasicInfo")
-                            if len(h_group) > 1:
-                                rating_info = h_group[1].get("hotelRatingInfo", {})
-                        elif isinstance(h_group, dict):
-                            basic = h_group.get("hotelBasicInfo")
-                            rating_info = h_group.get("hotelRatingInfo", {})
+                        # ★★★ ここが修正ポイント！ ★★★
+                        # "hotel" というキーでラップされている場合の皮剥き処理
+                        hotel_content = h_group
+                        if isinstance(h_group, dict) and "hotel" in h_group:
+                            hotel_content = h_group["hotel"]
+                        
+                        # 中身がリストか辞書かで分岐して取り出す
+                        if isinstance(hotel_content, list) and len(hotel_content) > 0:
+                            basic = hotel_content[0].get("hotelBasicInfo")
+                            if len(hotel_content) > 1:
+                                rating_info = hotel_content[1].get("hotelRatingInfo", {})
+                        elif isinstance(hotel_content, dict):
+                            basic = hotel_content.get("hotelBasicInfo")
+                            rating_info = hotel_content.get("hotelRatingInfo", {})
                         
                         if not basic:
                             print(f"🏨 Check [{i}]: No basic info -> Skip")
@@ -185,10 +191,10 @@ async def search_hotels_vacant(req: VacantSearchRequest):
                         name = basic["hotelName"]
                         price = basic.get("hotelMinCharge", 0)
 
-                        # デバッグログ: ホテルごとの判定を表示
+                        # デバッグログ
                         log_msg = f"🏨 Check [{i}] {name}: Price={price}"
 
-                        # フィルタリング判定
+                        # フィルタリング
                         if price > 0:
                             if req.min_price is not None and price < req.min_price:
                                 print(f"{log_msg} -> ❌ DROP (Too Cheap < {req.min_price})")
