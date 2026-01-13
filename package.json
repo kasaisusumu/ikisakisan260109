@@ -3,14 +3,17 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "node dev-server.js",
+    "next-dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "next lint"
   },
   "dependencies": {
+    "@mapbox/mapbox-gl-draw": "^1.5.1",
     "@react-spring/web": "^10.0.3",
     "@supabase/supabase-js": "^2.84.0",
+    "@types/mapbox__mapbox-gl-draw": "^1.4.9",
     "html2canvas": "^1.4.1",
     "lucide-react": "^0.554.0",
     "mapbox-gl": "^3.16.0",

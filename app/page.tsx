@@ -1,17 +1,18 @@
-
-
 "use client";
 
 // ビルドエラー回避：動的レンダリングを強制
 export const dynamic = 'force-dynamic';
 
-// ReactとSuspenseを追加（ここが重要！）
 import React, { Suspense, useEffect, useRef, useState, useMemo } from 'react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
-import { Search, Menu, X, Plus, ExternalLink, Home as HomeIcon, Map as MapIcon, History, Sparkles, Trash2, BedDouble, Instagram, MapPinned, Users, Vote, Info, Crown, Heart, HeartOff, Edit2, Save } from 'lucide-react';
+import { 
+  Search, Menu, X, Plus, ExternalLink, Map as MapIcon, History, Trash2, 
+  MapPinned, Users, Edit2, Save, PenTool, CheckCircle, HelpCircle, 
+  BedDouble, ChevronDown, ChevronUp, Calendar, Clock, Filter, ArrowLeft, MapPin 
+} from 'lucide-react';
 import BottomNav from './components/BottomNav';
 import HotelListView from './components/HotelListView';
 import PlanView from './components/PlanView';
@@ -19,37 +20,48 @@ import MenuView from './components/MenuView';
 import Ticker from './components/Ticker';
 import SwipeView from './components/SwipeView';
 import LegalModal from './components/LegalModal';
-import TimelineView from './components/TimelineView';
 
+// --- 型定義 ---
 type Tab = 'explore' | 'agent' | 'swipe' | 'plan' | 'menu';
+type FilterStatus = 'all' | 'confirmed' | 'candidate' | 'hotel_candidate';
 
 type SearchHistoryItem = {
   id: string;
   name: string;
   place_name: string;
   center: [number, number];
-  feature_type: string;
   timestamp: number;
 };
 
+export type AreaSearchParams = {
+  latitude: number;
+  longitude: number;
+  radius: number;
+};
+
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
-// 環境変数を優先し、なければlocalhostを使う（開発用）
-// 〇 これにする（環境変数を読み込む）
-// ⭕ これに書き換えてください！
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const RAKUTEN_AFFILIATE_ID = "4fcc24e4.174bb117.4fcc24e5.5b178353"; 
 
 const UD_COLORS = ['#F59E0B', '#3B82F6', '#10B981', '#EF4444', '#8B5CF6', '#EC4899', '#6366F1', '#14B8A6'];
 const getUDColor = (name: string) => {
   if (!name) return '#9CA3AF';
   let hash = 0;
   for (let i = 0; i < name.length; i++) { hash = name.charCodeAt(i) + ((hash << 5) - hash); }
-  const index = Math.abs(hash) % UD_COLORS.length;
-  return UD_COLORS[index];
+  return UD_COLORS[Math.abs(hash) % UD_COLORS.length];
 };
 
 const isHotel = (name: string) => {
     const keywords = ['ホテル', '旅館', '宿', '民宿', 'Hotel', 'Inn', 'Guest House', 'ホステル', 'リゾート'];
     return keywords.some(k => name.includes(k));
+};
+
+const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+  const R = 6371; 
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon/2) * Math.sin(dLon/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c;
 };
 
 function HomeContent() {
@@ -70,7 +82,6 @@ function HomeContent() {
   const [likedHistory, setLikedHistory] = useState<string[]>([]);
   const [nopedHistory, setNopedHistory] = useState<string[]>([]);
   const [isSuggesting, setIsSuggesting] = useState(false);
-  const [newSuggestionReady, setNewSuggestionReady] = useState(false);
 
   const [isEditingDesc, setIsEditingDesc] = useState(false);
   const [editDescValue, setEditDescValue] = useState("");
@@ -90,8 +101,93 @@ function HomeContent() {
   const [searchHistory, setSearchHistory] = useState<SearchHistoryItem[]>([]);
   const [isFocused, setIsFocused] = useState(false);
 
+  const [filterStatus, setFilterStatus] = useState<FilterStatus>('all');
+  const [isListExpanded, setIsListExpanded] = useState(false);
+
+  // お絵描き関連
+  const [isDrawing, setIsDrawing] = useState(false);
+  const tempDrawCoords = useRef<number[][]>([]);
+  const [initialSearchArea, setInitialSearchArea] = useState<AreaSearchParams | null>(null);
+
+  const [showDateModal, setShowDateModal] = useState(false);
+  const [startDate, setStartDate] = useState<string>("");
+  const [endDate, setEndDate] = useState<string>("");
+  const [spotToAssignDay, setSpotToAssignDay] = useState<any>(null); 
+  const [travelDays, setTravelDays] = useState<number>(1);
+
   const planSpotsRef = useRef(planSpots);
   useEffect(() => { planSpotsRef.current = planSpots; }, [planSpots]);
+
+  // ★ 修正点1: タブに関わらず、このコンポーネントがマウントされたらお絵描き関連を完全リセット
+  useEffect(() => {
+    setIsDrawing(false);
+    setInitialSearchArea(null);
+    tempDrawCoords.current = [];
+  }, []);
+
+  // ★ 修正点2: タブ切り替え時のリセットをより強力に
+  useEffect(() => {
+    if (isDrawing) {
+        stopDrawing(); // マップイベントも含めて解除
+    }
+    if (currentTab !== 'agent') {
+        setInitialSearchArea(null);
+    }
+  }, [currentTab]);
+
+  useEffect(() => {
+      if (startDate && endDate) {
+          const start = new Date(startDate);
+          const end = new Date(endDate);
+          const diffTime = Math.abs(end.getTime() - start.getTime());
+          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+          setTravelDays(diffDays > 0 ? diffDays : 1);
+      } else {
+          setTravelDays(1);
+      }
+      
+      if (roomId) {
+          localStorage.setItem(`rh_dates_${roomId}`, JSON.stringify({ start: startDate, end: endDate }));
+      }
+  }, [startDate, endDate, roomId]);
+
+  useEffect(() => {
+    if (roomId) {
+        const savedDates = localStorage.getItem(`rh_dates_${roomId}`);
+        if (savedDates) {
+            try {
+                const { start, end } = JSON.parse(savedDates);
+                if(start) setStartDate(start);
+                if(end) setEndDate(end);
+            } catch(e){}
+        }
+    }
+  }, [roomId]);
+
+  const getAffiliateUrl = (spot: any) => {
+      if (spot.id && /^\d+$/.test(spot.id)) {
+          const today = new Date();
+          const nextMonth = new Date(today);
+          nextMonth.setDate(today.getDate() + 30);
+          const y1 = nextMonth.getFullYear();
+          const m1 = nextMonth.getMonth() + 1;
+          const d1 = nextMonth.getDate();
+          
+          const nextDay = new Date(nextMonth);
+          nextDay.setDate(nextMonth.getDate() + 1);
+          const y2 = nextDay.getFullYear();
+          const m2 = nextDay.getMonth() + 1;
+          const d2 = nextDay.getDate();
+
+          const targetUrl = `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${spot.id}?f_teikei=&f_heya_su=1&f_otona_su=2&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_sort=min_charge`;
+
+          if (RAKUTEN_AFFILIATE_ID) {
+              return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent(targetUrl)}&m=${encodeURIComponent(targetUrl)}`;
+          }
+          return targetUrl;
+      }
+      return spot.url || `https://search.travel.rakuten.co.jp/ds/hotel/search?f_teikei=&f_query=${encodeURIComponent(spot.name)}`;
+  };
 
   const allParticipants = useMemo(() => {
       const users = new Set<string>();
@@ -101,12 +197,103 @@ function HomeContent() {
       return Array.from(users);
   }, [planSpots, spotVotes, userName]);
 
-  useEffect(() => {
-    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-       setSessionToken(crypto.randomUUID());
-    } else {
-       setSessionToken(Math.random().toString(36).substring(2));
+  const filteredSpots = useMemo(() => {
+      if (filterStatus === 'all') return planSpots;
+      return planSpots.filter(s => (s.status || 'candidate') === filterStatus);
+  }, [planSpots, filterStatus]);
+
+  const handleStatusChangeClick = (spot: any, newStatus: string) => {
+      if (newStatus === 'confirmed') {
+          setSpotToAssignDay(spot);
+      } else {
+          updateSpotStatus(spot, newStatus, 0); 
+      }
+  };
+
+  const confirmSpotDay = async (day: number) => {
+      if (!spotToAssignDay) return;
+      await updateSpotStatus(spotToAssignDay, 'confirmed', day);
+      setSpotToAssignDay(null);
+  };
+
+  const updateSpotStatus = async (spot: any, newStatus: string, day: number = 0) => {
+      if (!roomId) return;
+      setPlanSpots(prev => prev.map(s => s.id === spot.id ? { ...s, status: newStatus, day: day } : s));
+      const { error } = await supabase.from('spots').update({ status: newStatus, day: day }).eq('id', spot.id);
+      if (error) { console.error("Status update failed:", error); loadRoomData(roomId); }
+  };
+
+  const handleSearch = async (overrideQuery?: string) => {
+      const activeQuery = overrideQuery || query; 
+      if(!activeQuery) return;
+      setIsSearching(true);
+      try {
+        const token = MAPBOX_TOKEN;
+        const bounds = map.current!.getBounds();
+        let bbox = "";
+        if (bounds) bbox = `${bounds.getWest()},${bounds.getSouth()},${bounds.getEast()},${bounds.getNorth()}`;
+        let url = `https://api.mapbox.com/search/searchbox/v1/suggest?q=${encodeURIComponent(activeQuery)}&access_token=${token}&session_token=${sessionToken}&language=ja&limit=10&bbox=${bbox}&types=poi,place,address`;
+        let res = await fetch(url);
+        let data = await res.json();
+        if (!data.suggestions || data.suggestions.length < 2) {
+          url = `https://api.mapbox.com/search/searchbox/v1/suggest?q=${encodeURIComponent(activeQuery)}&access_token=${token}&session_token=${sessionToken}&language=ja&limit=10&proximity=${lng},${lat}&types=poi,place,address`;
+          res = await fetch(url);
+          data = await res.json();
+        }
+        if (data.suggestions) { setSearchResults(data.suggestions); }
+      } catch (e) { console.error(e); } finally { setIsSearching(false); }
+  }; 
+
+  const showResultOnMap = (name: string, desc: string, center: number[], isSaved: boolean) => {
+      if (!map.current) return;
+      map.current.flyTo({ center: center as [number, number], zoom: 16, offset: [0, -150] });
+      const el = document.createElement('div'); 
+      el.innerHTML = `<div style="width:24px; height:24px; background:#EF4444; border:3px solid white; border-radius:50%; box-shadow:0 4px 10px rgba(239,68,68,0.4);"></div>`;
+      const marker = new mapboxgl.Marker({ element: el }).setLngLat(center as [number, number]).addTo(map.current);
+      searchMarkersRef.current.push(marker);
+      setSelectedResult({ text: name, place_name: desc, center: center, is_saved: isSaved, voters: [] });
+      setViewMode('selected');
+      setIsEditingDesc(false);
+
+      const newHistoryItem: SearchHistoryItem = {
+          id: Math.random().toString(36).substring(2),
+          name: name,
+          place_name: desc,
+          center: center as [number, number],
+          timestamp: Date.now()
+      };
+      const updatedHistory = [newHistoryItem, ...searchHistory.filter(h => h.name !== name)].slice(0, 10);
+      setSearchHistory(updatedHistory);
+      localStorage.setItem('mapbox_search_history', JSON.stringify(updatedHistory));
+  };
+
+  const handleSelectSuggestion = async (suggestion: any) => {
+    setSearchResults([]); setQuery(suggestion.name);
+    setIsFocused(false); 
+    if (suggestion.is_history && suggestion.center) {
+        const isSaved = planSpots.some(s => s.name === suggestion.name);
+        showResultOnMap(suggestion.name, suggestion.place_name, suggestion.center, isSaved);
+        return;
     }
+    try {
+      const token = MAPBOX_TOKEN;
+      const url = `https://api.mapbox.com/search/searchbox/v1/retrieve/${suggestion.mapbox_id}?access_token=${token}&session_token=${sessionToken}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (data.features && data.features.length > 0) {
+        const feature = data.features[0];
+        const [searchLng, searchLat] = feature.geometry.coordinates;
+        const name = feature.properties.name;
+        const address = feature.properties.full_address || feature.properties.place_formatted || "";
+        const isSaved = planSpots.some(s => s.name === name);
+        showResultOnMap(name, address, [searchLng, searchLat], isSaved);
+      }
+    } catch(e) { alert("詳細情報の取得に失敗しました"); }
+  };
+
+  useEffect(() => {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) { setSessionToken(crypto.randomUUID()); } 
+    else { setSessionToken(Math.random().toString(36).substring(2)); }
     const savedHistory = localStorage.getItem('mapbox_search_history');
     if (savedHistory) { try { setSearchHistory(JSON.parse(savedHistory)); } catch (e) {} }
   }, []);
@@ -115,8 +302,7 @@ function HomeContent() {
     setIsAuthLoading(true);
     if (roomId) {
       const savedName = localStorage.getItem(`route_hacker_user_${roomId}`);
-      if (savedName) { setUserName(savedName); setIsJoined(true); }
-      else { setIsJoined(false); }
+      if (savedName) { setUserName(savedName); setIsJoined(true); } else { setIsJoined(false); }
     } else { setIsJoined(false); setUserName(""); }
     setIsAuthLoading(false);
   }, [roomId]);
@@ -132,50 +318,22 @@ function HomeContent() {
     }
   }, [roomId, isJoined]);
 
-  // ★ 追加: 入力に応じた自動検索 (Debounce処理)
   useEffect(() => {
-    const delayDebounceFn = setTimeout(() => {
-      if (query.trim()) {
-        handleSearch();
-      } else {
-        setSearchResults([]); // クエリが空なら結果をクリア
-      }
-    }, 300); // 300ms待機してから検索
-
+    const delayDebounceFn = setTimeout(() => { if (query.trim()) { handleSearch(); } else { setSearchResults([]); } }, 300);
     return () => clearTimeout(delayDebounceFn);
   }, [query]);
 
-  const showResultOnMap = (name: string, desc: string, center: number[], isSaved: boolean) => {
-      if (!map.current) return;
-      map.current.flyTo({ center: center as [number, number], zoom: 16, offset: [0, -150] });
-      const el = document.createElement('div'); 
-      el.innerHTML = `<div style="width:20px; height:20px; background:#EF4444; border:2px solid white; border-radius:50%; box-shadow:0 0 0 4px rgba(239,68,68,0.3);"></div>`;
-      const marker = new mapboxgl.Marker({ element: el }).setLngLat(center as [number, number]).addTo(map.current);
-      searchMarkersRef.current.push(marker);
-      setSelectedResult({ text: name, place_name: desc, center: center, is_saved: isSaved, voters: [] });
-      setViewMode('selected');
-      setIsEditingDesc(false);
-  };
-
   useEffect(() => {
     if (roomId && isJoined) loadRoomData(roomId);
-    if (currentTab === 'explore' && map.current) {
-        setTimeout(() => {
-            map.current?.resize();
-            fitBoundsToSpots(planSpots);
-        }, 100);
-    }
+    if (currentTab === 'explore' && map.current) { setTimeout(() => { map.current?.resize(); fitBoundsToSpots(planSpots); }, 100); }
   }, [currentTab]);
 
   const loadRoomData = async (id: string) => {
     const { data: spots } = await supabase.from('spots').select('*').eq('room_id', id).order('order', { ascending: true });
     const { data: allVotes } = await supabase.from('votes').select('*').eq('room_id', id);
-
     if (spots) {
       setPlanSpots(spots);
-      if (currentTab === 'explore' && !isSearching && !selectedResult) {
-         fitBoundsToSpots(spots);
-      }
+      if (currentTab === 'explore' && !isSearching && !selectedResult) { fitBoundsToSpots(spots); }
     }
     if (allVotes) setSpotVotes(allVotes.filter((v: any) => v.vote_type === 'like'));
   };
@@ -190,13 +348,7 @@ function HomeContent() {
               hasValidCoords = true;
           }
       });
-      if (hasValidCoords) {
-          map.current.fitBounds(bounds, { 
-              padding: { top: 100, bottom: 200, left: 40, right: 40 }, 
-              maxZoom: 15,
-              duration: 1000
-          });
-      }
+      if (hasValidCoords) { map.current.fitBounds(bounds, { padding: { top: 150, bottom: 200, left: 40, right: 40 }, maxZoom: 15, duration: 1000 }); }
   };
 
   const handleCreateRoom = async () => {
@@ -215,7 +367,7 @@ function HomeContent() {
   const handleLikeCandidate = async (spot: any) => {
     setLikedHistory(prev => [...prev, spot.name]);
     setCandidates(prev => prev.filter(s => s.id !== spot.id));
-    await addSpot(spot);
+    await addSpot({ ...spot, status: 'candidate' });
   };
 
   const handleNopeCandidate = (spot: any) => {
@@ -230,49 +382,43 @@ function HomeContent() {
     
     const spotName = spot.name || spot.text || "名称不明";
     const desc = (selectedResult?.id === spot.id && selectedResult.place_name) ? selectedResult.place_name : (spot.description || spot.place_name || "");
+    const status = spot.status || 'candidate';
 
-    const newSpot = { room_id: roomId, name: spotName, description: desc, coordinates: coords, order: planSpots.length, added_by: userName || 'Guest', votes: 0 };
-    const { error } = await supabase.from('spots').insert([newSpot]);
-    if (!error) {
-      setPlanSpots(prev => [...prev, newSpot]);
-      resetSearchState();
-      setQuery(""); 
-      setSessionToken(Math.random().toString(36));
-    }
+    const newSpotPayload = { 
+        room_id: roomId, 
+        name: spotName, 
+        description: desc, 
+        coordinates: coords, 
+        order: planSpots.length, 
+        added_by: userName || 'Guest', 
+        votes: 0,
+        status: status,
+        price: spot.price || null,
+        rating: spot.rating || null,
+        image_url: spot.image_url || null,
+        url: spot.url || null,
+        plan_id: spot.plan_id || null,
+        is_hotel: spot.is_hotel || false,
+        day: 0
+    };
+
+    const { data, error } = await supabase.from('spots').insert([newSpotPayload]).select().single();
+    if (error) { console.error("Add spot error:", error); alert("スポットの追加に失敗しました"); return; }
+    if (data) { setPlanSpots(prev => [...prev, data]); resetSearchState(); setQuery(""); setSessionToken(Math.random().toString(36)); }
   };
 
   const removeSpot = async (spot: any) => {
     if (!roomId) return;
     if (!confirm(`本当に「${spot.name || spot.text}」をリストから削除しますか？`)) return;
-
     await supabase.from('spots').delete().eq('room_id', roomId).eq('name', spot.name || spot.text);
     setPlanSpots(prev => prev.filter(s => s.name !== (spot.name || spot.text)));
     if (selectedResult?.name === spot.name) setSelectedResult(null); 
   };
 
-  const handleVoteToggle = async (spotId: string) => {
-    if (!roomId || !userName) return;
-    const existingVote = spotVotes.find(v => v.spot_id === spotId && v.user_name === userName);
-    if (existingVote) {
-        await supabase.from('votes').delete().eq('id', existingVote.id);
-        await supabase.rpc('decrement_votes', { spot_id: spotId });
-        setSpotVotes(prev => prev.filter(v => v.id !== existingVote.id));
-    } else {
-        const { data: newVote } = await supabase.from('votes').insert([{
-            room_id: roomId, spot_id: spotId, user_name: userName, vote_type: 'like'
-        }]).select().single();
-        if (newVote) {
-            await supabase.rpc('increment_votes', { spot_id: spotId });
-            setSpotVotes(prev => [...prev, newVote]);
-        }
-    }
-  };
-
   const updateSpots = (newSpots: any[]) => { setPlanSpots(newSpots); };
 
   const resetSearchState = () => {
-    setSearchResults([]); setSelectedResult(null); setViewMode('default'); searchMarkersRef.current.forEach(marker => marker.remove()); searchMarkersRef.current = [];
-    setIsEditingDesc(false);
+    setSearchResults([]); setSelectedResult(null); setViewMode('default'); searchMarkersRef.current.forEach(marker => marker.remove()); searchMarkersRef.current = []; setIsEditingDesc(false); setIsFocused(false);
   };
 
   const handlePreviewSpot = (spot: any) => {
@@ -284,35 +430,14 @@ function HomeContent() {
     setSelectedResult(previewData);
     setViewMode('selected');
     setIsEditingDesc(false);
-    setTimeout(() => {
-      if (map.current) {
-        map.current.resize();
-        map.current.flyTo({ center: spot.coordinates, zoom: 16, offset: [0, -150] });
-      }
-    }, 300);
+    setTimeout(() => { if (map.current) { map.current?.resize(); map.current?.flyTo({ center: spot.coordinates, zoom: 16, offset: [0, -150] }); } }, 300);
   };
 
-  const handleAutoSearch = (keyword: string) => {
-      setQuery(keyword);
-      setCurrentTab('explore');
-      setTimeout(() => { }, 100);
-  };
-
-  // チャットからマップ検索
-  const handleSearchFromChat = (keyword: string) => {
-      setCurrentTab('explore');
-      setQuery(keyword);
-      setIsFocused(true);
-      setTimeout(() => { handleSearch(keyword); }, 300);
-  };
-
-  // ★ 新規: チャットから提案を受け取り、スワイプカードを表示する
+  const handleAutoSearch = (keyword: string) => { setQuery(keyword); setCurrentTab('explore'); };
+  const handleSearchFromChat = (keyword: string) => { setCurrentTab('explore'); setQuery(keyword); setIsFocused(true); setTimeout(() => { handleSearch(keyword); }, 300); };
+  
   const handleReceiveCandidates = (newCandidates: any[]) => {
-      // 一意なIDを付与してセット
-      const spotsWithIds = newCandidates.map((s) => ({
-          ...s,
-          id: `ai-suggest-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
-      }));
+      const spotsWithIds = newCandidates.map((s) => ({ ...s, id: `ai-suggest-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`, status: 'candidate' }));
       setCandidates(spotsWithIds);
   };
 
@@ -323,26 +448,99 @@ function HomeContent() {
       setIsEditingDesc(false);
   };
 
-  // --- Map初期化 & マーカー処理 (省略せず維持) ---
+  const getIconForSuggestion = (item: any) => {
+    if (item.is_history) return <History size={16} className="text-gray-500 mt-0.5 shrink-0" />;
+    return <MapIcon size={16} className="text-gray-400 mt-0.5 shrink-0" />;
+  };
+
+  const updateDrawSource = (coords: number[][]) => {
+      if (!map.current) return;
+      const source: any = map.current.getSource('draw-source');
+      if (source) { source.setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: coords } }); }
+  };
+
+  const startDrawing = () => {
+    tempDrawCoords.current = [];
+    updateDrawSource([]);
+    setIsDrawing(true);
+    if (map.current) {
+        map.current.dragPan.disable();
+        map.current.getCanvas().style.cursor = 'crosshair';
+    }
+  };
+
+  // ★ 修正点3: お絵描き停止時にイベントリスナーを確実に解除する
+  const stopDrawing = () => {
+    setIsDrawing(false);
+    tempDrawCoords.current = [];
+    updateDrawSource([]);
+    if (map.current) {
+        map.current.dragPan.enable();
+        map.current.getCanvas().style.cursor = '';
+        // Mapboxの登録済みイベントを解除（念のため）
+        map.current.off('touchstart', onTouchStart);
+        map.current.off('touchmove', onTouchMove);
+        map.current.off('touchend', onTouchEnd);
+        map.current.off('mousedown', onMouseDown);
+        map.current.off('mousemove', onMouseMove);
+        map.current.off('mouseup', onMouseUp);
+    }
+  };
+
+  const finishDrawing = () => {
+    const coords = tempDrawCoords.current;
+    if (coords.length < 2) { stopDrawing(); return; }
+    let minLng = 180, maxLng = -180, minLat = 90, maxLat = -90;
+    coords.forEach(c => { const [lng, lat] = c; if (lng < minLng) minLng = lng; if (lng > maxLng) maxLng = lng; if (lat < minLat) minLat = lat; if (lat > maxLat) maxLat = lat; });
+    const centerLat = (minLat + maxLat) / 2; const centerLng = (minLng + maxLng) / 2;
+    let radiusKm = (calculateDistance(centerLat, centerLng, maxLat, maxLng) / 2) * 1.1;
+    if (radiusKm < 0.1) radiusKm = 0.5; if (radiusKm > 3.0) radiusKm = 3.0;
+    
+    setInitialSearchArea({ latitude: centerLat, longitude: centerLng, radius: radiusKm });
+    stopDrawing();
+    setCurrentTab('agent');
+  };
+
+  // Mapbox イベントハンドラ (変数として定義して off できるようにする)
+  const onTouchStart = (e: any) => { if (!isDrawing) return; if (e.originalEvent.touches && e.originalEvent.touches.length > 1) return; if (e.originalEvent) e.originalEvent.preventDefault(); tempDrawCoords.current = [[e.lngLat.lng, e.lngLat.lat]]; updateDrawSource(tempDrawCoords.current); };
+  const onTouchMove = (e: any) => { if (!isDrawing) return; if (e.originalEvent.touches && e.originalEvent.touches.length > 1) return; if (e.originalEvent) e.originalEvent.preventDefault(); tempDrawCoords.current.push([e.lngLat.lng, e.lngLat.lat]); updateDrawSource(tempDrawCoords.current); };
+  const onTouchEnd = (e: any) => { if (!isDrawing) return; if (tempDrawCoords.current.length > 0) { finishDrawing(); } };
+  const onMouseDown = (e: any) => { if (!isDrawing) return; tempDrawCoords.current = [[e.lngLat.lng, e.lngLat.lat]]; updateDrawSource(tempDrawCoords.current); };
+  const onMouseMove = (e: any) => { if (!isDrawing) return; if (tempDrawCoords.current.length === 0) return; tempDrawCoords.current.push([e.lngLat.lng, e.lngLat.lat]); updateDrawSource(tempDrawCoords.current); };
+  const onMouseUp = () => { if (!isDrawing) return; if (tempDrawCoords.current.length > 0) finishDrawing(); };
+
+  useEffect(() => {
+    if (!map.current) return;
+    if (isDrawing) {
+        map.current.on('touchstart', onTouchStart);
+        map.current.on('touchmove', onTouchMove);
+        map.current.on('touchend', onTouchEnd);
+        map.current.on('mousedown', onMouseDown);
+        map.current.on('mousemove', onMouseMove);
+        map.current.on('mouseup', onMouseUp);
+    } else {
+        map.current.off('touchstart', onTouchStart);
+        map.current.off('touchmove', onTouchMove);
+        map.current.off('touchend', onTouchEnd);
+        map.current.off('mousedown', onMouseDown);
+        map.current.off('mousemove', onMouseMove);
+        map.current.off('mouseup', onMouseUp);
+    }
+  }, [isDrawing]);
+
   useEffect(() => {
     if (isAuthLoading || !isJoined) return;
     if (map.current) return; 
     mapboxgl.accessToken = MAPBOX_TOKEN;
     if (mapContainer.current) {
-      map.current = new mapboxgl.Map({
-        container: mapContainer.current,
-        style: 'mapbox://styles/mapbox/streets-v12',
-        center: [lng, lat],
-        zoom: 14,
-        pitch: 45,
-        bearing: 0,
-        antialias: true
-      });
-      map.current.on('moveend', () => { if (map.current) { const c = map.current.getCenter(); setLng(c.lng); setLat(c.lat); } });
+      map.current = new mapboxgl.Map({ container: mapContainer.current, style: 'mapbox://styles/mapbox/streets-v12', center: [lng, lat], zoom: 14, pitch: 45, bearing: 0, antialias: true });
       map.current.on('load', () => {
         if (!map.current) return;
         map.current.resize();
-        map.current.setPadding({ top: 80, bottom: 100, left: 0, right: 0 });
+        map.current.addSource('draw-source', { type: 'geojson', data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } } });
+        map.current.addLayer({ id: 'draw-line', type: 'line', source: 'draw-source', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#EF4444', 'line-width': 4, 'line-opacity': 0.8 } });
+        map.current.addLayer({ id: 'draw-fill', type: 'fill', source: 'draw-source', paint: { 'fill-color': '#EF4444', 'fill-opacity': 0.2 } });
+        map.current.setPadding({ top: 150, bottom: 200, left: 0, right: 0 }); 
         const layers = map.current.getStyle().layers;
         const labelLayerId = layers?.find((layer) => layer.type === 'symbol' && layer.layout?.['text-field'])?.id;
         if(!map.current.getLayer('3d-buildings')) { map.current.addLayer({ 'id': '3d-buildings', 'source': 'composite', 'source-layer': 'building', 'filter': ['==', 'extrude', 'true'], 'type': 'fill-extrusion', 'minzoom': 15, 'paint': { 'fill-extrusion-color': '#aaa', 'fill-extrusion-height': ['interpolate', ['linear'], ['zoom'], 15, 0, 15.05, ['get', 'height']], 'fill-extrusion-base': ['interpolate', ['linear'], ['zoom'], 15, 0, 15.05, ['get', 'min_height']], 'fill-extrusion-opacity': 0.6 } }, labelLayerId); }
@@ -369,7 +567,8 @@ function HomeContent() {
     if (!map.current) return;
     const markers = document.getElementsByClassName('marker-plan');
     while(markers.length > 0) markers[0].parentNode?.removeChild(markers[0]);
-    planSpots.forEach((spot, index) => {
+    
+    filteredSpots.forEach((spot) => {
         const voters = spotVotes.filter(v => v.spot_id === spot.id).map(v => v.user_name);
         const participants = [spot.added_by, ...voters];
         const uniqueParticipants = Array.from(new Set(participants));
@@ -380,87 +579,53 @@ function HomeContent() {
         const el = document.createElement('div'); 
         el.className = 'marker-plan'; 
         el.style.cursor = 'pointer';
-        const isSpotHotel = isHotel(spot.name);
+        const isSpotHotel = isHotel(spot.name) || spot.is_hotel;
         const voteCount = uniqueParticipants.length;
         const baseColor = isSpotHotel ? '#FEF9C3' : '#FFFFFF'; 
         const textColor = isSpotHotel ? '#CA8A04' : '#1E3A8A'; 
-        el.innerHTML = `
-          <div style="position:relative; display:flex; flex-direction:column; align-items:center; transform:translateY(-50%);">
-            <div style="width:${size + 6}px; height:${size + 6}px; background:${gradientString}; border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 5px rgba(0,0,0,0.3);">
-               <div style="width:${size}px; height:${size}px; background:${baseColor}; border-radius:50%; display:flex; align-items:center; justify-content:center; color:${textColor}; font-weight:800; font-size:12px; border:1px solid rgba(0,0,0,0.1);">
-                 ${isSpotHotel ? '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4v16"/><path d="M2 8h18a2 2 0 0 1 2 2v10"/><path d="M2 17h20"/><path d="M6 8v9"/></svg>' : (voteCount > 0 ? voteCount : '')}
-               </div>
-            </div>
-            <div style="width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent; border-top:7px solid ${baseColor}; margin-top:-1px; filter:drop-shadow(0 1px 1px rgba(0,0,0,0.1));"></div>
-          </div>
-        `;
+        
+        const isConfirmed = spot.status === 'confirmed';
+
+        let hotelInfoHtml = '';
+        if (isSpotHotel && spot.price) {
+            hotelInfoHtml = `
+                <div style="position:absolute; bottom:100%; left:50%; transform:translateX(-50%) translateY(-8px); background:white; padding:2px 6px; border-radius:6px; font-size:10px; font-weight:bold; color:#d32f2f; white-space:nowrap; box-shadow:0 2px 4px rgba(0,0,0,0.2); display:flex; flex-direction:column; align-items:center;">
+                    <span>¥${spot.price.toLocaleString()}</span>
+                    ${spot.rating ? `<span style="font-size:8px; color:#f57c00;">★${spot.rating}</span>` : ''}
+                    <div style="position:absolute; top:100%; left:50%; transform:translateX(-50%); width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:4px solid white;"></div>
+                </div>
+            `;
+        }
+
+        if (isConfirmed) {
+            el.innerHTML = `<div style="position:relative; display:flex; flex-direction:column; align-items:center; transform:translateY(-50%);">${hotelInfoHtml}<div style="width:${size + 6}px; height:${size + 6}px; background:black; border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 4px 10px rgba(0,0,0,0.5);"><div style=\"width:${size}px; height:${size}px; background:black; border-radius:50%; display:flex; align-items:center; justify-content:center; color:white; font-weight:800; font-size:12px; border:1px solid rgba(255,255,255,0.3);\">${isSpotHotel ? '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4v16"/><path d="M2 8h18a2 2 0 0 1 2 2v10"/><path d="M2 17h20"/><path d="M6 8v9"/></svg>' : (spot.day || '')}</div></div><div style="width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent; border-top:7px solid black; margin-top:-1px; filter:drop-shadow(0 1px 1px rgba(0,0,0,0.1));"></div></div>`;
+        } else {
+            el.innerHTML = `<div style="position:relative; display:flex; flex-direction:column; align-items:center; transform:translateY(-50%);">${hotelInfoHtml}<div style="width:${size + 6}px; height:${size + 6}px; background:${gradientString}; border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 5px rgba(0,0,0,0.3);"><div style="width:${size}px; height:${size}px; background:${baseColor}; border-radius:50%; display:flex; align-items:center; justify-content:center; color:${textColor}; font-weight:800; font-size:12px; border:1px solid rgba(0,0,0,0.1);">${isSpotHotel ? '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4v16"/><path d="M2 8h18a2 2 0 0 1 2 2v10"/><path d="M2 17h20"/><path d="M6 8v9"/></svg>' : (voteCount > 0 ? voteCount : '')}</div></div><div style="width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent; border-top:7px solid ${baseColor}; margin-top:-1px; filter:drop-shadow(0 1px 1px rgba(0,0,0,0.1));"></div></div>`;
+        }
         el.onclick = (e) => { e.stopPropagation(); handlePreviewSpot(spot); };
         new mapboxgl.Marker({ element: el, anchor: 'bottom' }).setLngLat(spot.coordinates).addTo(map.current!);
       });
-  }, [JSON.stringify(planSpots), JSON.stringify(spotVotes)]); 
-
-  const handleSearch = async (overrideQuery?: string) => {
-      const activeQuery = overrideQuery || query; 
-      if(!activeQuery) return;
-      setIsSearching(true);
-      try {
-        const token = MAPBOX_TOKEN;
-        const bounds = map.current!.getBounds();
-        let bbox = "";
-        if (bounds) bbox = `${bounds.getWest()},${bounds.getSouth()},${bounds.getEast()},${bounds.getNorth()}`;
-        let url = `https://api.mapbox.com/search/searchbox/v1/suggest?q=${encodeURIComponent(activeQuery)}&access_token=${token}&session_token=${sessionToken}&language=ja&limit=10&bbox=${bbox}&types=poi,place,address`;
-        let res = await fetch(url);
-        let data = await res.json();
-        if (!data.suggestions || data.suggestions.length < 2) {
-          url = `https://api.mapbox.com/search/searchbox/v1/suggest?q=${encodeURIComponent(activeQuery)}&access_token=${token}&session_token=${sessionToken}&language=ja&limit=10&proximity=${lng},${lat}&types=poi,place,address`;
-          res = await fetch(url);
-          data = await res.json();
-        }
-        if (data.suggestions) { setSearchResults(data.suggestions); }
-      } catch (e) { console.error(e); } finally { setIsSearching(false); }
-  }; 
-
-  const handleSelectSuggestion = async (suggestion: any) => {
-    setSearchResults([]); setQuery(suggestion.name);
-    if (suggestion.is_history && suggestion.center) {
-        const isSaved = planSpots.some(s => s.name === suggestion.name);
-        showResultOnMap(suggestion.name, suggestion.place_name, suggestion.center, isSaved);
-        return;
-    }
-    try {
-      const token = MAPBOX_TOKEN;
-      const url = `https://api.mapbox.com/search/searchbox/v1/retrieve/${suggestion.mapbox_id}?access_token=${token}&session_token=${sessionToken}`;
-      const res = await fetch(url);
-      const data = await res.json();
-      if (data.features && data.features.length > 0) {
-        const feature = data.features[0];
-        const [searchLng, searchLat] = feature.geometry.coordinates;
-        const name = feature.properties.name;
-        const address = feature.properties.full_address || feature.properties.place_formatted || "";
-        const isSaved = planSpots.some(s => s.name === name);
-        showResultOnMap(name, address, [searchLng, searchLat], isSaved);
-      }
-    } catch(e) { alert("詳細情報の取得に失敗しました"); }
-  };
-
-  const getIconForSuggestion = (item: any) => {
-    if (item.is_history) return <History size={16} className="text-gray-500 mt-0.5 shrink-0" />;
-    return <MapIcon size={16} className="text-gray-400 mt-0.5 shrink-0" />;
-  };
+  }, [JSON.stringify(filteredSpots), JSON.stringify(spotVotes)]); 
 
   if (isAuthLoading || (!roomId && !isJoined) || (roomId && !isJoined)) {
     return (
-      <main className="flex min-h-[100dvh] flex-col items-center justify-center p-6 bg-gradient-to-b from-blue-500 to-purple-600 text-white">
+      <main className="flex min-h-[100dvh] flex-col items-center justify-center p-6 bg-gradient-to-b from-blue-600 to-purple-800 text-white">
         <LegalModal />
-        <div className="bg-white text-gray-800 p-8 rounded-2xl shadow-2xl w-full max-w-md text-center">
-          <h1 className="text-3xl font-black mb-2">Route Hacker 🗺️</h1>
-          <p className="text-gray-500 mb-6">{roomId ? "友達の旅に参加します" : "AIと地図で、最高の旅をハックしよう。"}</p>
+        <div className="bg-white/10 backdrop-blur-lg border border-white/20 text-white p-10 rounded-[3rem] shadow-2xl w-full max-w-md text-center">
+          <h1 className="text-4xl font-black mb-4 tracking-tight drop-shadow-sm">Route Hacker 🗺️</h1>
+          <p className="text-blue-100 mb-8 font-medium">AIと地図で、最高の旅をハックしよう。</p>
           <div className="space-y-4">
-            <input type="text" placeholder="あなたのお名前" className="w-full p-3 border border-gray-300 rounded-lg text-lg focus:ring-2 focus:ring-blue-500 outline-none" value={userName} onChange={(e) => setUserName(e.target.value)}/>
+            <input 
+                type="text" 
+                placeholder="あなたのお名前" 
+                className="w-full p-4 bg-white/20 border border-white/30 rounded-2xl text-lg placeholder-blue-200 focus:ring-4 focus:ring-blue-400/50 outline-none text-center font-bold" 
+                value={userName} 
+                onChange={(e) => setUserName(e.target.value)}
+            />
             {roomId ? (
-              <button onClick={handleJoinRoom} disabled={!userName} className="w-full bg-green-600 text-white font-bold py-4 rounded-lg text-lg hover:bg-green-700 transition disabled:bg-gray-300">チームに参加する 🤝</button>
+              <button onClick={handleJoinRoom} disabled={!userName} className="w-full bg-white text-blue-600 font-black py-4 rounded-2xl text-xl hover:bg-blue-50 transition shadow-lg disabled:opacity-50">チームに参加する 🤝</button>
             ) : (
-              <button onClick={handleCreateRoom} disabled={isCreating || !userName} className="w-full bg-blue-600 text-white font-bold py-4 rounded-lg text-lg hover:bg-blue-700 transition disabled:bg-gray-300">{isCreating ? '作成中...' : '新しい旅を始める 🚀'}</button>
+              <button onClick={handleCreateRoom} disabled={isCreating || !userName} className="w-full bg-blue-500 text-white font-black py-4 rounded-2xl text-xl hover:bg-blue-400 transition shadow-lg disabled:opacity-50">{isCreating ? '作成中...' : '新しい旅を始める 🚀'}</button>
             )}
           </div>
         </div>
@@ -469,107 +634,223 @@ function HomeContent() {
   }
 
   return (
-    <main className="relative w-screen h-[100dvh] bg-gray-50 overflow-hidden flex flex-col">
+    <main className="relative w-screen h-[100dvh] bg-slate-100 overflow-hidden flex flex-col font-sans">
       <LegalModal />
       <Ticker />
       
-      {/* 共通のSwipeViewを呼び出す */}
+      {showDateModal && (
+          <div className="absolute inset-0 z-[100] bg-black/60 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-200">
+              <div className="bg-white w-full max-w-sm rounded-[2rem] p-8 shadow-2xl relative overflow-hidden">
+                  <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-blue-500 to-purple-600"></div>
+                  <h3 className="text-xl font-black text-gray-900 flex items-center gap-2 mb-6"><Calendar size={24} className="text-blue-600"/> 旅行期間の設定</h3>
+                  <div className="space-y-4">
+                      <div><label className="text-xs font-bold text-gray-400 ml-1 mb-1 block uppercase tracking-wider">Start Date</label><input type="date" value={startDate} onChange={(e)=>setStartDate(e.target.value)} className="w-full bg-gray-50 p-4 rounded-2xl font-bold text-gray-800 border border-gray-100 focus:ring-2 focus:ring-blue-100 outline-none"/></div>
+                      <div><label className="text-xs font-bold text-gray-400 ml-1 mb-1 block uppercase tracking-wider">End Date</label><input type="date" value={endDate} onChange={(e)=>setEndDate(e.target.value)} className="w-full bg-gray-50 p-4 rounded-2xl font-bold text-gray-800 border border-gray-100 focus:ring-2 focus:ring-blue-100 outline-none"/></div>
+                  </div>
+                  <button onClick={() => setShowDateModal(false)} className="w-full bg-black text-white py-4 rounded-2xl font-bold mt-6 hover:scale-[1.02] active:scale-95 transition shadow-xl">保存して閉じる</button>
+              </div>
+          </div>
+      )}
+
+      {spotToAssignDay && (
+          <div className="absolute inset-0 z-[100] bg-black/60 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-200">
+              <div className="bg-white w-full max-w-sm rounded-[2rem] p-8 shadow-2xl space-y-6">
+                  <div className="text-center">
+                      <h3 className="text-xl font-black text-gray-900 mb-1">いつ行きますか？</h3>
+                      <p className="text-sm text-gray-500 font-medium">{spotToAssignDay.name}</p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 max-h-60 overflow-y-auto p-1">
+                      <button onClick={() => confirmSpotDay(0)} className="col-span-2 py-4 bg-gray-100 rounded-2xl font-bold text-gray-500 hover:bg-gray-200 transition">未定 (とりあえずリストへ)</button>
+                      {Array.from({ length: travelDays }).map((_, i) => (
+                          <button key={i} onClick={() => confirmSpotDay(i + 1)} className="py-4 bg-blue-50 text-blue-600 border border-blue-100 rounded-2xl font-bold hover:bg-blue-100 transition">
+                              {i + 1}日目
+                          </button>
+                      ))}
+                  </div>
+                  <button onClick={() => setSpotToAssignDay(null)} className="w-full py-3 text-gray-400 font-bold hover:text-gray-600">キャンセル</button>
+              </div>
+          </div>
+      )}
+
       <div className="flex-1 relative overflow-hidden flex flex-col md:flex-row">
         <div className={`relative h-full w-full md:flex-1 ${currentTab === 'explore' ? 'block' : 'hidden md:block'}`}>
-          <div ref={mapContainer} className="absolute top-0 left-0 w-full h-full z-0" />
+          <div ref={mapContainer} className="absolute top-0 left-0 w-full h-full z-0" style={{ touchAction: isDrawing ? 'none' : 'auto' }} />
+
+          <div className="absolute top-32 right-4 z-20 flex flex-col gap-3">
+             <button 
+                onClick={() => isDrawing ? stopDrawing() : startDrawing()} 
+                className={`w-12 h-12 rounded-full shadow-xl font-bold transition-all duration-300 flex items-center justify-center border-2 ${isDrawing ? 'bg-red-500 border-red-400 text-white animate-pulse scale-110' : 'bg-white border-white text-gray-700 hover:scale-110'}`}
+             >
+                 {isDrawing ? <X size={24}/> : <PenTool size={20}/>}
+             </button>
+             {isDrawing && <div className="absolute top-1 right-14 bg-black/80 backdrop-blur text-white px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap shadow-lg">なぞって検索</div>}
+          </div>
+
           {currentTab === 'explore' && allParticipants.length > 0 && (
-              <div className="absolute bottom-32 left-4 bg-white/30 backdrop-blur-sm p-2 rounded-xl border border-white/20 text-[10px] z-0 flex flex-col gap-1 select-none max-w-[140px]">
+              <div className="absolute bottom-36 left-4 z-10 flex flex-col gap-2 pointer-events-none">
                   {allParticipants.map(name => (
-                      <div key={name} className="flex items-center gap-2 px-2 py-1 rounded-lg bg-white/40">
-                          <span className="w-2.5 h-2.5 rounded-full shadow-sm" style={{ backgroundColor: getUDColor(name) }}></span>
-                          <span className={`font-bold truncate ${name === userName ? 'text-blue-800' : 'text-gray-800'}`}>
-                              {name}
-                          </span>
+                      <div key={name} className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/80 backdrop-blur-md border border-white/40 shadow-sm animate-in slide-in-from-left-2">
+                          <span className="w-2 h-2 rounded-full shadow-sm" style={{ backgroundColor: getUDColor(name) }}></span>
+                          <span className={`text-xs font-bold truncate max-w-[80px] ${name === userName ? 'text-blue-600' : 'text-gray-700'}`}>{name}</span>
                       </div>
                   ))}
               </div>
           )}
+          
           {currentTab === 'explore' && (
-            <div className="absolute top-4 left-1/2 transform -translate-x-1/2 w-11/12 max-w-md z-20">
-              <div className="bg-white/95 backdrop-blur p-2 rounded-full shadow-lg flex items-center gap-2 border border-gray-200">
-                <button className="p-2 hover:bg-gray-100 rounded-full" onClick={() => setCurrentTab('menu')}><Menu size={20} className="text-gray-600"/></button>
-                <input type="text" value={query} onChange={(e) => { setQuery(e.target.value); setIsFocused(true); }} onKeyDown={(e) => e.key === 'Enter' && handleSearch()} placeholder="検索 (例: 清水寺 / 京都ホテル)" className="flex-1 bg-transparent outline-none text-gray-800 placeholder-gray-400 text-base" />
-                {query && <button onClick={resetSearchState} className="p-1 hover:bg-gray-100 rounded-full text-gray-400"><X size={18}/></button>}
-                <button onClick={() => handleSearch()} className="bg-blue-600 text-white p-2 rounded-full hover:bg-blue-700 shadow-md transition"><Search size={18} /></button>
+            <div className="absolute top-0 left-0 right-0 z-20 flex flex-col items-center pt-4 px-4 pointer-events-none">
+              <div className="bg-white/90 backdrop-blur-xl p-2 rounded-[2rem] shadow-2xl flex items-center gap-2 border border-white/50 w-full max-w-md pointer-events-auto transition-all duration-300 focus-within:ring-4 focus-within:ring-blue-100/50">
+                <button onClick={() => setShowDateModal(true)} className="p-3 bg-gray-50 hover:bg-gray-100 rounded-full text-gray-500 transition"><Calendar size={18}/></button>
+                <div className="h-6 w-px bg-gray-200"></div>
+                <input 
+                    type="text" 
+                    value={query} 
+                    onFocus={() => setIsFocused(true)} 
+                    onBlur={() => setTimeout(() => setIsFocused(false), 200)} 
+                    onChange={(e) => { setQuery(e.target.value); }} 
+                    onKeyDown={(e) => e.key === 'Enter' && handleSearch()} 
+                    placeholder="場所やキーワードを検索..." 
+                    className="flex-1 bg-transparent outline-none text-gray-800 placeholder-gray-400 text-sm font-bold" 
+                />
+                {query && <button onClick={resetSearchState} className="p-2 hover:bg-gray-100 rounded-full text-gray-400 transition"><X size={16}/></button>}
+                <button onClick={() => handleSearch()} className="bg-black text-white p-3 rounded-full hover:bg-gray-800 shadow-md transition active:scale-95"><Search size={18} /></button>
               </div>
-              {((query && searchResults.length > 0) || (!query && isFocused && searchHistory.length > 0)) && (
-                <div className="mt-2 bg-white/95 backdrop-blur rounded-xl shadow-2xl border border-gray-200 overflow-hidden max-h-60 overflow-y-auto">
+              
+              {isFocused && ((query && searchResults.length > 0) || (!query && searchHistory.length > 0)) && (
+                <div className="mt-2 w-full max-w-md bg-white/95 backdrop-blur-xl rounded-3xl shadow-2xl border border-white/50 overflow-hidden max-h-60 overflow-y-auto pointer-events-auto animate-in slide-in-from-top-2">
                   {(query ? searchResults : searchHistory.map(h => ({...h, is_history: true}))).map((item) => (
-                    <div key={item.mapbox_id || item.id} onClick={() => handleSelectSuggestion(item)} className="p-3 hover:bg-blue-50 border-b border-gray-100 flex items-start gap-3 cursor-pointer">
-                      <div className="bg-gray-100 p-2 rounded-full mt-0.5">{getIconForSuggestion(item)}</div>
-                      <div className="overflow-hidden text-left"><p className="font-bold text-sm text-gray-800 truncate">{item.name || item.text}</p><p className="text-xs text-gray-500 line-clamp-1">{item.full_address || item.place_formatted || item.place_name}</p></div>
+                    <div key={item.mapbox_id || item.id} onClick={() => handleSelectSuggestion(item)} className="p-4 hover:bg-blue-50 border-b border-gray-100/50 flex items-start gap-3 cursor-pointer transition">
+                      <div className="bg-gray-100 p-2 rounded-full mt-0.5 text-gray-500">{getIconForSuggestion(item)}</div>
+                      <div className="overflow-hidden text-left"><p className="font-bold text-sm text-gray-800 truncate">{item.name || item.text}</p><p className="text-[10px] text-gray-400 line-clamp-1">{item.full_address || item.place_formatted || item.place_name}</p></div>
                     </div>
                   ))}
                 </div>
               )}
+
+              <div className="flex gap-2 mt-3 overflow-x-auto max-w-full pb-2 px-1 pointer-events-auto no-scrollbar mask-gradient">
+                  <button onClick={() => { setFilterStatus('all'); setIsListExpanded(false); }} className={`px-5 py-2.5 rounded-full text-xs font-black shadow-lg backdrop-blur-md transition border hover:scale-105 active:scale-95 ${filterStatus === 'all' ? 'bg-black text-white border-black' : 'bg-white/90 text-gray-600 border-white hover:bg-white'}`}>ALL</button>
+                  <button onClick={() => { setFilterStatus('confirmed'); setIsListExpanded(true); }} className={`px-5 py-2.5 rounded-full text-xs font-black shadow-lg backdrop-blur-md transition border flex items-center gap-1.5 hover:scale-105 active:scale-95 ${filterStatus === 'confirmed' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white/90 text-gray-600 border-white hover:bg-white'}`}><CheckCircle size={14}/> 確定</button>
+                  <button onClick={() => { setFilterStatus('candidate'); setIsListExpanded(true); }} className={`px-5 py-2.5 rounded-full text-xs font-black shadow-lg backdrop-blur-md transition border flex items-center gap-1.5 hover:scale-105 active:scale-95 ${filterStatus === 'candidate' ? 'bg-yellow-500 text-white border-yellow-500' : 'bg-white/90 text-gray-600 border-white hover:bg-white'}`}><HelpCircle size={14}/> 候補</button>
+                  <button onClick={() => { setFilterStatus('hotel_candidate'); setIsListExpanded(true); }} className={`px-5 py-2.5 rounded-full text-xs font-black shadow-lg backdrop-blur-md transition border flex items-center gap-1.5 hover:scale-105 active:scale-95 ${filterStatus === 'hotel_candidate' ? 'bg-orange-500 text-white border-orange-500' : 'bg-white/90 text-gray-600 border-white hover:bg-white'}`}><BedDouble size={14}/> 宿</button>
+              </div>
             </div>
           )}
+
           {viewMode === 'selected' && selectedResult && (
-            <div className="absolute bottom-0 left-0 w-full z-30 p-4 pb-20 pointer-events-none flex justify-center">
-              <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl pointer-events-auto overflow-hidden animate-in slide-in-from-bottom-10 border border-gray-200">
-                <div className="p-5 relative">
-                  <button onClick={() => { setSelectedResult(null); setViewMode('default'); }} className="absolute top-4 right-4 bg-gray-100 hover:bg-gray-200 text-gray-500 p-1.5 rounded-full"><X size={18}/></button>
-                  <div className="pr-8 mb-2">
-                      <h2 className="text-xl font-bold text-gray-900 leading-tight">{selectedResult.text}</h2>
+            <div className="absolute bottom-0 left-0 w-full z-40 p-4 pb-24 pointer-events-none flex justify-center">
+              <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-[0_20px_50px_rgba(0,0,0,0.3)] pointer-events-auto overflow-hidden animate-in slide-in-from-bottom-10 border border-gray-100">
+                <div className="p-6 relative">
+                  <button onClick={() => { setSelectedResult(null); setViewMode('default'); }} className="absolute top-5 right-5 bg-gray-100 hover:bg-gray-200 text-gray-500 p-2 rounded-full transition"><X size={18}/></button>
+                  <div className="pr-10 mb-4">
+                      <h2 className="text-2xl font-black text-gray-900 leading-tight mb-1">{selectedResult.text}</h2>
                       {isEditingDesc ? (
-                          <div className="flex gap-2 mt-2"><input autoFocus value={editDescValue} onChange={(e) => setEditDescValue(e.target.value)} className="flex-1 border border-blue-300 rounded p-2 text-sm"/><button onClick={handleSaveDescription} className="bg-blue-600 text-white px-4 py-1 rounded-lg text-xs font-bold"><Save size={16}/></button></div>
+                          <div className="flex gap-2 mt-2"><input autoFocus value={editDescValue} onChange={(e) => setEditDescValue(e.target.value)} className="flex-1 bg-gray-50 border border-blue-200 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-blue-100"/><button onClick={handleSaveDescription} className="bg-blue-600 text-white px-4 py-2 rounded-xl text-xs font-bold shadow-md">保存</button></div>
                       ) : (
-                          <p className="text-sm text-gray-500 mt-1 line-clamp-2 flex items-center gap-2">{selectedResult.place_name}<button onClick={() => { setIsEditingDesc(true); setEditDescValue(selectedResult.place_name); }} className="p-1.5 bg-gray-50 rounded-full text-gray-400 hover:text-blue-600"><Edit2 size={14}/></button></p>
+                          <p className="text-xs text-gray-500 flex items-center gap-2 cursor-pointer hover:text-blue-600 transition font-medium" onClick={() => { setIsEditingDesc(true); setEditDescValue(selectedResult.place_name); }}>
+                              <MapPin size={12} className="shrink-0 text-blue-400"/> {selectedResult.place_name} <Edit2 size={10} className="opacity-50"/>
+                          </p>
                       )}
                   </div>
-                  <div className="flex gap-2 mb-4 overflow-x-auto no-scrollbar">
-                      <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(selectedResult.text)}`} target="_blank" className="flex items-center gap-1 bg-gray-100 px-3 py-1.5 rounded-full text-xs font-bold text-gray-600 border border-gray-200"><MapPinned size={14}/> Google Maps</a>
-                      <button onClick={() => setShowVoteDetailSpot(selectedResult)} className={`flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-bold border ${selectedResult.voters?.length > 0 ? 'bg-blue-50 text-blue-600 border-blue-100' : 'bg-gray-50 text-gray-400 border-gray-200'}`}><Users size={14}/> {selectedResult.voters?.length || 0}人が投票</button>
+                  <div className="flex gap-2 mb-6 overflow-x-auto no-scrollbar pb-2">
+                      <a href={`http://googleusercontent.com/maps.google.com/?q=${encodeURIComponent(selectedResult.text)}`} target="_blank" className="flex items-center gap-1.5 bg-gray-50 px-4 py-2.5 rounded-2xl text-xs font-bold text-gray-600 border border-gray-100 hover:bg-gray-100 transition whitespace-nowrap"><MapPinned size={14}/> Google Maps</a>
+                      <button onClick={() => setShowVoteDetailSpot(selectedResult)} className={`flex items-center gap-1.5 px-4 py-2.5 rounded-2xl text-xs font-bold border transition whitespace-nowrap ${selectedResult.voters?.length > 0 ? 'bg-blue-50 text-blue-600 border-blue-100' : 'bg-gray-50 text-gray-400 border-gray-200'}`}><Users size={14}/> {selectedResult.voters?.length || 0}人が投票</button>
                   </div>
                   <div className="flex gap-3">
                       {selectedResult.is_saved ? (
-                          <button onClick={() => removeSpot(selectedResult)} className="flex-1 bg-red-50 text-red-600 border border-red-200 py-3.5 rounded-2xl font-bold text-sm flex items-center justify-center gap-2"><Trash2 size={18}/> 削除する</button>
+                          <button onClick={() => removeSpot(selectedResult)} className="flex-1 bg-red-50 text-red-600 border border-red-100 py-4 rounded-2xl font-black text-sm flex items-center justify-center gap-2 hover:bg-red-100 transition active:scale-95"><Trash2 size={18}/> 削除する</button>
                       ) : (
-                          <button onClick={() => { addSpot({ name: selectedResult.text, description: selectedResult.place_name, coordinates: selectedResult.center }); setSelectedResult((prev: any) => ({...prev, is_saved: true})); }} className="flex-1 bg-blue-600 text-white py-3.5 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 shadow-lg"><Plus size={18}/> 追加する</button>
+                          <button onClick={() => { addSpot({ name: selectedResult.text, description: selectedResult.place_name, coordinates: selectedResult.center, status: 'candidate' }); setSelectedResult((prev: any) => ({...prev, is_saved: true})); }} className="flex-1 bg-black text-white py-4 rounded-2xl font-black text-sm flex items-center justify-center gap-2 shadow-xl hover:scale-[1.02] active:scale-95 transition"><Plus size={18}/> リストに追加</button>
                       )}
                   </div>
                 </div>
               </div>
             </div>
           )}
+
+          {filterStatus !== 'all' && (
+              <div className={`absolute left-4 right-4 z-30 bg-white/95 backdrop-blur-xl rounded-t-[2.5rem] shadow-[0_-10px_60px_rgba(0,0,0,0.15)] transition-all duration-500 cubic-bezier(0.32,0.72,0,1) flex flex-col ${isListExpanded ? 'bottom-0 h-[60%]' : 'bottom-0 h-24'}`} style={{ marginBottom: isListExpanded ? '0' : '84px' }}>
+                  <div className="w-full pt-4 pb-2 cursor-pointer flex flex-col items-center shrink-0 border-b border-gray-50 hover:bg-gray-50/50 transition z-10" onClick={() => setIsListExpanded(!isListExpanded)}>
+                      <div className="w-12 h-1.5 bg-gray-200 rounded-full mb-3"></div>
+                      <div className="w-full flex justify-between items-center px-8">
+                          <h2 className="font-black text-gray-800 flex items-center gap-2 text-xl">
+                              {filterStatus === 'confirmed' && <div className="p-2 bg-blue-100 text-blue-600 rounded-xl"><CheckCircle size={20}/></div>}
+                              {filterStatus === 'candidate' && <div className="p-2 bg-yellow-100 text-yellow-600 rounded-xl"><HelpCircle size={20}/></div>}
+                              {filterStatus === 'hotel_candidate' && <div className="p-2 bg-orange-100 text-orange-600 rounded-xl"><BedDouble size={20}/></div>}
+                              <span className="ml-1">リスト ({filteredSpots.length})</span>
+                          </h2>
+                          <button className="p-2.5 bg-gray-100 rounded-full text-gray-500">{isListExpanded ? <ChevronDown size={20}/> : <ChevronUp size={20}/>}</button>
+                      </div>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-4 space-y-3 pb-32">
+                      {filteredSpots.length === 0 ? (
+                          <div className="text-center text-gray-400 py-12 text-sm font-bold opacity-50">スポットがありません<br/>マップから追加してください</div>
+                      ) : (
+                          filterStatus === 'confirmed' ? (
+                            [0, ...Array.from({ length: travelDays }, (_, i) => i + 1)].map(day => {
+                                const spotsInDay = filteredSpots.filter(s => (s.day || 0) === day);
+                                if (spotsInDay.length === 0) return null;
+                                return (
+                                    <div key={day} className="mb-6 animate-in slide-in-from-bottom-4 fade-in duration-500">
+                                        <h3 className="text-xs font-black text-gray-400 mb-3 pl-2 flex items-center gap-2 uppercase tracking-widest"><Calendar size={12}/> {day === 0 ? '未定' : `Day ${day}`}</h3>
+                                        <div className="space-y-3">
+                                            {spotsInDay.map((spot, idx) => (
+                                                <div key={spot.id || idx} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex flex-col gap-3 transition active:scale-[0.98]" onClick={() => handlePreviewSpot(spot)}>
+                                                    <div className="flex justify-between items-start">
+                                                        <h3 className="font-bold text-gray-800 text-sm truncate flex-1">{spot.name}</h3>
+                                                        {spot.price && <span className="text-[10px] font-black text-red-500 bg-red-50 px-2 py-1 rounded-lg">¥{spot.price.toLocaleString()}</span>}
+                                                    </div>
+                                                    <div className="flex gap-2">
+                                                        {(isHotel(spot.name) || spot.is_hotel) && <a href={getAffiliateUrl(spot)} target="_blank" className="flex-1 bg-gradient-to-r from-orange-400 to-red-500 text-white text-xs py-3 rounded-xl font-bold flex items-center justify-center gap-1 shadow-md hover:shadow-lg transition" onClick={(e) => e.stopPropagation()}>楽天 <ExternalLink size={12}/></a>}
+                                                        <button onClick={(e) => { e.stopPropagation(); handleStatusChangeClick(spot, (isHotel(spot.name) || spot.is_hotel) ? 'hotel_candidate' : 'candidate'); }} className="flex-1 bg-gray-100 text-gray-600 text-xs py-3 rounded-xl font-bold hover:bg-gray-200 transition">候補に戻す</button>
+                                                        <button onClick={(e) => { e.stopPropagation(); removeSpot(spot); }} className="px-4 bg-red-50 text-red-500 rounded-xl hover:bg-red-100 transition"><Trash2 size={16}/></button>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )
+                            })
+                          ) : (
+                            filteredSpots.map((spot, idx) => (
+                              <div key={spot.id || idx} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex flex-col gap-3 transition active:scale-[0.98] animate-in slide-in-from-bottom-2 fade-in" onClick={() => handlePreviewSpot(spot)}>
+                                  <div className="flex justify-between items-start">
+                                      <h3 className="font-bold text-gray-800 text-sm truncate flex-1">{spot.name}</h3>
+                                      {spot.price && <span className="text-[10px] font-black text-red-500 bg-red-50 px-2 py-1 rounded-lg">¥{spot.price.toLocaleString()}</span>}
+                                  </div>
+                                  <div className="flex gap-2">
+                                      {(isHotel(spot.name) || spot.is_hotel) && <a href={getAffiliateUrl(spot)} target="_blank" className="flex-1 bg-gradient-to-r from-orange-400 to-red-500 text-white text-xs py-3 rounded-xl font-bold flex items-center justify-center gap-1 shadow-md hover:shadow-lg transition" onClick={(e) => e.stopPropagation()}>楽天 <ExternalLink size={12}/></a>}
+                                      <button onClick={(e) => { e.stopPropagation(); handleStatusChangeClick(spot, 'confirmed'); }} className="flex-1 bg-black text-white text-xs py-3 rounded-xl font-bold hover:bg-gray-800 shadow-md transition">確定にする</button>
+                                      <button onClick={(e) => { e.stopPropagation(); removeSpot(spot); }} className="px-4 bg-red-50 text-red-500 rounded-xl hover:bg-red-100 transition"><Trash2 size={16}/></button>
+                                  </div>
+                              </div>
+                            ))
+                          )
+                      )}
+                  </div>
+              </div>
+          )}
         </div>
+        
+        {/* サイドバーエリア */}
         <div className={`flex flex-col z-20 md:w-[400px] md:h-full md:bg-gray-50 md:border-l md:border-gray-200 md:shadow-xl md:relative absolute top-0 left-0 right-0 bottom-16 transition-colors duration-300 ${currentTab === 'explore' ? 'bg-transparent pointer-events-none' : 'bg-gray-50 pointer-events-auto'}`}>
           <div className="flex-1 overflow-hidden relative pb-16 md:pb-0">
              <div className={currentTab === 'explore' ? 'hidden' : 'block h-full'}>
-               {currentTab === 'agent' && <div className="w-full h-full"><HotelListView spots={planSpots} onAutoSearch={handleAutoSearch} spotVotes={spotVotes} currentUser={userName} onPreviewSpot={handlePreviewSpot} roomId={roomId!} /></div>}
-               {currentTab === 'plan' && <div className="w-full h-full"><PlanView spots={planSpots} onRemove={(idx) => removeSpot(planSpots[idx])} onUpdateSpots={updateSpots} roomId={roomId!} /></div>}
-               {currentTab === 'menu' && <div className="w-full h-full"><MenuView spots={planSpots} /></div>}
-               
-               {/* --- SwipeView (スワイプ & チャット) --- */}
-               {currentTab === 'swipe' && (
-                 <div className="w-full h-full bg-gray-50">
-                    <SwipeView 
-                        spots={candidates.length > 0 ? candidates : planSpots} 
+               {currentTab === 'agent' && (
+                 <div className="w-full h-full">
+                    <HotelListView 
+                        spots={planSpots} 
                         spotVotes={spotVotes} 
-                        onRemove={(idx) => removeSpot(planSpots[idx])} 
                         currentUser={userName} 
                         roomId={roomId!} 
-                        onPreview={handlePreviewSpot} 
-                        
-                        // Suggestion Mode (candidates)
-                        candidates={candidates}
-                        onLike={handleLikeCandidate} 
-                        onNope={handleNopeCandidate} 
-                        
-                        // Chat & Action handlers
-                        isLoadingMore={isSuggesting}
-                        onSearchOnMap={handleSearchFromChat} 
-                        
-                        // ★ 新規: チャットからの提案受け取り用
-                        onReceiveCandidates={handleReceiveCandidates}
+                        initialSearchArea={initialSearchArea} 
+                        onAddSpot={addSpot}
+                        onAutoSearch={handleAutoSearch} // ★ 不足していたプロパティを追加
                     />
                  </div>
                )}
+               {currentTab === 'plan' && <div className="w-full h-full"><PlanView spots={planSpots} onRemove={(idx) => removeSpot(planSpots[idx])} onUpdateSpots={updateSpots} roomId={roomId!} travelDays={travelDays} /></div>}
+               {currentTab === 'menu' && <div className="w-full h-full"><MenuView spots={planSpots} /></div>}
+               {currentTab === 'swipe' && <div className="w-full h-full bg-gray-50"><SwipeView spots={candidates.length > 0 ? candidates : planSpots} spotVotes={spotVotes} onRemove={(idx) => removeSpot(planSpots[idx])} currentUser={userName} roomId={roomId!} onPreview={handlePreviewSpot} candidates={candidates} onLike={handleLikeCandidate} onNope={handleNopeCandidate} isLoadingMore={isSuggesting} onSearchOnMap={handleSearchFromChat} onReceiveCandidates={handleReceiveCandidates}/></div>}
              </div>
           </div>
         </div>
@@ -581,10 +862,9 @@ function HomeContent() {
   );
 }
 
-// これをファイルの一番下に追加してください
 export default function Home() {
   return (
-    <Suspense fallback={<div className="flex h-screen w-screen items-center justify-center">Loading...</div>}>
+    <Suspense fallback={<div className="flex h-screen w-screen items-center justify-center bg-gray-50"><div className="animate-pulse flex flex-col items-center gap-4"><div className="w-16 h-16 bg-gray-200 rounded-full"></div><div className="h-4 w-32 bg-gray-200 rounded"></div></div></div>}>
       <HomeContent />
     </Suspense>
   );

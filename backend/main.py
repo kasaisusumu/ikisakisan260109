@@ -7,12 +7,15 @@ import json
 import urllib.parse
 import asyncio
 import httpx 
+from dotenv import load_dotenv
 from openai import AsyncOpenAI 
 import math
 import re 
 import traceback
 from datetime import date, timedelta 
 import random 
+
+load_dotenv()
 
 # ==========================================
 # 🔑 設定
@@ -46,6 +49,12 @@ class VacantSearchRequest(BaseModel):
     min_price: Optional[int] = None
     max_price: Optional[int] = None
     squeeze: List[str] = [] 
+    checkin_date: Optional[str] = None
+    checkout_date: Optional[str] = None
+    adult_num: int = 2
+
+class ImportRequest(BaseModel):
+    url: str
 
 class SuggestRequest(BaseModel):
     theme: str             
@@ -70,6 +79,12 @@ class Spot(BaseModel):
     mapbox_id: Optional[str] = None
     place_formatted: Optional[str] = None
     is_hotel: bool = False
+    plan_id: Optional[str] = None
+    room_class: Optional[str] = None
+    # ★追加: スポットの状態 ('confirmed', 'candidate', 'hotel_candidate')
+    status: str = "candidate"
+    # ★追加: 何日目か (0=未定, 1=1日目, 2=2日目...)
+    day: int = 0
 
     @field_validator('stay_time', 'votes', mode='before')
     def parse_int_fields(cls, v):
@@ -124,7 +139,90 @@ async def fetch_spot_coordinates(client, spot_name: str, area_context: str = "")
     return None
 
 # ---------------------------------------------------------
-# API: 楽天トラベル (データ構造修正版)
+# API: 楽天URLからのホテルインポート
+# ---------------------------------------------------------
+@app.post("/api/import_rakuten_hotel")
+async def import_rakuten_hotel(req: ImportRequest):
+    if not RAKUTEN_APP_ID:
+        return {"error": "サーバー設定エラー: RAKUTEN_APP_IDが設定されていません"}
+
+    hotel_no = None
+    final_url = req.url
+
+    async with httpx.AsyncClient(verify=False, follow_redirects=True) as client:
+        try:
+            if "rakuten.co.jp" in req.url:
+                try:
+                    res = await client.get(req.url, timeout=10.0)
+                    final_url = str(res.url)
+                except Exception as e:
+                    print(f"Redirect follow failed: {e}")
+            
+            match = re.search(r'travel\.rakuten\.co\.jp/.*?/(\d+)', final_url)
+            if match:
+                hotel_no = match.group(1)
+            else:
+                parsed = urllib.parse.urlparse(final_url)
+                qs = urllib.parse.parse_qs(parsed.query)
+                if "f_no" in qs: hotel_no = qs["f_no"][0]
+                elif "no" in qs: hotel_no = qs["no"][0]
+
+            if not hotel_no:
+                return {"error": "URLからホテルIDを特定できませんでした。楽天トラベルのホテルページURLか確認してください。"}
+
+            params = {
+                "applicationId": RAKUTEN_APP_ID,
+                "format": "json",
+                "hotelNo": hotel_no,
+                "datumType": 1,
+            }
+            api_url = "https://app.rakuten.co.jp/services/api/Travel/SimpleHotelSearch/20170426"
+            res = await client.get(api_url, params=params, timeout=10.0)
+            
+            if res.status_code != 200:
+                return {"error": "ホテル情報の取得に失敗しました。"}
+
+            data = res.json()
+            if "hotels" not in data or not data["hotels"]:
+                return {"error": "該当するホテルが見つかりませんでした。"}
+
+            raw_hotel = data["hotels"][0]
+            basic = None
+            
+            hotel_content = raw_hotel
+            if isinstance(raw_hotel, dict) and "hotel" in raw_hotel:
+                hotel_content = raw_hotel["hotel"]
+            
+            if isinstance(hotel_content, list) and len(hotel_content) > 0:
+                basic = hotel_content[0].get("hotelBasicInfo")
+            elif isinstance(hotel_content, dict):
+                basic = hotel_content.get("hotelBasicInfo")
+
+            if not basic:
+                return {"error": "ホテル情報の解析に失敗しました。"}
+
+            spot_data = {
+                "id": str(basic["hotelNo"]),
+                "name": basic["hotelName"],
+                "description": basic.get("hotelSpecial", "")[:100] + "...",
+                "coordinates": [basic["longitude"], basic["latitude"]],
+                "image_url": basic.get("hotelImageUrl"),
+                "url": basic.get("hotelInformationUrl"),
+                "price": basic.get("hotelMinCharge", 0),
+                "rating": basic.get("reviewAverage", 3.0),
+                "source": "rakuten",
+                "is_hotel": True,
+                "status": "hotel_candidate" # ホテルインポートはホテル候補として
+            }
+            
+            return {"spot": spot_data}
+
+        except Exception as e:
+            print(f"Import Error: {e}")
+            return {"error": "処理中にエラーが発生しました。"}
+
+# ---------------------------------------------------------
+# API: 楽天トラベル (VacantHotelSearch)
 # ---------------------------------------------------------
 @app.post("/api/search_hotels_vacant")
 async def search_hotels_vacant(req: VacantSearchRequest):
@@ -132,30 +230,56 @@ async def search_hotels_vacant(req: VacantSearchRequest):
         return {"error": "サーバー設定エラー: RAKUTEN_APP_IDが設定されていません"}
 
     async with httpx.AsyncClient(verify=False) as client:
+        safe_radius = round(req.radius, 1)
+        
+        today = date.today()
+        c_in = req.checkin_date
+        c_out = req.checkout_date
+        
+        if not c_in:
+            next_month = today + timedelta(days=30)
+            c_in = next_month.strftime("%Y-%m-%d")
+        if not c_out:
+            try:
+                c_in_obj = date.fromisoformat(c_in)
+                c_out = (c_in_obj + timedelta(days=1)).strftime("%Y-%m-%d")
+            except:
+                c_out = (today + timedelta(days=31)).strftime("%Y-%m-%d")
+
         params = {
             "applicationId": RAKUTEN_APP_ID,
             "format": "json",
             "latitude": req.latitude,
             "longitude": req.longitude,
-            "searchRadius": req.radius,
+            "searchRadius": safe_radius,
             "datumType": 1,
             "hits": 30,
             "sort": "standard",
+            "checkinDate": c_in,
+            "checkoutDate": c_out,
+            "adultNum": req.adult_num,
         }
         
+        if req.max_price: params["maxCharge"] = req.max_price
+        if req.min_price: params["minCharge"] = req.min_price
+
         try:
-            print(f"🔍 Request: Min={req.min_price}, Max={req.max_price}, Rad={req.radius}")
+            print(f"🔍 Request(Vacant): Rad={safe_radius}, Date={c_in}~{c_out}, People={req.adult_num}")
             
-            url = "https://app.rakuten.co.jp/services/api/Travel/SimpleHotelSearch/20170426"
+            url = "https://app.rakuten.co.jp/services/api/Travel/VacantHotelSearch/20170426"
             res = await client.get(url, params=params, timeout=10.0)
             
             if res.status_code == 404:
-                print("⚠️ Rakuten API 404: No hotels found in this area.")
+                print("⚠️ Rakuten API 404: No vacant hotels found.")
                 return {"hotels": []}
 
             if res.status_code != 200:
-                print(f"❌ API Error: {res.status_code} {res.text}")
-                return {"error": f"楽天APIエラー: {res.status_code}"}
+                try:
+                    error_json = res.json()
+                    error_desc = error_json.get("error_description", str(res.text))
+                    return {"error": f"楽天APIエラー: {error_desc}"}
+                except:
+                    return {"error": f"楽天API通信エラー: HTTP {res.status_code}"}
 
             data = res.json()
             hotels = []
@@ -165,45 +289,49 @@ async def search_hotels_vacant(req: VacantSearchRequest):
                 print(f"✅ Hits from API: {len(raw_hotels)} hotels")
 
                 for i, h_group in enumerate(raw_hotels):
-                    basic = None
-                    rating_info = {}
-                    
                     try:
-                        # ★★★ ここが修正ポイント！ ★★★
-                        # "hotel" というキーでラップされている場合の皮剥き処理
                         hotel_content = h_group
                         if isinstance(h_group, dict) and "hotel" in h_group:
                             hotel_content = h_group["hotel"]
                         
-                        # 中身がリストか辞書かで分岐して取り出す
-                        if isinstance(hotel_content, list) and len(hotel_content) > 0:
-                            basic = hotel_content[0].get("hotelBasicInfo")
-                            if len(hotel_content) > 1:
-                                rating_info = hotel_content[1].get("hotelRatingInfo", {})
-                        elif isinstance(hotel_content, dict):
-                            basic = hotel_content.get("hotelBasicInfo")
-                            rating_info = hotel_content.get("hotelRatingInfo", {})
-                        
-                        if not basic:
-                            print(f"🏨 Check [{i}]: No basic info -> Skip")
+                        if not isinstance(hotel_content, list) or len(hotel_content) == 0:
                             continue
 
-                        name = basic["hotelName"]
-                        price = basic.get("hotelMinCharge", 0)
+                        basic = hotel_content[0].get("hotelBasicInfo")
+                        if not basic: continue
 
-                        # デバッグログ
-                        log_msg = f"🏨 Check [{i}] {name}: Price={price}"
-
-                        # フィルタリング
-                        if price > 0:
-                            if req.min_price is not None and price < req.min_price:
-                                print(f"{log_msg} -> ❌ DROP (Too Cheap < {req.min_price})")
-                                continue
-                            if req.max_price is not None and price > req.max_price: 
-                                print(f"{log_msg} -> ❌ DROP (Too Expensive > {req.max_price})")
-                                continue
+                        best_price = float('inf')
+                        best_plan_id = None
+                        best_room_class = None
+                        found_valid_plan = False
                         
-                        print(f"{log_msg} -> ⭕ KEEP")
+                        for j in range(1, len(hotel_content)):
+                            room_container = hotel_content[j]
+                            if "roomInfo" in room_container:
+                                r_info = room_container["roomInfo"]
+                                if isinstance(r_info, list) and len(r_info) >= 2:
+                                    r_basic = r_info[0].get("roomBasicInfo")
+                                    r_charge = r_info[1].get("dailyCharge")
+                                    
+                                    if r_basic and r_charge:
+                                        total = r_charge.get("total", 0)
+                                        if total and total > 0:
+                                            # 最安値を更新
+                                            if total < best_price:
+                                                best_price = total
+                                                best_plan_id = r_basic.get("planId")
+                                                best_room_class = r_basic.get("roomClass")
+                                                found_valid_plan = True
+
+                        if not found_valid_plan:
+                            continue
+
+                        if req.min_price and best_price < req.min_price: continue
+                        if req.max_price and best_price > req.max_price: continue
+
+                        name = basic["hotelName"]
+                        review_avg = basic.get("reviewAverage")
+                        final_rating = review_avg if review_avg else 3.0
                         
                         hotels.append({
                             "id": str(basic["hotelNo"]),
@@ -212,11 +340,14 @@ async def search_hotels_vacant(req: VacantSearchRequest):
                             "coordinates": [basic["longitude"], basic["latitude"]],
                             "image_url": basic.get("hotelImageUrl"),
                             "url": basic.get("hotelInformationUrl"),
-                            "price": price,
-                            "rating": rating_info.get("serviceAverage", 0) or 3.0,
-                            "review_count": rating_info.get("reviewCount", 0),
+                            "price": int(best_price),
+                            "rating": final_rating,
+                            "review_count": basic.get("reviewCount", 0),
                             "source": "rakuten",
-                            "is_hotel": True
+                            "is_hotel": True,
+                            "plan_id": best_plan_id,
+                            "room_class": best_room_class,
+                            "status": "hotel_candidate" # ホテル検索結果はホテル候補
                         })
                     except Exception as parse_err:
                         print(f"⚠️ Parse Error at index {i}: {parse_err}")
@@ -259,7 +390,7 @@ async def suggest_spots(req: SuggestRequest):
             seen = []
             for res in results:
                 if res and res["coordinates"] != [0.0, 0.0] and res["coordinates"] not in seen:
-                    formatted_spots.append({**res, "stay_time": 90, "source": "ai", "is_hotel": False})
+                    formatted_spots.append({**res, "stay_time": 90, "source": "ai", "is_hotel": False, "status": "candidate"})
                     seen.append(res["coordinates"])
         except Exception as e:
             print(f"AI Error: {e}")

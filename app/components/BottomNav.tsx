@@ -1,6 +1,6 @@
 "use client";
 
-import { Map, BedDouble, Flame, Calendar, Settings } from 'lucide-react';
+import { Map, BedDouble, Sparkles, Calendar, Menu } from 'lucide-react';
 
 type Tab = 'explore' | 'agent' | 'swipe' | 'plan' | 'menu';
 
@@ -12,16 +12,16 @@ interface Props {
 
 export default function BottomNav({ currentTab, onTabChange, voteBadge = 0 }: Props) {
   const tabs = [
-    { id: 'explore', label: 'Map', icon: Map },
-    { id: 'agent',   label: 'List', icon: BedDouble }, // ★ アイコンとラベルを変更
-    { id: 'swipe',   label: 'Vote',icon: Flame },
-    { id: 'plan',    label: 'Plan',icon: Calendar },
-    { id: 'menu',    label: 'Menu',icon: Settings },
+    { id: 'explore', label: '地図', icon: Map },
+    { id: 'agent',   label: 'ホテル', icon: BedDouble },
+    { id: 'swipe',   label: '提案', icon: Sparkles },
+    { id: 'plan',    label: '旅程', icon: Calendar },
+    { id: 'menu',    label: '設定', icon: Menu },
   ] as const;
 
   return (
-    <div className="fixed bottom-6 left-1/2 transform -translate-x-1/2 w-[90%] max-w-md z-[9999] pb-safe">
-      <div className="glass rounded-full px-2 py-3 flex justify-between items-center shadow-2xl border border-white/50 ring-1 ring-black/5">
+    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] w-[92%] max-w-md">
+      <div className="bg-white/80 backdrop-blur-2xl border border-white/20 rounded-[2.5rem] p-1.5 shadow-[0_20px_50px_rgba(0,0,0,0.15)] flex justify-between items-center ring-1 ring-black/5">
         {tabs.map((tab) => {
           const Icon = tab.icon;
           const isActive = currentTab === tab.id;
@@ -29,23 +29,17 @@ export default function BottomNav({ currentTab, onTabChange, voteBadge = 0 }: Pr
             <button
               key={tab.id}
               onClick={() => onTabChange(tab.id)}
-              className="relative flex flex-col items-center justify-center w-full h-full group"
+              className={`relative flex flex-col items-center justify-center py-3 rounded-[2rem] transition-all duration-500 ease-spring ${
+                isActive ? 'flex-[2] bg-black text-white shadow-xl' : 'flex-1 text-gray-400 hover:text-gray-600'
+              }`}
             >
-              <div className={`relative p-2 rounded-full transition-all duration-300 ${isActive ? 'bg-blue-100 text-blue-600 scale-110' : 'text-gray-400 hover:bg-gray-100'}`}>
-                <Icon size={22} strokeWidth={isActive ? 2.5 : 2} />
-                
-                {/* 通知バッジ */}
-                {tab.id === 'swipe' && voteBadge > 0 && (
-                  <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full border border-white shadow-sm z-10 animate-pulse">
-                    {voteBadge > 99 ? '99+' : voteBadge}
-                  </span>
-                )}
+              <div className="flex items-center gap-2">
+                <Icon size={20} strokeWidth={isActive ? 2.5 : 2} />
+                {isActive && <span className="text-xs font-black tracking-tight">{tab.label}</span>}
               </div>
-              {/* アクティブ時のみラベルを表示 */}
-              {isActive && (
-                 <span className="absolute -bottom-6 text-[10px] font-bold text-blue-600 animate-in slide-in-from-bottom-1 fade-in duration-200">
-                    {tab.label}
-                 </span>
+              
+              {tab.id === 'swipe' && voteBadge > 0 && !isActive && (
+                <span className="absolute top-2 right-4 w-2 h-2 bg-red-500 rounded-full border border-white" />
               )}
             </button>
           );
