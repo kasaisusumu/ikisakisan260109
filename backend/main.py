@@ -81,9 +81,7 @@ class Spot(BaseModel):
     is_hotel: bool = False
     plan_id: Optional[str] = None
     room_class: Optional[str] = None
-    # ★追加: スポットの状態 ('confirmed', 'candidate', 'hotel_candidate')
     status: str = "candidate"
-    # ★追加: 何日目か (0=未定, 1=1日目, 2=2日目...)
     day: int = 0
 
     @field_validator('stay_time', 'votes', mode='before')
@@ -114,28 +112,56 @@ class OptimizeRequest(BaseModel):
 # ---------------------------------------------------------
 # ユーティリティ
 # ---------------------------------------------------------
-async def fetch_spot_coordinates(client, spot_name: str, area_context: str = ""):
+async def fetch_spot_coordinates(client, target_name: str, search_query: str):
     try:
-        clean_name = re.sub(r'[\(（].*?[\)）]', '', spot_name).strip()
-        query = f"{clean_name} {area_context}".strip()
+        clean_query = re.sub(r'[\(（].*?[\)）]', '', search_query).strip()
+        
+        # ★改善: limitを5に設定し、複数候補を取得
         url = "https://api.geoapify.com/v1/geocode/search"
-        params = {"text": query, "apiKey": GEOAPIFY_API_KEY, "lang": "ja", "limit": 3, "countrycode": "jp"}
+        params = {"text": clean_query, "apiKey": GEOAPIFY_API_KEY, "lang": "ja", "limit": 5, "countrycode": "jp"}
+        
         res = await client.get(url, params=params, timeout=10.0)
+        
         if res.status_code == 200:
             data = res.json()
-            if "features" in data:
-                for feat in data["features"]:
+            if "features" in data and len(data["features"]) > 0:
+                # ★改善: 上位から順にチェックし、条件に合うものが見つかれば採用
+                for i, feat in enumerate(data["features"]):
                     props = feat["properties"]
                     result_name = props.get("name", "")
-                    def normalize(s): return s.replace(" ", "").replace("　", "")
-                    n_query = normalize(clean_name)
-                    n_result = normalize(result_name)
-                    if n_query not in n_result and n_result not in n_query: continue
+                    
+                    # ★改善: 名前がない（空文字やNone）場合はスキップ（無題の間引き）
+                    if not result_name or not result_name.strip():
+                        print(f"    🗑️ [Skip #{i+1}] No Name (Address only?) -> Skipping")
+                        continue
+
                     formatted_addr = props.get("formatted", "")
-                    desc = formatted_addr.replace(clean_name, "").replace(area_context, "").strip(", ")
-                    return {"name": result_name, "description": desc or "AIおすすめスポット", "coordinates": feat["geometry"]["coordinates"]}
+                    
+                    def normalize(s): return s.replace(" ", "").replace("　", "")
+                    n_target = normalize(target_name)
+                    n_result = normalize(result_name)
+                    
+                    if len(n_target) == 0: continue
+                    
+                    # 照合ロジック
+                    is_contained = (n_target in n_result) or (n_result in n_target)
+                    common_chars = sum(1 for c in n_target if c in n_result)
+                    match_ratio = common_chars / len(n_target) if len(n_target) > 0 else 0
+                    
+                    status_icon = "❌"
+                    if is_contained or match_ratio >= 0.5:
+                        status_icon = "✅"
+                    
+                    print(f"    👉 [Check #{i+1}] AI: '{target_name}' vs API: '{result_name}' | Ratio: {match_ratio:.2f} | {status_icon}")
+
+                    if is_contained or match_ratio >= 0.5:
+                        desc = formatted_addr.replace(result_name, "").strip(", ")
+                        return {"name": result_name, "description": desc or "AIおすすめスポット", "coordinates": feat["geometry"]["coordinates"]}
+            else:
+                print(f"    ⚠️ [NotFound] No results for '{clean_query}'")
+
     except Exception as e:
-        print(f"Coord fetch failed for {spot_name}: {e}")
+        print(f"Coord fetch failed for {target_name}: {e}")
     return None
 
 # ---------------------------------------------------------
@@ -212,7 +238,7 @@ async def import_rakuten_hotel(req: ImportRequest):
                 "rating": basic.get("reviewAverage", 3.0),
                 "source": "rakuten",
                 "is_hotel": True,
-                "status": "hotel_candidate" # ホテルインポートはホテル候補として
+                "status": "hotel_candidate"
             }
             
             return {"spot": spot_data}
@@ -231,7 +257,6 @@ async def search_hotels_vacant(req: VacantSearchRequest):
 
     async with httpx.AsyncClient(verify=False) as client:
         safe_radius = round(req.radius, 1)
-        
         today = date.today()
         c_in = req.checkin_date
         c_out = req.checkout_date
@@ -264,13 +289,10 @@ async def search_hotels_vacant(req: VacantSearchRequest):
         if req.min_price: params["minCharge"] = req.min_price
 
         try:
-            print(f"🔍 Request(Vacant): Rad={safe_radius}, Date={c_in}~{c_out}, People={req.adult_num}")
-            
             url = "https://app.rakuten.co.jp/services/api/Travel/VacantHotelSearch/20170426"
             res = await client.get(url, params=params, timeout=10.0)
             
             if res.status_code == 404:
-                print("⚠️ Rakuten API 404: No vacant hotels found.")
                 return {"hotels": []}
 
             if res.status_code != 200:
@@ -286,8 +308,6 @@ async def search_hotels_vacant(req: VacantSearchRequest):
             
             if "hotels" in data:
                 raw_hotels = data["hotels"]
-                print(f"✅ Hits from API: {len(raw_hotels)} hotels")
-
                 for i, h_group in enumerate(raw_hotels):
                     try:
                         hotel_content = h_group
@@ -316,16 +336,13 @@ async def search_hotels_vacant(req: VacantSearchRequest):
                                     if r_basic and r_charge:
                                         total = r_charge.get("total", 0)
                                         if total and total > 0:
-                                            # 最安値を更新
                                             if total < best_price:
                                                 best_price = total
                                                 best_plan_id = r_basic.get("planId")
                                                 best_room_class = r_basic.get("roomClass")
                                                 found_valid_plan = True
 
-                        if not found_valid_plan:
-                            continue
-
+                        if not found_valid_plan: continue
                         if req.min_price and best_price < req.min_price: continue
                         if req.max_price and best_price > req.max_price: continue
 
@@ -347,53 +364,89 @@ async def search_hotels_vacant(req: VacantSearchRequest):
                             "is_hotel": True,
                             "plan_id": best_plan_id,
                             "room_class": best_room_class,
-                            "status": "hotel_candidate" # ホテル検索結果はホテル候補
+                            "status": "hotel_candidate"
                         })
                     except Exception as parse_err:
                         print(f"⚠️ Parse Error at index {i}: {parse_err}")
                         continue
-            else:
-                print("⚠️ No 'hotels' key in response")
-
-            print(f"🚀 Returning {len(hotels)} hotels to frontend")
+            
             return {"hotels": hotels}
 
         except Exception as e:
-            print(f"🔥 Critical Error: {e}")
             traceback.print_exc()
             return {"error": f"システムエラー: {str(e)}"}
 
 # ---------------------------------------------------------
-# API: AI提案
+# API: AI提案 (検索精度強化版)
 # ---------------------------------------------------------
 @app.post("/api/suggest_spots")
 async def suggest_spots(req: SuggestRequest):
     formatted_spots = []
+    
     prompt = f"""
     場所: {req.theme}
-    タスク: 観光客に人気の「超有名・王道観光スポット」を15個挙げてください。
-    条件: ホテルや宿泊施設は除外。既存リスト: {", ".join(req.existing_spots)} は除外。
-    出力: JSON形式 {{ "spots": ["名称1", "名称2"...] }}
+    タスク: 観光客に人気の「超有名・王道観光スポット」を10〜15個挙げてください。
+    条件:
+    1. ホテルや宿泊施設は除外。
+    2. 既存リスト: {", ".join(req.existing_spots)} は除外。
+    3. 出力はJSON形式のオブジェクト配列とする。
+    4. 各スポットについて、以下の2つのフィールドを含めること。
+       - "name": 地図APIで見つかりやすい正式名称（通称や略称は避ける）
+       - "search_query": そのスポットを地図APIで確実にヒットさせるための検索クエリ（例: "スポット名 + 都道府県 + 市区町村"）
+
+    出力例:
+    {{
+      "spots": [
+        {{ "name": "金閣寺", "search_query": "金閣寺 京都府京都市北区" }},
+        {{ "name": "東京タワー", "search_query": "東京タワー 東京都港区芝公園" }}
+      ]
+    }}
     """
+    
     async with httpx.AsyncClient(verify=False) as client:
         try:
+            print(f"\n🚀 [AI Start] Request Theme: {req.theme}")
+            
             ai_res = await aclient.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
                 response_format={"type": "json_object"},
-                max_tokens=800
+                max_tokens=1000
             )
-            spot_names = json.loads(ai_res.choices[0].message.content).get("spots", [])
-            target_names = list(dict.fromkeys(spot_names))[:10]
-            tasks = [fetch_spot_coordinates(client, name, req.theme) for name in target_names]
+            
+            content = ai_res.choices[0].message.content
+            json_data = json.loads(content)
+            raw_spots = json_data.get("spots", [])
+            
+            spot_names_log = [s.get("name") for s in raw_spots]
+            print(f"🤖 [AI Proposal]: {spot_names_log}")
+            
+            seen_names = set()
+            target_spots = []
+            for s in raw_spots:
+                if s["name"] not in seen_names:
+                    target_spots.append(s)
+                    seen_names.add(s["name"])
+            target_spots = target_spots[:10]
+
+            # 2. 住所特定（Geoapify）
+            tasks = [fetch_spot_coordinates(client, s["name"], s["search_query"]) for s in target_spots]
             results = await asyncio.gather(*tasks)
-            seen = []
+            
+            seen_coords = []
             for res in results:
-                if res and res["coordinates"] != [0.0, 0.0] and res["coordinates"] not in seen:
+                if res and res["coordinates"] != [0.0, 0.0] and res["coordinates"] not in seen_coords:
                     formatted_spots.append({**res, "stay_time": 90, "source": "ai", "is_hotel": False, "status": "candidate"})
-                    seen.append(res["coordinates"])
+                    seen_coords.append(res["coordinates"])
+            
+            verified_names = [s['name'] for s in formatted_spots]
+            print(f"✅ [Verified Result]: {verified_names}")
+            print(f"📉 [Drop Rate]: {len(raw_spots)} -> {len(formatted_spots)}\n")
+
         except Exception as e:
-            print(f"AI Error: {e}")
+            print(f"❌ [Error]: {e}")
+            traceback.print_exc()
+
     return {"spots": formatted_spots}
 
 @app.post("/api/verify_spots")
