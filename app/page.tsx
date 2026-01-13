@@ -9,9 +9,11 @@ import 'mapbox-gl/dist/mapbox-gl.css';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { 
-  Search, Menu, X, Plus, ExternalLink, Map as MapIcon, History, Trash2, 
-  MapPinned, Users, Edit2, Save, PenTool, CheckCircle, HelpCircle, 
-  BedDouble, ChevronDown, ChevronUp, Calendar, Clock, Filter, ArrowLeft, MapPin 
+  Search, X, Plus, ExternalLink, Map as MapIcon, History, Trash2, 
+  MapPinned, Users, Edit2, CheckCircle, HelpCircle, 
+  BedDouble, ChevronDown, ChevronUp, Calendar, MapPin,
+  Image as ImageIcon, Users as UsersIcon,
+  PenTool, Loader2, Clock, ThumbsUp
 } from 'lucide-react';
 import BottomNav from './components/BottomNav';
 import HotelListView from './components/HotelListView';
@@ -20,6 +22,55 @@ import MenuView from './components/MenuView';
 import Ticker from './components/Ticker';
 import SwipeView from './components/SwipeView';
 import LegalModal from './components/LegalModal';
+
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+// --- 画像表示用コンポーネント (ローディング表示付き) ---
+const SpotImage = ({ src, alt, className }: { src?: string | null, alt: string, className?: string }) => {
+    const [isLoading, setIsLoading] = useState(true);
+    const [hasError, setHasError] = useState(false);
+
+    useEffect(() => {
+        if (src && (src.startsWith('http') || src.startsWith('data:'))) {
+            setIsLoading(true);
+            setHasError(false);
+        } else {
+            setIsLoading(false);
+            setHasError(true);
+        }
+    }, [src]);
+
+    const handleLoad = () => setIsLoading(false);
+    const handleError = () => {
+        setIsLoading(false);
+        setHasError(true);
+    };
+
+    if (!src || hasError || (!src.startsWith('http') && !src.startsWith('data:'))) {
+        return (
+            <div className={`flex flex-col items-center justify-center bg-gray-100 text-gray-300 ${className}`}>
+                <ImageIcon size={24} />
+            </div>
+        );
+    }
+
+    return (
+        <div className={`relative overflow-hidden bg-gray-100 ${className}`}>
+            {isLoading && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-400 bg-gray-100 z-10">
+                    <Loader2 size={20} className="animate-spin mb-1"/>
+                </div>
+            )}
+            <img 
+                src={src} 
+                alt={alt} 
+                onLoad={handleLoad}
+                onError={handleError}
+                className={`w-full h-full object-cover transition-opacity duration-300 ${isLoading ? 'opacity-0' : 'opacity-100'}`}
+            />
+        </div>
+    );
+};
 
 // --- 型定義 ---
 type Tab = 'explore' | 'agent' | 'swipe' | 'plan' | 'menu';
@@ -109,32 +160,75 @@ function HomeContent() {
   const tempDrawCoords = useRef<number[][]>([]);
   const [initialSearchArea, setInitialSearchArea] = useState<AreaSearchParams | null>(null);
 
+  // 日程・人数設定
   const [showDateModal, setShowDateModal] = useState(false);
   const [startDate, setStartDate] = useState<string>("");
   const [endDate, setEndDate] = useState<string>("");
+  const [adultNum, setAdultNum] = useState<number>(2); 
   const [spotToAssignDay, setSpotToAssignDay] = useState<any>(null); 
   const [travelDays, setTravelDays] = useState<number>(1);
+  const [isSettingsLoaded, setIsSettingsLoaded] = useState(false);
+
+  // 確定リストの選択中のDay
+  const [selectedConfirmDay, setSelectedConfirmDay] = useState<number>(1);
+  
+  // タイムライン（履歴）モーダル用
+  const [showActivityLog, setShowActivityLog] = useState(false);
+
+  // 画像取得済みフラグ管理
+  const attemptedImageFetch = useRef<Set<string>>(new Set());
 
   const planSpotsRef = useRef(planSpots);
   useEffect(() => { planSpotsRef.current = planSpots; }, [planSpots]);
 
-  // ★ 修正点1: タブに関わらず、このコンポーネントがマウントされたらお絵描き関連を完全リセット
   useEffect(() => {
     setIsDrawing(false);
     setInitialSearchArea(null);
     tempDrawCoords.current = [];
   }, []);
 
-  // ★ 修正点2: タブ切り替え時のリセットをより強力に
   useEffect(() => {
-    if (isDrawing) {
-        stopDrawing(); // マップイベントも含めて解除
-    }
-    if (currentTab !== 'agent') {
-        setInitialSearchArea(null);
-    }
+    if (isDrawing) { stopDrawing(); }
+    if (currentTab !== 'agent') { setInitialSearchArea(null); }
   }, [currentTab]);
 
+  // ★追加: ページロード時にRenderを起こす (Wake-up Ping)
+  useEffect(() => {
+      fetch(`${API_BASE_URL}/`, { method: 'GET' })
+          .then(() => console.log("🔌 Backend Woken Up"))
+          .catch(() => console.log("💤 Backend might be sleeping or unreachable"));
+  }, []);
+
+  // 設定の読み込み処理
+  useEffect(() => {
+    if (roomId) {
+        const savedSettings = localStorage.getItem(`rh_settings_${roomId}`);
+        if (savedSettings) {
+            try {
+                const parsed = JSON.parse(savedSettings);
+                if(parsed.start) setStartDate(parsed.start);
+                if(parsed.end) setEndDate(parsed.end);
+                if(parsed.adultNum) setAdultNum(parsed.adultNum);
+            } catch(e) {
+                console.error("Settings load error", e);
+            }
+        } else {
+            const savedDates = localStorage.getItem(`rh_dates_${roomId}`);
+            if (savedDates) {
+                try {
+                    const { start, end } = JSON.parse(savedDates);
+                    if(start) setStartDate(start);
+                    if(end) setEndDate(end);
+                } catch(e){}
+            }
+        }
+        setIsSettingsLoaded(true);
+    } else {
+        setIsSettingsLoaded(true);
+    }
+  }, [roomId]);
+
+  // 設定の保存処理 & 日数計算
   useEffect(() => {
       if (startDate && endDate) {
           const start = new Date(startDate);
@@ -146,23 +240,42 @@ function HomeContent() {
           setTravelDays(1);
       }
       
-      if (roomId) {
-          localStorage.setItem(`rh_dates_${roomId}`, JSON.stringify({ start: startDate, end: endDate }));
+      if (roomId && isSettingsLoaded) {
+          localStorage.setItem(`rh_settings_${roomId}`, JSON.stringify({ start: startDate, end: endDate, adultNum }));
       }
-  }, [startDate, endDate, roomId]);
+  }, [startDate, endDate, adultNum, roomId, isSettingsLoaded]);
+
+  // --- 画像自動補完ロジック ---
+  const fetchSpotImage = async (name: string) => {
+      try {
+          const res = await fetch(`${API_BASE_URL}/api/get_spot_image?query=${encodeURIComponent(name)}`);
+          if (res.ok) {
+              const data = await res.json();
+              return data.image_url;
+          }
+      } catch (e) {
+          console.error("Image fetch failed", e);
+      }
+      return null;
+  };
 
   useEffect(() => {
-    if (roomId) {
-        const savedDates = localStorage.getItem(`rh_dates_${roomId}`);
-        if (savedDates) {
-            try {
-                const { start, end } = JSON.parse(savedDates);
-                if(start) setStartDate(start);
-                if(end) setEndDate(end);
-            } catch(e){}
-        }
+    if (planSpots.length > 0) {
+        planSpots.forEach(async (spot) => {
+            if (!spot.image_url && !attemptedImageFetch.current.has(spot.id)) {
+                attemptedImageFetch.current.add(spot.id);
+                
+                const url = await fetchSpotImage(spot.name);
+                if (url) {
+                    setPlanSpots(prev => prev.map(s => s.id === spot.id ? { ...s, image_url: url } : s));
+                    if (roomId) {
+                        supabase.from('spots').update({ image_url: url }).eq('id', spot.id).then();
+                    }
+                }
+            }
+        });
     }
-  }, [roomId]);
+  }, [planSpots, roomId]);
 
   const getAffiliateUrl = (spot: any) => {
       if (spot.id && /^\d+$/.test(spot.id)) {
@@ -179,7 +292,7 @@ function HomeContent() {
           const m2 = nextDay.getMonth() + 1;
           const d2 = nextDay.getDate();
 
-          const targetUrl = `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${spot.id}?f_teikei=&f_heya_su=1&f_otona_su=2&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_sort=min_charge`;
+          const targetUrl = `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${spot.id}?f_teikei=&f_heya_su=1&f_otona_su=${adultNum}&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_sort=min_charge`;
 
           if (RAKUTEN_AFFILIATE_ID) {
               return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent(targetUrl)}&m=${encodeURIComponent(targetUrl)}`;
@@ -199,10 +312,15 @@ function HomeContent() {
 
   const filteredSpots = useMemo(() => {
       if (filterStatus === 'all') return planSpots;
+      if (filterStatus === 'confirmed') return planSpots.filter(s => s.status === 'confirmed');
       return planSpots.filter(s => (s.status || 'candidate') === filterStatus);
   }, [planSpots, filterStatus]);
 
   const handleStatusChangeClick = (spot: any, newStatus: string) => {
+      if (newStatus !== 'confirmed' && newStatus !== spot.status) {
+          if (!confirm("候補リストに戻しますか？\n設定された日付はリセットされます。")) return;
+      }
+      
       if (newStatus === 'confirmed') {
           setSpotToAssignDay(spot);
       } else {
@@ -214,6 +332,7 @@ function HomeContent() {
       if (!spotToAssignDay) return;
       await updateSpotStatus(spotToAssignDay, 'confirmed', day);
       setSpotToAssignDay(null);
+      if(day > 0) setSelectedConfirmDay(day);
   };
 
   const updateSpotStatus = async (spot: any, newStatus: string, day: number = 0) => {
@@ -221,6 +340,50 @@ function HomeContent() {
       setPlanSpots(prev => prev.map(s => s.id === spot.id ? { ...s, status: newStatus, day: day } : s));
       const { error } = await supabase.from('spots').update({ status: newStatus, day: day }).eq('id', spot.id);
       if (error) { console.error("Status update failed:", error); loadRoomData(roomId); }
+  };
+
+  // --- 投票機能 (Optimistic Update) ---
+  const handleToggleVote = async (spotId: string | number) => {
+    if (!userName || !roomId) return alert("名前を入力してください");
+    
+    const targetId = String(spotId); // IDを文字列化して比較
+    const myVote = spotVotes.find(v => String(v.spot_id) === targetId && v.user_name === userName);
+
+    if (myVote) {
+        // Optimistic: ローカルで即座に削除
+        setSpotVotes(prev => prev.filter(v => v.id !== myVote.id));
+        
+        const { error } = await supabase.from('votes').delete().eq('id', myVote.id);
+        if (error) {
+            console.error("Vote remove failed", error);
+            loadRoomData(roomId); // エラー時はリロード
+        }
+    } else {
+        // Optimistic: ローカルで即座に追加 (仮ID)
+        const tempVote = { 
+            id: `temp-${Date.now()}`, 
+            room_id: roomId, 
+            spot_id: spotId,
+            user_name: userName, 
+            vote_type: 'like' 
+        };
+        setSpotVotes(prev => [...prev, tempVote]);
+
+        const { data, error } = await supabase.from('votes').insert({
+            room_id: roomId,
+            spot_id: spotId,
+            user_name: userName,
+            vote_type: 'like'
+        }).select().single();
+        
+        if (error) {
+            console.error("Vote add failed", error);
+            setSpotVotes(prev => prev.filter(v => v.id !== tempVote.id)); // エラー時は戻す
+        } else if (data) {
+            // 本物のデータに差し替え
+            setSpotVotes(prev => prev.map(v => v.id === tempVote.id ? data : v));
+        }
+    }
   };
 
   const handleSearch = async (overrideQuery?: string) => {
@@ -251,20 +414,10 @@ function HomeContent() {
       el.innerHTML = `<div style="width:24px; height:24px; background:#EF4444; border:3px solid white; border-radius:50%; box-shadow:0 4px 10px rgba(239,68,68,0.4);"></div>`;
       const marker = new mapboxgl.Marker({ element: el }).setLngLat(center as [number, number]).addTo(map.current);
       searchMarkersRef.current.push(marker);
+      // 型エラー修正: prevの型をanyにする
       setSelectedResult({ text: name, place_name: desc, center: center, is_saved: isSaved, voters: [] });
       setViewMode('selected');
       setIsEditingDesc(false);
-
-      const newHistoryItem: SearchHistoryItem = {
-          id: Math.random().toString(36).substring(2),
-          name: name,
-          place_name: desc,
-          center: center as [number, number],
-          timestamp: Date.now()
-      };
-      const updatedHistory = [newHistoryItem, ...searchHistory.filter(h => h.name !== name)].slice(0, 10);
-      setSearchHistory(updatedHistory);
-      localStorage.setItem('mapbox_search_history', JSON.stringify(updatedHistory));
   };
 
   const handleSelectSuggestion = async (suggestion: any) => {
@@ -273,6 +426,9 @@ function HomeContent() {
     if (suggestion.is_history && suggestion.center) {
         const isSaved = planSpots.some(s => s.name === suggestion.name);
         showResultOnMap(suggestion.name, suggestion.place_name, suggestion.center, isSaved);
+        const img = await fetchSpotImage(suggestion.name);
+        // 型エラー修正: prevの型をanyにする
+        if(img) setSelectedResult((prev: any) => ({...prev, image_url: img}));
         return;
     }
     try {
@@ -287,6 +443,10 @@ function HomeContent() {
         const address = feature.properties.full_address || feature.properties.place_formatted || "";
         const isSaved = planSpots.some(s => s.name === name);
         showResultOnMap(name, address, [searchLng, searchLat], isSaved);
+        
+        const img = await fetchSpotImage(name);
+        // 型エラー修正: prevの型をanyにする
+        if(img) setSelectedResult((prev: any) => ({...prev, image_url: img}));
       }
     } catch(e) { alert("詳細情報の取得に失敗しました"); }
   };
@@ -327,6 +487,25 @@ function HomeContent() {
     if (roomId && isJoined) loadRoomData(roomId);
     if (currentTab === 'explore' && map.current) { setTimeout(() => { map.current?.resize(); fitBoundsToSpots(planSpots); }, 100); }
   }, [currentTab]);
+
+  useEffect(() => {
+    if (selectedResult && roomId) {
+      const currentSpot = planSpots.find(s => s.name === selectedResult.text) || selectedResult; 
+      const spotId = currentSpot.id || selectedResult.id;
+      // 投票データを同期 (文字型比較で安全に)
+      const voters = spotVotes.filter(v => String(v.spot_id) === String(spotId) && v.vote_type === 'like').map(v => v.user_name);
+      const uniqueVoters = Array.from(new Set(voters));
+      const isSaved = planSpots.some(s => s.name === selectedResult.text);
+
+      // 型エラー修正: prevの型をanyにする
+      setSelectedResult((prev: any) => ({
+        ...prev,
+        id: currentSpot.id || prev.id, 
+        voters: uniqueVoters,
+        is_saved: isSaved,
+      }));
+    }
+  }, [spotVotes, planSpots]);
 
   const loadRoomData = async (id: string) => {
     const { data: spots } = await supabase.from('spots').select('*').eq('room_id', id).order('order', { ascending: true });
@@ -384,6 +563,15 @@ function HomeContent() {
     const desc = (selectedResult?.id === spot.id && selectedResult.place_name) ? selectedResult.place_name : (spot.description || spot.place_name || "");
     const status = spot.status || 'candidate';
 
+    let imageToSave = spot.image_url;
+    if (selectedResult && selectedResult.text === spotName && selectedResult.image_url) {
+        imageToSave = selectedResult.image_url;
+    }
+
+    if (!imageToSave) {
+        imageToSave = await fetchSpotImage(spotName);
+    }
+
     const newSpotPayload = { 
         room_id: roomId, 
         name: spotName, 
@@ -395,7 +583,7 @@ function HomeContent() {
         status: status,
         price: spot.price || null,
         rating: spot.rating || null,
-        image_url: spot.image_url || null,
+        image_url: imageToSave || null,
         url: spot.url || null,
         plan_id: spot.plan_id || null,
         is_hotel: spot.is_hotel || false,
@@ -424,9 +612,27 @@ function HomeContent() {
   const handlePreviewSpot = (spot: any) => {
     setCurrentTab('explore');
     const isSaved = planSpots.some(s => s.name === spot.name);
-    const voters = spotVotes.filter(v => v.spot_id === spot.id && v.vote_type === 'like').map(v => v.user_name);
+    // 投票データの同期
+    const spotId = spot.id; // DB ID
+    const voters = spotVotes.filter(v => String(v.spot_id) === String(spotId) && v.vote_type === 'like').map(v => v.user_name);
     const uniqueVoters = Array.from(new Set(voters));
-    const previewData = { ...spot, text: spot.name, place_name: spot.description, is_saved: isSaved, voters: uniqueVoters, added_by: spot.added_by };
+    
+    if (!spot.image_url && !attemptedImageFetch.current.has(spot.id)) {
+        fetchSpotImage(spot.name).then(url => {
+            if (url) {
+                setPlanSpots(prev => prev.map(s => s.id === spot.id ? { ...s, image_url: url } : s));
+                // 型エラー修正: prevの型をanyにする
+                setSelectedResult((prev: any) => (prev && prev.text === spot.name ? { ...prev, image_url: url } : prev));
+                if(roomId && spot.id) supabase.from('spots').update({ image_url: url }).eq('id', spot.id).then();
+            }
+        });
+    }
+
+    // 保存済みならDBのIDを使う（投票機能に必要）
+    const dbSpot = planSpots.find(s => s.name === spot.name);
+    const previewId = dbSpot ? dbSpot.id : spot.id;
+
+    const previewData = { ...spot, id: previewId, text: spot.name, place_name: spot.description, is_saved: isSaved, voters: uniqueVoters, added_by: spot.added_by, image_url: spot.image_url };
     setSelectedResult(previewData);
     setViewMode('selected');
     setIsEditingDesc(false);
@@ -469,7 +675,6 @@ function HomeContent() {
     }
   };
 
-  // ★ 修正点3: お絵描き停止時にイベントリスナーを確実に解除する
   const stopDrawing = () => {
     setIsDrawing(false);
     tempDrawCoords.current = [];
@@ -477,7 +682,6 @@ function HomeContent() {
     if (map.current) {
         map.current.dragPan.enable();
         map.current.getCanvas().style.cursor = '';
-        // Mapboxの登録済みイベントを解除（念のため）
         map.current.off('touchstart', onTouchStart);
         map.current.off('touchmove', onTouchMove);
         map.current.off('touchend', onTouchEnd);
@@ -501,7 +705,6 @@ function HomeContent() {
     setCurrentTab('agent');
   };
 
-  // Mapbox イベントハンドラ (変数として定義して off できるようにする)
   const onTouchStart = (e: any) => { if (!isDrawing) return; if (e.originalEvent.touches && e.originalEvent.touches.length > 1) return; if (e.originalEvent) e.originalEvent.preventDefault(); tempDrawCoords.current = [[e.lngLat.lng, e.lngLat.lat]]; updateDrawSource(tempDrawCoords.current); };
   const onTouchMove = (e: any) => { if (!isDrawing) return; if (e.originalEvent.touches && e.originalEvent.touches.length > 1) return; if (e.originalEvent) e.originalEvent.preventDefault(); tempDrawCoords.current.push([e.lngLat.lng, e.lngLat.lat]); updateDrawSource(tempDrawCoords.current); };
   const onTouchEnd = (e: any) => { if (!isDrawing) return; if (tempDrawCoords.current.length > 0) { finishDrawing(); } };
@@ -558,6 +761,11 @@ function HomeContent() {
           setViewMode('selected');
           setIsEditingDesc(false);
           map.current?.flyTo({ center: coordinates, zoom: 16, offset: [0, -200] });
+          
+          fetchSpotImage(name).then(img => {
+              // 型エラー修正: prevの型をanyにする
+              if(img) setSelectedResult((prev: any) => ({...prev, image_url: img}));
+          });
         });
       });
     }
@@ -638,14 +846,71 @@ function HomeContent() {
       <LegalModal />
       <Ticker />
       
+      {/* タイムライン（履歴）モーダル */}
+      {showActivityLog && (
+          <div 
+            className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-200"
+            onClick={() => setShowActivityLog(false)} // モーダル外クリックで閉じる
+          >
+              <div 
+                className="bg-white w-full max-w-sm rounded-[2rem] p-6 shadow-2xl relative flex flex-col max-h-[80vh]"
+                onClick={(e) => e.stopPropagation()} // 内部クリックは伝播させない
+              >
+                 {/* ヘッダー部分 */}
+                  <div className="flex justify-between items-center p-5 border-b border-gray-100 shrink-0 bg-white z-10">
+                      <h3 className="text-lg font-black text-gray-900 flex items-center gap-2">
+                          <Clock size={20} className="text-blue-600"/> タイムライン
+                      </h3>
+                      <button 
+                          onClick={() => setShowActivityLog(false)} 
+                          className="p-2 bg-gray-100 rounded-full hover:bg-gray-200 transition active:scale-90"
+                      >
+                          <X size={18}/>
+                      </button>
+                  </div>
+                  {/* リスト部分：touch-autoでスクロール操作を許可し、overscroll-containで連鎖を防ぐ */}
+                  <div className="flex-1 overflow-y-auto p-5 space-y-4 custom-scrollbar min-h-0 overscroll-contain touch-auto">
+                      {planSpots.length === 0 ? (
+                          <div className="text-center text-gray-400 text-xs py-8">履歴はありません</div>
+                      ) : (
+                          [...planSpots].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()).map((spot) => (
+                              <div key={spot.id} className="flex gap-3">
+                                  <div className="flex flex-col items-center">
+                                      <div className="w-2 h-2 rounded-full bg-blue-500 mt-2 shrink-0"></div>
+                                      <div className="w-0.5 flex-1 bg-gray-200 my-1"></div>
+                                  </div>
+                                  <div className="bg-gray-50 p-3 rounded-xl flex-1 border border-gray-100">
+                                      <p className="text-[10px] text-gray-400 mb-1 font-mono">
+                                          {new Date(spot.created_at).toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                      </p>
+                                      <div className="flex items-center gap-1.5 mb-1.5">
+                                          <div className="w-4 h-4 rounded-full shadow-sm shrink-0" style={{ backgroundColor: getUDColor(spot.added_by) }}></div>
+                                          <span className="text-xs font-bold text-gray-700 truncate max-w-[120px]">{spot.added_by}</span>
+                                      </div>
+                                      <p className="text-sm font-bold text-gray-800 leading-tight">「{spot.name}」を追加しました</p>
+                                  </div>
+                              </div>
+                          ))
+                      )}
+                      <div className="h-2 shrink-0"></div>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* 設定モーダル */}
       {showDateModal && (
           <div className="absolute inset-0 z-[100] bg-black/60 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-200">
               <div className="bg-white w-full max-w-sm rounded-[2rem] p-8 shadow-2xl relative overflow-hidden">
                   <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-blue-500 to-purple-600"></div>
-                  <h3 className="text-xl font-black text-gray-900 flex items-center gap-2 mb-6"><Calendar size={24} className="text-blue-600"/> 旅行期間の設定</h3>
+                  <h3 className="text-xl font-black text-gray-900 flex items-center gap-2 mb-6"><Calendar size={24} className="text-blue-600"/> 旅行設定</h3>
                   <div className="space-y-4">
                       <div><label className="text-xs font-bold text-gray-400 ml-1 mb-1 block uppercase tracking-wider">Start Date</label><input type="date" value={startDate} onChange={(e)=>setStartDate(e.target.value)} className="w-full bg-gray-50 p-4 rounded-2xl font-bold text-gray-800 border border-gray-100 focus:ring-2 focus:ring-blue-100 outline-none"/></div>
                       <div><label className="text-xs font-bold text-gray-400 ml-1 mb-1 block uppercase tracking-wider">End Date</label><input type="date" value={endDate} onChange={(e)=>setEndDate(e.target.value)} className="w-full bg-gray-50 p-4 rounded-2xl font-bold text-gray-800 border border-gray-100 focus:ring-2 focus:ring-blue-100 outline-none"/></div>
+                      <div>
+                          <label className="text-xs font-bold text-gray-400 ml-1 mb-1 block uppercase tracking-wider flex items-center gap-1"><UsersIcon size={12}/> Travelers</label>
+                          <input type="number" min="1" max="10" value={adultNum} onChange={(e)=>setAdultNum(parseInt(e.target.value) || 1)} className="w-full bg-gray-50 p-4 rounded-2xl font-bold text-gray-800 border border-gray-100 focus:ring-2 focus:ring-blue-100 outline-none"/>
+                      </div>
                   </div>
                   <button onClick={() => setShowDateModal(false)} className="w-full bg-black text-white py-4 rounded-2xl font-bold mt-6 hover:scale-[1.02] active:scale-95 transition shadow-xl">保存して閉じる</button>
               </div>
@@ -700,7 +965,13 @@ function HomeContent() {
           {currentTab === 'explore' && (
             <div className="absolute top-0 left-0 right-0 z-20 flex flex-col items-center pt-4 px-4 pointer-events-none">
               <div className="bg-white/90 backdrop-blur-xl p-2 rounded-[2rem] shadow-2xl flex items-center gap-2 border border-white/50 w-full max-w-md pointer-events-auto transition-all duration-300 focus-within:ring-4 focus-within:ring-blue-100/50">
+                
+                {/* タイムラインボタン */}
+                <button onClick={() => setShowActivityLog(true)} className="p-3 bg-gray-50 hover:bg-gray-100 rounded-full text-gray-500 transition"><History size={18}/></button>
+                
+                {/* カレンダーボタン */}
                 <button onClick={() => setShowDateModal(true)} className="p-3 bg-gray-50 hover:bg-gray-100 rounded-full text-gray-500 transition"><Calendar size={18}/></button>
+                
                 <div className="h-6 w-px bg-gray-200"></div>
                 <input 
                     type="text" 
@@ -740,7 +1011,17 @@ function HomeContent() {
             <div className="absolute bottom-0 left-0 w-full z-40 p-4 pb-24 pointer-events-none flex justify-center">
               <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-[0_20px_50px_rgba(0,0,0,0.3)] pointer-events-auto overflow-hidden animate-in slide-in-from-bottom-10 border border-gray-100">
                 <div className="p-6 relative">
-                  <button onClick={() => { setSelectedResult(null); setViewMode('default'); }} className="absolute top-5 right-5 bg-gray-100 hover:bg-gray-200 text-gray-500 p-2 rounded-full transition"><X size={18}/></button>
+                  <button onClick={() => { setSelectedResult(null); setViewMode('default'); }} className="absolute top-5 right-5 bg-gray-100 hover:bg-gray-200 text-gray-500 p-2 rounded-full transition z-10"><X size={18}/></button>
+                  
+                  {/* 画像表示エリア (SpotImageを使用) */}
+                  <div className="w-full h-40 rounded-xl overflow-hidden mb-4 bg-gray-100 shadow-inner">
+                      <SpotImage 
+                          src={selectedResult.image_url} 
+                          alt={selectedResult.text} 
+                          className="w-full h-full"
+                      />
+                  </div>
+
                   <div className="pr-10 mb-4">
                       <h2 className="text-2xl font-black text-gray-900 leading-tight mb-1">{selectedResult.text}</h2>
                       {isEditingDesc ? (
@@ -751,9 +1032,36 @@ function HomeContent() {
                           </p>
                       )}
                   </div>
+                  
+                  {/* 詳細モーダル内：投票セクション */}
+                  {selectedResult.is_saved && selectedResult.id && (
+                      <div className="mb-6 bg-gray-50 p-4 rounded-xl border border-gray-100">
+                          <div className="flex justify-between items-center mb-3">
+                              <h3 className="text-xs font-bold text-gray-400 flex items-center gap-1"><UsersIcon size={12}/> 投票メンバー ({selectedResult.voters.length})</h3>
+                              <button 
+                                  onClick={() => handleToggleVote(selectedResult.id)} 
+                                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${selectedResult.voters.includes(userName) ? 'bg-red-50 text-red-600 border border-red-100' : 'bg-blue-600 text-white shadow-md'}`}
+                              >
+                                  {selectedResult.voters.includes(userName) ? '取り消す' : <><ThumbsUp size={12}/> 投票する</>}
+                              </button>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                              {selectedResult.voters.length === 0 ? (
+                                  <span className="text-xs text-gray-400">まだ投票はありません</span>
+                              ) : (
+                                  selectedResult.voters.map((voter: string) => (
+                                      <div key={voter} className="flex items-center gap-1 bg-white px-2 py-1 rounded-md border border-gray-200 shadow-sm">
+                                          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: getUDColor(voter) }}></div>
+                                          <span className="text-xs font-bold text-gray-600">{voter}</span>
+                                      </div>
+                                  ))
+                              )}
+                          </div>
+                      </div>
+                  )}
+
                   <div className="flex gap-2 mb-6 overflow-x-auto no-scrollbar pb-2">
                       <a href={`http://googleusercontent.com/maps.google.com/?q=${encodeURIComponent(selectedResult.text)}`} target="_blank" className="flex items-center gap-1.5 bg-gray-50 px-4 py-2.5 rounded-2xl text-xs font-bold text-gray-600 border border-gray-100 hover:bg-gray-100 transition whitespace-nowrap"><MapPinned size={14}/> Google Maps</a>
-                      <button onClick={() => setShowVoteDetailSpot(selectedResult)} className={`flex items-center gap-1.5 px-4 py-2.5 rounded-2xl text-xs font-bold border transition whitespace-nowrap ${selectedResult.voters?.length > 0 ? 'bg-blue-50 text-blue-600 border-blue-100' : 'bg-gray-50 text-gray-400 border-gray-200'}`}><Users size={14}/> {selectedResult.voters?.length || 0}人が投票</button>
                   </div>
                   <div className="flex gap-3">
                       {selectedResult.is_saved ? (
@@ -781,49 +1089,89 @@ function HomeContent() {
                           <button className="p-2.5 bg-gray-100 rounded-full text-gray-500">{isListExpanded ? <ChevronDown size={20}/> : <ChevronUp size={20}/>}</button>
                       </div>
                   </div>
+                  
+                  {/* Day切り替えタブ (Confirmedのみ) */}
+                  {filterStatus === 'confirmed' && isListExpanded && (
+                      <div className="px-4 py-2 border-b border-gray-100 overflow-x-auto no-scrollbar flex gap-2">
+                          {[0, ...Array.from({ length: travelDays }, (_, i) => i + 1)].map(day => (
+                              <button 
+                                key={day}
+                                onClick={(e) => { e.stopPropagation(); setSelectedConfirmDay(day); }}
+                                className={`px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition border ${selectedConfirmDay === day ? 'bg-blue-600 text-white border-blue-600' : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100'}`}
+                              >
+                                {day === 0 ? '未定' : `Day ${day}`}
+                              </button>
+                          ))}
+                      </div>
+                  )}
+
                   <div className="flex-1 overflow-y-auto p-4 space-y-3 pb-32">
                       {filteredSpots.length === 0 ? (
                           <div className="text-center text-gray-400 py-12 text-sm font-bold opacity-50">スポットがありません<br/>マップから追加してください</div>
                       ) : (
                           filterStatus === 'confirmed' ? (
-                            [0, ...Array.from({ length: travelDays }, (_, i) => i + 1)].map(day => {
-                                const spotsInDay = filteredSpots.filter(s => (s.day || 0) === day);
-                                if (spotsInDay.length === 0) return null;
+                            // 選択中のDayのみ表示
+                            (() => {
+                                const spotsInDay = filteredSpots.filter(s => (s.day || 0) === selectedConfirmDay);
+                                if (spotsInDay.length === 0) {
+                                    return <div className="text-center text-gray-400 py-10 text-xs">この日の予定はまだありません</div>;
+                                }
                                 return (
-                                    <div key={day} className="mb-6 animate-in slide-in-from-bottom-4 fade-in duration-500">
-                                        <h3 className="text-xs font-black text-gray-400 mb-3 pl-2 flex items-center gap-2 uppercase tracking-widest"><Calendar size={12}/> {day === 0 ? '未定' : `Day ${day}`}</h3>
+                                    <div className="animate-in slide-in-from-bottom-4 fade-in duration-300">
                                         <div className="space-y-3">
-                                            {spotsInDay.map((spot, idx) => (
-                                                <div key={spot.id || idx} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex flex-col gap-3 transition active:scale-[0.98]" onClick={() => handlePreviewSpot(spot)}>
-                                                    <div className="flex justify-between items-start">
-                                                        <h3 className="font-bold text-gray-800 text-sm truncate flex-1">{spot.name}</h3>
-                                                        {spot.price && <span className="text-[10px] font-black text-red-500 bg-red-50 px-2 py-1 rounded-lg">¥{spot.price.toLocaleString()}</span>}
+                                            {spotsInDay.map((spot, idx) => {
+                                                const voteCount = spotVotes.filter((v: any) => String(v.spot_id) === String(spot.id)).length;
+                                                return (
+                                                    <div key={spot.id || idx} className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden flex h-28 transition active:scale-[0.98]" onClick={() => handlePreviewSpot(spot)}>
+                                                        <div className="w-24 bg-gray-100 shrink-0 relative">
+                                                            <SpotImage src={spot.image_url} alt="" className="w-full h-full"/>
+                                                        </div>
+                                                        <div className="flex-1 p-3 flex flex-col justify-between overflow-hidden">
+                                                            <div className="flex justify-between items-start">
+                                                                <h3 className="font-bold text-gray-800 text-sm truncate flex-1">{spot.name}</h3>
+                                                                {/* 投票数表示 */}
+                                                                <div className="flex items-center gap-1 text-xs font-bold text-gray-500 bg-gray-100 px-2 py-1 rounded-lg shrink-0 ml-2">
+                                                                    <ThumbsUp size={12} className={voteCount > 0 ? "text-blue-500 fill-blue-500" : "text-gray-400"}/> {voteCount}
+                                                                </div>
+                                                            </div>
+                                                            <div className="flex gap-2 mt-auto">
+                                                                {(isHotel(spot.name) || spot.is_hotel) && <a href={getAffiliateUrl(spot)} target="_blank" className="flex-1 bg-gradient-to-r from-orange-400 to-red-500 text-white text-[10px] py-2 rounded-lg font-bold flex items-center justify-center gap-1 shadow-md hover:shadow-lg transition" onClick={(e) => e.stopPropagation()}>楽天 <ExternalLink size={10}/></a>}
+                                                                <button onClick={(e) => { e.stopPropagation(); handleStatusChangeClick(spot, (isHotel(spot.name) || spot.is_hotel) ? 'hotel_candidate' : 'candidate'); }} className="flex-1 bg-gray-100 text-gray-600 text-[10px] py-2 rounded-lg font-bold hover:bg-gray-200 transition">候補に戻す</button>
+                                                                <button onClick={(e) => { e.stopPropagation(); removeSpot(spot); }} className="px-3 bg-red-50 text-red-500 rounded-lg hover:bg-red-100 transition"><Trash2 size={14}/></button>
+                                                            </div>
+                                                        </div>
                                                     </div>
-                                                    <div className="flex gap-2">
-                                                        {(isHotel(spot.name) || spot.is_hotel) && <a href={getAffiliateUrl(spot)} target="_blank" className="flex-1 bg-gradient-to-r from-orange-400 to-red-500 text-white text-xs py-3 rounded-xl font-bold flex items-center justify-center gap-1 shadow-md hover:shadow-lg transition" onClick={(e) => e.stopPropagation()}>楽天 <ExternalLink size={12}/></a>}
-                                                        <button onClick={(e) => { e.stopPropagation(); handleStatusChangeClick(spot, (isHotel(spot.name) || spot.is_hotel) ? 'hotel_candidate' : 'candidate'); }} className="flex-1 bg-gray-100 text-gray-600 text-xs py-3 rounded-xl font-bold hover:bg-gray-200 transition">候補に戻す</button>
-                                                        <button onClick={(e) => { e.stopPropagation(); removeSpot(spot); }} className="px-4 bg-red-50 text-red-500 rounded-xl hover:bg-red-100 transition"><Trash2 size={16}/></button>
-                                                    </div>
-                                                </div>
-                                            ))}
+                                                );
+                                            })}
                                         </div>
                                     </div>
-                                )
-                            })
+                                );
+                            })()
                           ) : (
-                            filteredSpots.map((spot, idx) => (
-                              <div key={spot.id || idx} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex flex-col gap-3 transition active:scale-[0.98] animate-in slide-in-from-bottom-2 fade-in" onClick={() => handlePreviewSpot(spot)}>
-                                  <div className="flex justify-between items-start">
-                                      <h3 className="font-bold text-gray-800 text-sm truncate flex-1">{spot.name}</h3>
-                                      {spot.price && <span className="text-[10px] font-black text-red-500 bg-red-50 px-2 py-1 rounded-lg">¥{spot.price.toLocaleString()}</span>}
-                                  </div>
-                                  <div className="flex gap-2">
-                                      {(isHotel(spot.name) || spot.is_hotel) && <a href={getAffiliateUrl(spot)} target="_blank" className="flex-1 bg-gradient-to-r from-orange-400 to-red-500 text-white text-xs py-3 rounded-xl font-bold flex items-center justify-center gap-1 shadow-md hover:shadow-lg transition" onClick={(e) => e.stopPropagation()}>楽天 <ExternalLink size={12}/></a>}
-                                      <button onClick={(e) => { e.stopPropagation(); handleStatusChangeClick(spot, 'confirmed'); }} className="flex-1 bg-black text-white text-xs py-3 rounded-xl font-bold hover:bg-gray-800 shadow-md transition">確定にする</button>
-                                      <button onClick={(e) => { e.stopPropagation(); removeSpot(spot); }} className="px-4 bg-red-50 text-red-500 rounded-xl hover:bg-red-100 transition"><Trash2 size={16}/></button>
-                                  </div>
-                              </div>
-                            ))
+                            filteredSpots.map((spot, idx) => {
+                              const voteCount = spotVotes.filter((v: any) => String(v.spot_id) === String(spot.id)).length;
+                              return (
+                                <div key={spot.id || idx} className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden flex h-28 transition active:scale-[0.98] animate-in slide-in-from-bottom-2 fade-in" onClick={() => handlePreviewSpot(spot)}>
+                                    <div className="w-24 bg-gray-100 shrink-0 relative">
+                                        <SpotImage src={spot.image_url} alt="" className="w-full h-full"/>
+                                    </div>
+                                    <div className="flex-1 p-3 flex flex-col justify-between overflow-hidden">
+                                        <div className="flex justify-between items-start">
+                                            <h3 className="font-bold text-gray-800 text-sm truncate flex-1">{spot.name}</h3>
+                                            {/* 投票数表示 */}
+                                            <div className="flex items-center gap-1 text-xs font-bold text-gray-500 bg-gray-100 px-2 py-1 rounded-lg shrink-0 ml-2">
+                                                <ThumbsUp size={12} className={voteCount > 0 ? "text-blue-500 fill-blue-500" : "text-gray-400"}/> {voteCount}
+                                            </div>
+                                        </div>
+                                        <div className="flex gap-2 mt-auto">
+                                            {(isHotel(spot.name) || spot.is_hotel) && <a href={getAffiliateUrl(spot)} target="_blank" className="flex-1 bg-gradient-to-r from-orange-400 to-red-500 text-white text-[10px] py-2 rounded-lg font-bold flex items-center justify-center gap-1 shadow-md hover:shadow-lg transition" onClick={(e) => e.stopPropagation()}>楽天 <ExternalLink size={10}/></a>}
+                                            <button onClick={(e) => { e.stopPropagation(); handleStatusChangeClick(spot, 'confirmed'); }} className="flex-1 bg-black text-white text-[10px] py-2 rounded-lg font-bold hover:bg-gray-800 shadow-md transition">確定にする</button>
+                                            <button onClick={(e) => { e.stopPropagation(); removeSpot(spot); }} className="px-3 bg-red-50 text-red-500 rounded-lg hover:bg-red-100 transition"><Trash2 size={14}/></button>
+                                        </div>
+                                    </div>
+                                </div>
+                              );
+                            })
                           )
                       )}
                   </div>
@@ -844,7 +1192,7 @@ function HomeContent() {
                         roomId={roomId!} 
                         initialSearchArea={initialSearchArea} 
                         onAddSpot={addSpot}
-                        onAutoSearch={handleAutoSearch} // ★ 不足していたプロパティを追加
+                        onAutoSearch={handleAutoSearch} 
                     />
                  </div>
                )}

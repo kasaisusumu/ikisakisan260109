@@ -1,19 +1,66 @@
 "use client";
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { 
   MapPin, Car, Clock, X, Settings, Loader2, Sparkles, MinusCircle, RefreshCw, BedDouble, 
-  ExternalLink, Calendar, Edit3, Train, Plane, Ship, Footprints, Zap, 
-  Image as ImageIcon, FileText, Link as LinkIcon, Camera, Upload, Search,
-  Save, BookOpen, Trash2, PlusCircle, MapPinned, GripVertical, MoreHorizontal, ArrowRight
+  Edit3, Train, Plane, Ship, Footprints, Zap, 
+  Image as ImageIcon, Link as LinkIcon, Camera, Upload, 
+  Save, BookOpen, Trash2, PlusCircle, MapPinned, GripVertical, ArrowRight,
+  ChevronDown, ChevronUp, Layers, Check, Move, Map as MapIcon, ArrowUp
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const RAKUTEN_AFFILIATE_ID = "4fcc24e4.174bb117.4fcc24e5.5b178353"; 
+
+// --- 画像表示コンポーネント (修正版) ---
+const SpotImage = ({ src, alt, className }: { src?: string | null, alt: string, className?: string }) => {
+    const [isLoading, setIsLoading] = useState(true);
+    const [hasError, setHasError] = useState(false);
+
+    useEffect(() => {
+        if (src && (src.startsWith('http') || src.startsWith('data:'))) {
+            setIsLoading(true);
+            setHasError(false);
+        } else {
+            setIsLoading(false);
+            setHasError(true);
+        }
+    }, [src]);
+
+    const handleLoad = () => setIsLoading(false);
+    const handleError = () => { setIsLoading(false); setHasError(true); };
+
+    if (!src || hasError || (!src.startsWith('http') && !src.startsWith('data:'))) {
+        return (
+            <div className={`flex flex-col items-center justify-center bg-gray-100 text-gray-300 ${className}`}>
+                <ImageIcon size={24} />
+            </div>
+        );
+    }
+
+    return (
+        <div className={`relative overflow-hidden bg-gray-100 ${className}`}>
+            {isLoading && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-400 bg-gray-100 z-10">
+                    <Loader2 size={16} className="animate-spin mb-1"/>
+                </div>
+            )}
+            <img 
+                key={src} // ★重要: URL変更時に確実に再レンダリングさせる
+                src={src} 
+                alt={alt} 
+                onLoad={handleLoad}
+                onError={handleError}
+                className={`w-full h-full object-cover transition-opacity duration-300 ${isLoading ? 'opacity-0' : 'opacity-100'}`}
+                draggable={false} 
+            />
+        </div>
+    );
+};
 
 interface Props {
   spots: any[];
@@ -24,12 +71,12 @@ interface Props {
 }
 
 const TRANSPORT_MODES = [
-  { id: 'car', icon: <Car size={14}/>, label: 'DRIVE', googleMode: 'driving' },
-  { id: 'train', icon: <Train size={14}/>, label: 'TRAIN', googleMode: 'transit' },
-  { id: 'walk', icon: <Footprints size={14}/>, label: 'WALK', googleMode: 'walking' },
-  { id: 'shinkansen', icon: <Zap size={14}/>, label: 'EXPRESS', googleMode: 'transit' },
-  { id: 'plane', icon: <Plane size={14}/>, label: 'FLIGHT', googleMode: 'transit' },
-  { id: 'ship', icon: <Ship size={14}/>, label: 'FERRY', googleMode: 'transit' },
+  { id: 'car', icon: <Car size={16}/>, label: '車', googleMode: 'driving' },
+  { id: 'train', icon: <Train size={16}/>, label: '電車', googleMode: 'transit' },
+  { id: 'walk', icon: <Footprints size={16}/>, label: '徒歩', googleMode: 'walking' },
+  { id: 'shinkansen', icon: <Zap size={16}/>, label: '新幹線', googleMode: 'transit' },
+  { id: 'plane', icon: <Plane size={16}/>, label: '飛行機', googleMode: 'transit' },
+  { id: 'ship', icon: <Ship size={16}/>, label: '船', googleMode: 'transit' },
 ];
 
 export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, travelDays = 1 }: Props) {
@@ -38,13 +85,12 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
   
   const [isProcessing, setIsProcessing] = useState(false);
   const [timeline, setTimeline] = useState<any[]>([]);
-  const [unusedSpots, setUnusedSpots] = useState<any[]>([]); 
   const [routeGeoJSON, setRouteGeoJSON] = useState<any>(null);
   const [isPlanGenerated, setIsPlanGenerated] = useState(false);
   
-  const [isUnlocked, setIsUnlocked] = useState(false);
-  const [draggedItemIndex, setDraggedItemIndex] = useState<number | null>(null);
   const [optimizeCount, setOptimizeCount] = useState(0);
+  
+  const [draggedItemIndex, setDraggedItemIndex] = useState<number | null>(null);
 
   const [selectedMapSpot, setSelectedMapSpot] = useState<any>(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -57,16 +103,36 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
 
   const [editItem, setEditItem] = useState<{index: number, type: 'spot' | 'travel', data: any} | null>(null);
   const [showScreenshotMode, setShowScreenshotMode] = useState(false);
+  const [showUnusedList, setShowUnusedList] = useState(true);
+
+  const attemptedImageFetch = useRef<Set<string>>(new Set());
+  const [isMapVisible, setIsMapVisible] = useState(false);
 
   const maxSpotDay = Math.max(...spots.map(s => s.day || 0));
   const displayDays = Math.max(travelDays, maxSpotDay, 1);
 
   const [selectedDay, setSelectedDay] = useState<number>(1);
-  const activeDaySpots = spots.filter(s => (s.status === 'confirmed') && (s.day === selectedDay || s.day === 0));
 
-  const hasHotel = spots.some(s => s.is_hotel || s.name.includes('ホテル') || s.name.includes('旅館'));
+  // 1. その日の対象スポット
+  const activeDaySpots = useMemo(() => {
+      return spots.filter(s => 
+          s.status === 'confirmed' && 
+          (s.day === selectedDay || s.day === 0)
+      );
+  }, [spots, selectedDay]);
 
-  // アフィリエイトリンク生成
+  // 2. 待機中スポット (重複防止)
+  const unusedSpots = useMemo(() => {
+      const usedSpotIds = new Set(
+          timeline
+              .filter(item => item.type === 'spot')
+              .map(item => String(item.spot.id || item.spot.name))
+      );
+      
+      return activeDaySpots.filter(spot => !usedSpotIds.has(String(spot.id || spot.name)));
+  }, [activeDaySpots, timeline]);
+
+  // --- Logic Helpers ---
   const getAffiliateUrl = (spot: any) => {
       if (spot.id && /^\d+$/.test(spot.id)) {
           const today = new Date();
@@ -121,7 +187,7 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
 
   const calculateSchedule = (currentTimeline: any[]) => {
       let currentTime = new Date(`2000-01-01T${startTime}:00`);
-      const newTimeline = currentTimeline.map((item, index) => {
+      const newTimeline = currentTimeline.map((item) => {
           const newItem = { ...item };
           if (item.type === 'travel') {
               const duration = item.duration_min || 0;
@@ -147,22 +213,61 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
       return newTimeline;
   };
 
-  useEffect(() => {
-    if (hasHotel) {
-        setIsUnlocked(true);
-    } else {
-        const unlocked = typeof window !== 'undefined' ? localStorage.getItem(`rh_unlocked_${roomId}`) : null;
-        if (unlocked) setIsUnlocked(true);
-        else setIsUnlocked(false);
-    }
-  }, [spots, roomId, hasHotel]);
+  const fetchSpotImage = async (name: string) => {
+      try {
+          const res = await fetch(`${API_BASE_URL}/api/get_spot_image?query=${encodeURIComponent(name)}`);
+          if (res.ok) {
+              const data = await res.json();
+              return data.image_url;
+          }
+      } catch (e) {
+          console.error("Image fetch failed", e);
+      }
+      return null;
+  };
 
+  useEffect(() => {
+    if (timeline.length > 0) {
+        const newTimeline = [...timeline];
+        newTimeline.forEach((item, index) => {
+            if (item.type === 'spot') {
+                const spotId = item.spot.id || item.spot.name;
+                
+                // spotsプロップス（親から来た最新データ）に画像があるかチェック
+                const currentSpot = spots.find(s => (s.id && String(s.id) === String(spotId)) || s.name === item.spot.name);
+                if (currentSpot && currentSpot.image_url) return; // すでにあるならfetchしない
+
+                if ((!item.image && !item.spot.image_url) && !attemptedImageFetch.current.has(spotId)) {
+                    attemptedImageFetch.current.add(spotId);
+                    fetchSpotImage(item.spot.name).then(url => {
+                        if (url) {
+                            // Timeline更新（念のため）
+                            setTimeline(prev => {
+                                const next = [...prev];
+                                if (next[index] && next[index].type === 'spot') {
+                                    next[index] = { ...next[index], image: url, spot: { ...next[index].spot, image_url: url } };
+                                }
+                                return next;
+                            });
+                            // DB更新
+                            if (roomId && item.spot.id && !String(item.spot.id).startsWith('spot-')) {
+                                supabase.from('spots').update({ image_url: url }).eq('id', item.spot.id).then();
+                            }
+                        }
+                    });
+                }
+            }
+        });
+    }
+  }, [timeline, roomId, spots]); // spotsも依存配列に追加
+
+  // --- Effects ---
   useEffect(() => {
     if (roomId && isPlanGenerated) {
         const storageKey = `rh_plan_${roomId}_day_${selectedDay}`;
-        localStorage.setItem(storageKey, JSON.stringify({ timeline, unusedSpots, routeGeoJSON, updatedAt: Date.now() }));
+        localStorage.setItem(storageKey, JSON.stringify({ timeline, routeGeoJSON, updatedAt: Date.now() }));
     }
-  }, [timeline, unusedSpots, routeGeoJSON, isPlanGenerated, roomId, selectedDay]);
+  }, [timeline, routeGeoJSON, isPlanGenerated, roomId, selectedDay]);
 
   useEffect(() => {
     if (roomId) {
@@ -172,31 +277,16 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
             try {
                 const data = JSON.parse(savedPlan);
                 setTimeline(Array.isArray(data.timeline) ? data.timeline : []);
-                setUnusedSpots(Array.isArray(data.unusedSpots) ? data.unusedSpots : []);
                 setRouteGeoJSON(data.routeGeoJSON || null);
                 setIsPlanGenerated(true);
                 return;
             } catch (e) { console.error("Restore error", e); }
         }
-        if (activeDaySpots.length > 0) {
-            setUnusedSpots(activeDaySpots);
-            setTimeline([]);
-            setRouteGeoJSON(null);
-            setIsPlanGenerated(false);
-        } else {
-            setUnusedSpots([]);
-            setTimeline([]);
-            setRouteGeoJSON(null);
-            setIsPlanGenerated(false);
-        }
+        setTimeline([]);
+        setRouteGeoJSON(null);
+        setIsPlanGenerated(false);
     }
   }, [roomId, selectedDay]); 
-
-  useEffect(() => {
-      if (!isPlanGenerated && activeDaySpots.length > 0) {
-          setUnusedSpots(activeDaySpots);
-      }
-  }, [JSON.stringify(activeDaySpots), isPlanGenerated]);
 
   const fetchPinnedPlans = async () => {
       const { data } = await supabase.from('pinned_plans').select('*').eq('room_id', roomId).order('created_at', { ascending: false });
@@ -204,6 +294,7 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
   };
   useEffect(() => { if (isPinListOpen) fetchPinnedPlans(); }, [isPinListOpen]);
 
+  // --- Handlers ---
   const handlePinPlan = async () => {
       if (!isPlanGenerated) return;
       const title = prompt("プラン名を入力して保存:", `Day ${selectedDay} のプラン`);
@@ -218,7 +309,6 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
       if (!confirm(`「${plan.title}」を復元しますか？\n現在の編集内容は上書きされます。`)) return;
       const data = plan.plan_data;
       setTimeline(calculateSchedule(data.timeline || []));
-      setUnusedSpots(data.unusedSpots || []);
       setRouteGeoJSON(data.routeGeoJSON);
       setIsPlanGenerated(true);
       setIsPinListOpen(false);
@@ -253,7 +343,6 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
       const calculatedTimeline = calculateSchedule(initialTimeline);
 
       setTimeline(calculatedTimeline);
-      setUnusedSpots(data.unused_spots || []);
       setRouteGeoJSON(data.route_geometry);
       setIsPlanGenerated(true);
       setShowSettings(false);
@@ -264,29 +353,63 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
     } catch (e: any) { alert(`エラー: ${e.message}`); } finally { setIsProcessing(false); }
   };
 
-  const onDragStart = (e: React.DragEvent, index: number) => { setDraggedItemIndex(index); };
-  const onDragOver = (e: React.DragEvent) => { e.preventDefault(); };
-  
-  const onDrop = (e: React.DragEvent, dropIndex: number) => {
-    if (draggedItemIndex === null || draggedItemIndex === dropIndex) return;
-    const timelineIndices = timeline.map((item, i) => item.type === 'spot' ? i : -1).filter(i => i !== -1);
-    if (!timelineIndices.includes(draggedItemIndex) || !timelineIndices.includes(dropIndex)) return;
+  // --- Drag and Drop Logic ---
+  const onDragStart = (e: React.DragEvent, timelineIndex: number) => {
+      e.dataTransfer.setData('text/plain', String(timelineIndex));
+      e.dataTransfer.effectAllowed = "move";
+      setTimeout(() => {
+          setDraggedItemIndex(timelineIndex);
+      }, 0);
+  };
 
-    const newTimeline = [...timeline];
+  const onDragEnd = (e: React.DragEvent) => {
+      setDraggedItemIndex(null);
+  };
+
+  const onDragOver = (e: React.DragEvent) => {
+      e.preventDefault(); 
+      e.dataTransfer.dropEffect = "move";
+  };
+  
+  const onDrop = (e: React.DragEvent, targetTimelineIndex: number) => {
+    e.preventDefault();
+    e.stopPropagation(); 
+
+    const rawIndex = e.dataTransfer.getData('text/plain');
+    const sourceIndex = parseInt(rawIndex, 10);
+    const effectiveSourceIndex = !isNaN(sourceIndex) ? sourceIndex : draggedItemIndex;
+
+    if (effectiveSourceIndex === null || effectiveSourceIndex === targetTimelineIndex) return;
+
+    const draggedItem = timeline[effectiveSourceIndex];
+    if (!draggedItem || draggedItem.type !== 'spot') return; 
+
+    const currentSpotsOnly = timeline.filter(item => item.type === 'spot');
+    const currentTravelsOnly = timeline.filter(item => item.type === 'travel');
+
+    const draggedSpotIndex = currentSpotsOnly.findIndex(s => s.spot.name === draggedItem.spot.name);
     
-    // スポットの並べ替えロジック
-    const spotsOnly = timeline.filter(t => t.type === 'spot');
-    const fromSpotIndex = spotsOnly.findIndex(s => s.spot.name === timeline[draggedItemIndex].spot.name);
-    const toSpotIndex = spotsOnly.findIndex(s => s.spot.name === timeline[dropIndex].spot.name);
-    
-    const [movedSpot] = spotsOnly.splice(fromSpotIndex, 1);
-    spotsOnly.splice(toSpotIndex, 0, movedSpot);
-    
+    let insertIndex = 0;
+    for(let i=0; i < targetTimelineIndex; i++) {
+        if(timeline[i].type === 'spot' && i !== effectiveSourceIndex) {
+            insertIndex++;
+        }
+    }
+
+    const newSpotsOrder = [...currentSpotsOnly];
+    const [movedSpot] = newSpotsOrder.splice(draggedSpotIndex, 1);
+    newSpotsOrder.splice(insertIndex, 0, movedSpot);
+
     const reconstructedTimeline: any[] = [];
-    spotsOnly.forEach((spotItem, i) => {
+    newSpotsOrder.forEach((spotItem, i) => {
         reconstructedTimeline.push(spotItem);
-        if (i < spotsOnly.length - 1) {
-            reconstructedTimeline.push({ type: 'travel', duration_min: 30, transport_mode: 'car' });
+        if (i < newSpotsOrder.length - 1) {
+            const existingTravel = currentTravelsOnly[i]; 
+            if (existingTravel) {
+                reconstructedTimeline.push(existingTravel);
+            } else {
+                reconstructedTimeline.push({ type: 'travel', duration_min: 30, transport_mode: 'car' });
+            }
         }
     });
 
@@ -324,20 +447,40 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
   const toggleSpotInclusion = (spot: any, isAdding: boolean) => {
     setSelectedMapSpot(null); 
     if (isAdding) {
-        setUnusedSpots(prev => prev.filter(s => s.name !== spot.name));
-        const newTimeline = [...timeline, { type: 'travel', duration_min: 30, transport_mode: 'car' }, { type: 'spot', spot, stay_min: 60 }];
-        if(newTimeline[0].type === 'travel') newTimeline.shift();
+        const lastItem = timeline[timeline.length - 1];
+        const newItems = [];
+        if (lastItem && lastItem.type === 'spot') {
+            newItems.push({ type: 'travel', duration_min: 30, transport_mode: 'car' });
+        }
+        newItems.push({ type: 'spot', spot, stay_min: 60 });
+        
+        const newTimeline = [...timeline, ...newItems];
         setTimeline(calculateSchedule(newTimeline));
     } else {
-        setUnusedSpots(prev => [...prev, spot]);
-        const newTimeline = timeline.filter(t => t.type !== 'spot' || t.spot.name !== spot.name);
-        const cleanTimeline = newTimeline.filter((t, i) => {
-             if (t.type === 'spot') return true;
-             if (i === newTimeline.length - 1) return false;
-             if (i > 0 && newTimeline[i-1].type === 'travel') return false;
-             return true;
-        });
-        setTimeline(calculateSchedule(cleanTimeline));
+        if (!confirm("スケジュールから外しますか？")) return;
+        const spotIndex = timeline.findIndex(t => t.type === 'spot' && t.spot.name === spot.name);
+        if (spotIndex === -1) return;
+
+        let newTimeline = [...timeline];
+        if (spotIndex === 0) {
+            if (newTimeline[1]?.type === 'travel') {
+                newTimeline.splice(0, 2); 
+            } else {
+                newTimeline.splice(0, 1);
+            }
+        } else {
+             if (newTimeline[spotIndex - 1]?.type === 'travel') {
+                newTimeline.splice(spotIndex - 1, 2); 
+             } else {
+                newTimeline.splice(spotIndex, 1);
+             }
+        }
+        
+        if (newTimeline.length > 0 && newTimeline[newTimeline.length - 1].type === 'travel') {
+            newTimeline.pop();
+        }
+
+        setTimeline(calculateSchedule(newTimeline));
     }
   };
 
@@ -346,11 +489,11 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
     if (!map.current && mapContainer.current) {
       map.current = new mapboxgl.Map({
         container: mapContainer.current,
-        style: 'mapbox://styles/mapbox/dark-v11', // ダークモードマップ
+        style: 'mapbox://styles/mapbox/streets-v12', 
         center: [135.758767, 34.985120], 
         zoom: 10
       });
-      map.current.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'bottom-right');
+      map.current.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'top-right');
     }
 
     const activePoints = (timeline || []).filter(t => t.type === 'spot').map(t => t.spot);
@@ -364,8 +507,7 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
             activePoints.forEach((spot, i) => {
                 const el = document.createElement('div');
                 el.className = 'marker-plan-map';
-                // ネオンブルーの番号ピン
-                el.innerHTML = `<div style="background-color:#0ea5e9; width:28px; height:28px; border-radius:8px; display:flex; align-items:center; justify-content:center; color:white; font-weight:bold; border:2px solid #0f172a; box-shadow:0 0 10px #0ea5e9; font-family:monospace; font-size:14px;">${i + 1}</div>`;
+                el.innerHTML = `<div style="background-color:#4f46e5; width:24px; height:24px; border-radius:50%; display:flex; align-items:center; justify-content:center; color:white; font-weight:bold; border:2px solid white; box-shadow:0 3px 6px rgba(0,0,0,0.2); font-size:10px;">${i + 1}</div>`;
                 el.onclick = (e) => { e.stopPropagation(); setSelectedMapSpot({ spot, type: 'active' }); };
                 new mapboxgl.Marker(el).setLngLat(spot.coordinates).addTo(map.current!);
                 bounds.extend(spot.coordinates);
@@ -373,7 +515,7 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
             unusedSpots.forEach((spot) => {
                 const el = document.createElement('div');
                 el.className = 'marker-plan-map';
-                el.innerHTML = `<div style="background-color:#475569; width:12px; height:12px; border-radius:50%; border:2px solid #0f172a;"></div>`;
+                el.innerHTML = `<div style="background-color:#94a3b8; width:10px; height:10px; border-radius:50%; border:2px solid white; box-shadow:0 2px 4px rgba(0,0,0,0.1);"></div>`;
                 el.onclick = (e) => { e.stopPropagation(); setSelectedMapSpot({ spot, type: 'unused' }); };
                 new mapboxgl.Marker(el).setLngLat(spot.coordinates).addTo(map.current!);
                 bounds.extend(spot.coordinates);
@@ -382,352 +524,375 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
                 const sourceId = 'route';
                 if (!map.current.getSource(sourceId)) {
                     map.current.addSource(sourceId, { type: 'geojson', data: routeGeoJSON });
-                    map.current.addLayer({ id: sourceId, type: 'line', source: sourceId, layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#0ea5e9', 'line-width': 3, 'line-opacity': 0.8, 'line-blur': 1 } });
+                    map.current.addLayer({ 
+                        id: sourceId, 
+                        type: 'line', 
+                        source: sourceId, 
+                        layout: { 'line-join': 'round', 'line-cap': 'round' }, 
+                        paint: { 'line-color': '#4f46e5', 'line-width': 4, 'line-opacity': 0.7 } 
+                    });
                 } else {
                     (map.current.getSource(sourceId) as mapboxgl.GeoJSONSource).setData(routeGeoJSON);
                 }
             }
-            if (!bounds.isEmpty()) map.current.fitBounds(bounds, { padding: 60, duration: 1000 });
+            if (!bounds.isEmpty()) map.current.fitBounds(bounds, { padding: 80, duration: 1000 });
         };
         if (map.current.isStyleLoaded()) updateMap();
         else map.current.once('styledata', updateMap);
     }
   }, [timeline, unusedSpots, routeGeoJSON]);
 
-  // --- スクリーンショットモード (シンプル&スタイリッシュ) ---
   if (showScreenshotMode) {
       let spotCounter = 0;
       return (
-          <div className="fixed inset-0 z-[100] bg-zinc-900 text-white overflow-y-auto">
-              <div className="p-8 max-w-md mx-auto min-h-screen bg-zinc-950 border-x border-zinc-800">
-                  <div className="flex justify-between items-end mb-12 pb-6 border-b border-zinc-800">
+          <div className="fixed inset-0 z-[100] bg-white text-gray-900 overflow-y-auto">
+              <div className="p-8 max-w-lg mx-auto min-h-screen">
+                  <div className="flex justify-between items-center mb-8 pb-4 border-b border-gray-200">
                       <div>
-                          <p className="text-xs font-mono text-cyan-400 mb-2">/// TRAVEL LOG</p>
-                          <h1 className="text-4xl font-black text-white tracking-tighter">Day {selectedDay}</h1>
+                          <p className="text-xs font-bold text-gray-400 tracking-wider">TRAVEL LOG</p>
+                          <h1 className="text-3xl font-black tracking-tight text-gray-800">Day {selectedDay}</h1>
                       </div>
-                      <button onClick={() => setShowScreenshotMode(false)} className="bg-zinc-800 px-4 py-2 rounded-lg font-bold text-xs text-zinc-400 hover:text-white">CLOSE</button>
+                      {/* 上部にも閉じるボタン（念のため） */}
+                      <button onClick={() => setShowScreenshotMode(false)} className="bg-gray-100 px-4 py-2 rounded-full font-bold text-xs text-gray-600 hover:bg-gray-200">CLOSE</button>
                   </div>
                   <div className="space-y-0 relative pl-4">
-                      {/* Timeline Line */}
-                      <div className="absolute left-[19px] top-4 bottom-4 w-[2px] bg-gradient-to-b from-cyan-500/50 to-purple-500/20 z-0"></div>
-                      
+                      <div className="absolute left-[19px] top-2 bottom-2 w-[2px] bg-gray-200 z-0"></div>
                       {timeline.map((item, i) => {
                           if (item.type === 'spot') {
+                              // スクショモードでも最新画像を使用
+                              const displaySpot = spots.find(s => 
+                                  (s.id && String(s.id) === String(item.spot.id)) || 
+                                  s.name === item.spot.name
+                              ) || item.spot;
+                              const displayImage = displaySpot.image_url || item.image || item.spot.image_url;
+
                               spotCounter++;
                               return (
-                                  <div key={i} className="relative z-10 mb-12 pl-12 break-inside-avoid">
-                                      <div className="absolute left-0 top-1 w-10 h-10 bg-zinc-900 rounded-xl flex items-center justify-center font-mono font-bold text-lg text-cyan-400 border-2 border-cyan-500/30 shadow-[0_0_15px_rgba(6,182,212,0.3)]">
-                                          {String(spotCounter).padStart(2, '0')}
+                                  <div key={i} className="relative z-10 mb-8 pl-10 break-inside-avoid">
+                                      <div className="absolute left-0 top-1 w-10 h-10 bg-indigo-600 rounded-full flex items-center justify-center font-bold text-lg text-white border-4 border-white shadow-sm">
+                                          {spotCounter}
                                       </div>
                                       <div>
-                                          <div className="flex items-center gap-3 mb-2">
-                                              <span className="text-2xl font-black text-white tracking-tight">{item.arrival}</span>
-                                              <ArrowRight size={14} className="text-zinc-600"/>
-                                              <span className="text-sm font-bold text-zinc-500">{item.departure}</span>
+                                          <div className="flex items-center gap-2 mb-1">
+                                              <span className="text-xl font-bold tracking-tight text-indigo-600">{item.arrival}</span>
+                                              <ArrowRight size={14} className="text-gray-400"/>
+                                              <span className="text-sm font-medium text-gray-500">{item.departure}</span>
                                           </div>
-                                          <h3 className="text-lg font-bold text-zinc-200 leading-snug mb-2">{item.spot.name}</h3>
-                                          <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-zinc-900 border border-zinc-800 rounded-md text-xs font-mono text-zinc-400">
-                                              <Clock size={12}/> {item.stay_min} MIN
-                                          </div>
+                                          <h3 className="text-lg font-bold leading-snug mb-1 text-gray-800">{item.spot.name}</h3>
+                                          {displayImage ? (
+                                              <div className="w-full h-32 mb-2 rounded-lg overflow-hidden bg-gray-100 mt-2 border border-gray-200">
+                                                  <SpotImage src={displayImage} alt={item.spot.name} className="w-full h-full"/>
+                                              </div>
+                                          ) : null}
+                                          <div className="text-xs text-gray-500 flex items-center gap-1 mt-1"><Clock size={12}/> 滞在: {item.stay_min}分</div>
                                       </div>
                                   </div>
                               );
                           } else if (item.type === 'travel') {
                               const mode = TRANSPORT_MODES.find(m => m.id === (item.transport_mode || 'car')) || TRANSPORT_MODES[0];
                               return (
-                                  <div key={i} className="relative z-10 mb-12 pl-16 flex items-center gap-4 text-zinc-500 font-mono text-xs">
-                                      <div className="bg-zinc-900 p-2 rounded-lg border border-zinc-800 text-zinc-400">{mode.icon}</div>
-                                      <span className="tracking-widest">{item.duration_min} MIN TRANSIT</span>
+                                  <div key={i} className="relative z-10 mb-8 pl-12 flex items-center gap-2 text-gray-400 text-xs font-bold">
+                                      {mode.icon} <span>{item.duration_min}分 移動</span>
                                   </div>
                               );
                           }
                       })}
                   </div>
-                  <div className="mt-20 pt-8 border-t border-zinc-800 flex justify-between items-center text-zinc-600 font-mono text-[10px]">
-                      <span>GENERATED BY ROUTE HACKER</span>
-                      <span>{new Date().toLocaleDateString()}</span>
-                  </div>
               </div>
+              {/* スクロール追従する大きな閉じるボタン */}
+              <button 
+                  onClick={() => setShowScreenshotMode(false)} 
+                  className="fixed bottom-8 right-8 bg-black text-white p-4 rounded-full shadow-2xl hover:scale-110 transition z-[110] flex items-center justify-center border-4 border-white"
+              >
+                  <X size={24} />
+              </button>
           </div>
       );
   }
 
-  // --- メイン描画 (Dark Tech UI) ---
   let spotCounter = 0;
 
   return (
-    <div className="flex flex-col h-full bg-zinc-950 relative font-sans text-zinc-200">
+    <div className="flex flex-col h-full bg-gray-50 relative font-sans text-gray-800 overflow-hidden">
       
-      {/* 編集モーダル (Dark Glass) */}
+      {/* 編集モーダル */}
       {editItem && (
-          <div className="absolute inset-0 z-[60] bg-black/80 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200">
-              <div className="bg-zinc-900/90 w-full max-w-sm rounded-2xl p-6 shadow-[0_0_40px_rgba(0,0,0,0.5)] border border-zinc-800 space-y-6">
-                  <div className="flex justify-between items-center border-b border-zinc-800 pb-4">
-                      <h3 className="text-lg font-bold text-white flex items-center gap-2"><Edit3 size={18} className="text-cyan-400"/> EDIT DETAILS</h3>
-                      <button onClick={() => setEditItem(null)} className="p-1 bg-zinc-800 rounded-full text-zinc-400 hover:text-white"><X size={16}/></button>
+          <div className="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl space-y-5 animate-in zoom-in-95 duration-200">
+                  <div className="flex justify-between items-center border-b border-gray-100 pb-3">
+                      <h3 className="font-bold text-gray-800 flex items-center gap-2"><Edit3 size={16}/> 詳細を編集</h3>
+                      <button onClick={() => setEditItem(null)} className="p-2 bg-gray-100 rounded-full hover:bg-gray-200 text-gray-500"><X size={16}/></button>
                   </div>
-                  
                   <div className="space-y-4">
                     <div>
-                        <label className="text-[10px] font-bold text-zinc-500 mb-1 flex items-center gap-1 uppercase tracking-wider"><LinkIcon size={10}/> Link URL</label>
-                        <input type="text" value={editItem.data.url || ''} onChange={(e) => setEditItem({...editItem, data: {...editItem.data, url: e.target.value}})} className="w-full bg-zinc-950 border border-zinc-800 rounded-lg p-3 text-sm outline-none focus:border-cyan-500 text-white placeholder-zinc-700 transition"/>
+                        <label className="text-xs font-bold text-gray-500 mb-1 block">参考URL</label>
+                        <input type="text" value={editItem.data.url || ''} onChange={(e) => setEditItem({...editItem, data: {...editItem.data, url: e.target.value}})} className="w-full bg-gray-50 border border-gray-200 rounded-lg p-3 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none text-gray-800 transition"/>
                     </div>
-                    
                     <div>
-                        <label className="text-[10px] font-bold text-zinc-500 mb-2 flex items-center gap-1 uppercase tracking-wider"><ImageIcon size={10}/> Photo</label>
-                        {editItem.data.image ? (
-                            <div className="relative h-32 w-full rounded-lg overflow-hidden group border border-zinc-800">
-                                <img src={editItem.data.image} alt="preview" className="w-full h-full object-cover opacity-80"/>
-                                <button onClick={() => setEditItem({...editItem, data: {...editItem.data, image: null}})} className="absolute top-2 right-2 bg-black/80 text-white p-1.5 rounded-md hover:bg-red-500 transition"><Trash2 size={14}/></button>
-                            </div>
-                        ) : (
-                            <label className="flex flex-col items-center justify-center h-24 border-2 border-dashed border-zinc-800 rounded-lg cursor-pointer hover:bg-zinc-800/50 hover:border-zinc-700 transition group">
-                                <Upload size={20} className="text-zinc-600 group-hover:text-cyan-400 mb-1"/>
-                                <span className="text-xs font-bold text-zinc-500 group-hover:text-zinc-300">Upload Image</span>
-                                <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden"/>
-                            </label>
-                        )}
+                        <label className="text-xs font-bold text-gray-500 mb-1 block">メモ</label>
+                        <textarea value={editItem.data.note || ''} onChange={(e) => setEditItem({...editItem, data: {...editItem.data, note: e.target.value}})} className="w-full bg-gray-50 border border-gray-200 rounded-lg p-3 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none text-gray-800 h-20 resize-none transition"/>
                     </div>
-
                     <div>
-                        <label className="text-[10px] font-bold text-zinc-500 mb-1 flex items-center gap-1 uppercase tracking-wider"><FileText size={10}/> Memo</label>
-                        <textarea value={editItem.data.note || ''} onChange={(e) => setEditItem({...editItem, data: {...editItem.data, note: e.target.value}})} className="w-full bg-zinc-950 border border-zinc-800 rounded-lg p-3 text-sm outline-none focus:border-cyan-500 text-white placeholder-zinc-700 h-24 resize-none" placeholder="Write a note..."/>
+                        <label className="text-xs font-bold text-gray-500 mb-2 block">写真</label>
+                        <div className="relative h-40 w-full rounded-lg overflow-hidden border border-gray-200 bg-gray-50">
+                            {editItem.data.image ? (
+                                <>
+                                    <SpotImage src={editItem.data.image} alt="preview" className="w-full h-full"/>
+                                    <button onClick={() => setEditItem({...editItem, data: {...editItem.data, image: null}})} className="absolute top-2 right-2 bg-white/80 text-gray-700 p-2 rounded-full hover:bg-red-50 hover:text-red-500 shadow-sm"><Trash2 size={16}/></button>
+                                </>
+                            ) : (
+                                <label className="flex flex-col items-center justify-center h-full w-full cursor-pointer hover:bg-gray-100 transition text-gray-400 hover:text-indigo-500">
+                                    <Upload size={20} className="mb-1"/>
+                                    <span className="text-xs">画像をアップロード</span>
+                                    <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden"/>
+                                </label>
+                            )}
+                        </div>
                     </div>
                   </div>
-
-                  <button onClick={handleEditSave} className="w-full bg-cyan-600 text-black py-3 rounded-lg font-black text-sm hover:bg-cyan-500 transition shadow-[0_0_15px_rgba(8,145,178,0.4)]">SAVE CHANGES</button>
+                  <button onClick={handleEditSave} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition shadow-lg shadow-indigo-200">変更を保存</button>
               </div>
           </div>
       )}
 
       {/* 設定モーダル */}
       {showSettings && (
-          <div className="absolute inset-0 z-50 bg-black/90 backdrop-blur-md p-6 flex flex-col animate-in slide-in-from-bottom-10">
-              <div className="flex justify-between items-center mb-8 border-b border-zinc-800 pb-4">
-                  <h2 className="text-2xl font-black text-white tracking-tight font-mono">SYSTEM CONFIG</h2>
-                  <button onClick={() => setShowSettings(false)} className="p-2 bg-zinc-800 rounded-full hover:bg-zinc-700 transition"><X size={20}/></button>
-              </div>
-              <div className="space-y-8 flex-1">
-                  <div className="grid grid-cols-2 gap-6">
-                      <div><label className="block text-xs font-bold text-cyan-500 mb-2 font-mono">START TIME</label><input type="time" value={startTime} onChange={(e)=>setStartTime(e.target.value)} className="w-full p-4 bg-zinc-900 rounded-xl font-mono font-bold text-xl text-white outline-none border border-zinc-800 focus:border-cyan-500 transition"/></div>
-                      <div><label className="block text-xs font-bold text-fuchsia-500 mb-2 font-mono">END TIME</label><input type="time" value={endTime} onChange={(e)=>setEndTime(e.target.value)} className="w-full p-4 bg-zinc-900 rounded-xl font-mono font-bold text-xl text-white outline-none border border-zinc-800 focus:border-fuchsia-500 transition"/></div>
+          <div className="absolute inset-0 z-50 bg-white/80 backdrop-blur-md flex flex-col justify-end sm:justify-center p-4 animate-in slide-in-from-bottom-10">
+              <div className="bg-white w-full max-w-md mx-auto rounded-3xl p-6 shadow-2xl border border-gray-100 space-y-6">
+                  <div className="flex justify-between items-center pb-2">
+                      <h2 className="text-xl font-bold text-gray-800">ルート設定</h2>
+                      <button onClick={() => setShowSettings(false)} className="p-2 bg-gray-100 rounded-full hover:bg-gray-200 text-gray-500"><X size={20}/></button>
                   </div>
-                  <button onClick={handleAutoGenerate} className="w-full bg-white text-black py-4 rounded-xl font-black text-lg shadow-[0_0_20px_rgba(255,255,255,0.2)] hover:scale-[1.02] transition flex items-center justify-center gap-2"><Sparkles size={20}/> RE-GENERATE ROUTE</button>
+                  <div className="grid grid-cols-2 gap-4">
+                      <div><label className="block text-xs font-bold text-gray-500 mb-2">開始時間</label><input type="time" value={startTime} onChange={(e)=>setStartTime(e.target.value)} className="w-full p-3 bg-gray-50 rounded-xl font-bold text-lg text-gray-800 border border-gray-200 focus:border-indigo-500 outline-none"/></div>
+                      <div><label className="block text-xs font-bold text-gray-500 mb-2">終了時間</label><input type="time" value={endTime} onChange={(e)=>setEndTime(e.target.value)} className="w-full p-3 bg-gray-50 rounded-xl font-bold text-lg text-gray-800 border border-gray-200 focus:border-indigo-500 outline-none"/></div>
+                  </div>
+                  <button onClick={handleAutoGenerate} className="w-full bg-indigo-600 text-white py-4 rounded-xl font-bold text-lg hover:bg-indigo-700 transition flex items-center justify-center gap-2 shadow-lg shadow-indigo-200">
+                      <Sparkles size={20}/> ルートを再生成
+                  </button>
               </div>
           </div>
       )}
-
-      {/* マップ表示エリア */}
-      <div className="h-[38%] w-full relative shrink-0 shadow-2xl z-10 rounded-b-[2rem] overflow-hidden border-b border-zinc-800">
-        <div ref={mapContainer} className="w-full h-full" />
-        
-        {/* 日程タブ */}
-        <div className="absolute top-4 left-0 right-0 overflow-x-auto no-scrollbar flex gap-3 z-10 px-4 pb-2 snap-x">
-            {Array.from({ length: displayDays }).map((_, i) => (
-                <button 
-                    key={i} 
-                    onClick={() => { setSelectedDay(i + 1); setIsPlanGenerated(false); setRouteGeoJSON(null); }}
-                    className={`snap-center px-5 py-2 rounded-md text-xs font-bold whitespace-nowrap shadow-lg transition-all active:scale-95 font-mono border ${selectedDay === i + 1 ? 'bg-cyan-950/80 border-cyan-500 text-cyan-400 backdrop-blur-md' : 'bg-black/60 border-zinc-700 text-zinc-500 hover:bg-zinc-900'}`}
-                >
-                    DAY {String(i + 1).padStart(2, '0')}
-                </button>
-            ))}
-        </div>
-        
-        {/* スクショボタン */}
-        {isPlanGenerated && (
-            <button onClick={() => setShowScreenshotMode(true)} className="absolute bottom-4 right-4 bg-black/80 backdrop-blur-md text-white px-4 py-2 rounded-full font-bold shadow-lg text-xs flex items-center gap-2 border border-zinc-700 hover:bg-zinc-800 transition">
-                <Camera size={14}/> VIEW LOG
-            </button>
-        )}
-      </div>
-
-      {/* タイムラインリストエリア */}
-      <div className="flex-1 overflow-y-auto bg-zinc-950 relative pb-28 pt-4"> 
-        {!isPlanGenerated ? (
-             <div className="flex flex-col items-center justify-center h-full text-center p-8 space-y-6">
-                 <div className="w-24 h-24 bg-zinc-900 rounded-full shadow-[0_0_30px_rgba(0,0,0,0.8)] border border-zinc-800 flex items-center justify-center"><Sparkles size={40} className="text-cyan-400 animate-pulse"/></div>
-                 <div>
-                    <h2 className="text-2xl font-black text-white mb-2 tracking-tight">DAY {selectedDay} PLAN</h2>
-                    <p className="text-sm text-zinc-500 font-mono">TARGETS: {activeDaySpots.length} SPOTS</p>
-                 </div>
-                 <button onClick={handleAutoGenerate} disabled={activeDaySpots.length < 2 || isProcessing} className="w-full max-w-xs bg-cyan-600 text-black py-4 rounded-xl font-black shadow-[0_0_20px_rgba(8,145,178,0.3)] disabled:opacity-50 disabled:cursor-not-allowed hover:bg-cyan-500 transition active:scale-95 text-sm flex items-center justify-center gap-2">
-                    {isProcessing ? <Loader2 className="animate-spin"/> : 'INITIATE ROUTE'}
-                 </button>
-             </div>
-        ) : (
-            <div className={`relative px-4 py-4 space-y-0 ${!isUnlocked ? 'filter blur-sm select-none pointer-events-none' : ''}`}>
-              
-              {/* タイムラインの線 (Glowing Line) */}
-              <div className="absolute left-[34px] top-6 bottom-6 w-0.5 bg-zinc-800 z-0 rounded-full">
-                  <div className="absolute top-0 bottom-0 left-0 right-0 bg-gradient-to-b from-cyan-500 via-purple-500 to-transparent opacity-50"></div>
-              </div>
-
-              {timeline?.map((item, i) => {
-                if (item.type === 'spot') {
-                  spotCounter++;
-                  const isHotelSpot = item.spot.is_hotel;
-                  return (
-                    <div 
-                        key={`spot-${i}`} 
-                        className="relative group mb-8 z-10 pl-12 select-none" 
-                        draggable={isUnlocked} 
-                        onDragStart={(e) => onDragStart(e, i)} 
-                        onDragOver={onDragOver} 
-                        onDrop={(e) => onDrop(e, i)}
-                    >
-                      {/* ドラッグハンドル */}
-                      <div className="absolute left-0 top-6 text-zinc-600 cursor-grab active:cursor-grabbing p-1 hover:text-cyan-400 transition">
-                          <GripVertical size={16}/>
-                      </div>
-
-                      {/* 番号バッジ (Neon Style) */}
-                      <div className={`absolute left-[20px] top-6 -translate-y-1/2 w-8 h-8 rounded-lg flex items-center justify-center text-xs font-black shadow-lg border-2 z-20 ${isHotelSpot ? 'bg-orange-900/80 border-orange-500 text-orange-400' : 'bg-cyan-950/80 border-cyan-500 text-cyan-400'}`}>
-                        {isHotelSpot ? <BedDouble size={14}/> : String(Math.floor(i/2) + 1).padStart(2, '0')}
-                      </div>
-                      
-                      {/* スポットカード (Dark Card) */}
-                      <div className={`bg-zinc-900/80 backdrop-blur-sm p-4 rounded-xl shadow-lg border relative overflow-hidden transition-all hover:border-cyan-500/50 ${isHotelSpot ? 'border-orange-500/30' : 'border-zinc-800'} ${draggedItemIndex === i ? 'opacity-50 scale-95 border-dashed border-cyan-500' : ''}`}>
-                        <div className="flex justify-between items-start gap-3">
-                            <div className="flex-1 min-w-0">
-                                <div className="flex items-baseline gap-2 mb-1">
-                                    <span className="text-lg font-black text-white font-mono leading-none tracking-tight">{item.arrival}</span>
-                                    <span className="text-xs font-bold text-zinc-500">- {item.departure}</span>
-                                </div>
-                                <span className="font-bold text-zinc-300 text-sm line-clamp-1">{item.spot.name}</span>
-                                {item.is_overnight && <span className="inline-block mt-2 px-2 py-0.5 bg-indigo-900/50 text-indigo-300 border border-indigo-500/30 rounded text-[10px] font-bold">OVERNIGHT</span>}
-                            </div>
-                            
-                            {/* アクションボタン */}
-                            <div className="flex flex-col gap-1">
-                                <button onClick={() => setEditItem({index: i, type: 'spot', data: item})} className="p-2 bg-zinc-800 rounded-lg text-zinc-400 hover:text-cyan-400 hover:bg-zinc-700 transition"><Edit3 size={14}/></button>
-                                {isUnlocked && <button onClick={() => toggleSpotInclusion(item.spot, false)} className="p-2 bg-zinc-800 rounded-lg text-zinc-400 hover:text-red-500 hover:bg-zinc-700 transition"><MinusCircle size={14}/></button>}
-                            </div>
-                        </div>
-
-                        {/* 滞在時間入力 */}
-                        {!item.is_overnight && (
-                            <div className="mt-3 flex items-center gap-2 bg-black/30 p-1.5 rounded-lg w-max border border-zinc-800">
-                                 <Clock size={12} className="text-zinc-500"/>
-                                 <input type="number" value={item.stay_min || item.spot.stay_time} onChange={(e) => handleTimeChange(i, e.target.value)} className="w-8 bg-transparent text-center text-xs font-bold outline-none text-zinc-300 font-mono"/>
-                                 <span className="text-[10px] font-bold text-zinc-600">MIN</span>
-                            </div>
-                        )}
-                        
-                        {/* 楽天トラベルリンク */}
-                        {isHotelSpot && (
-                            <a href={getAffiliateUrl(item.spot)} target="_blank" className="mt-3 block w-full text-center bg-gradient-to-r from-orange-600 to-red-600 text-white text-xs font-bold py-2.5 rounded-lg shadow-md hover:brightness-110 transition flex items-center justify-center gap-1 active:scale-95">
-                                <Search size={14}/> CHECK AVAILABILITY
-                            </a>
-                        )}
-
-                        {/* メタデータ表示 */}
-                        {(item.url || item.image || item.note) && (
-                            <div className="mt-3 pt-3 border-t border-zinc-800 flex gap-2 flex-wrap">
-                                {item.url && <a href={item.url} target="_blank" className="text-cyan-500 bg-cyan-950/30 border border-cyan-900 p-1.5 rounded hover:text-cyan-400 transition"><LinkIcon size={14}/></a>}
-                                {item.image && (
-                                    <div className="w-full h-32 rounded-lg overflow-hidden border border-zinc-700 mt-1 shadow-inner">
-                                        <img src={item.image} alt="uploaded" className="w-full h-full object-cover"/>
-                                    </div>
-                                )}
-                                {item.note && <div className="w-full text-xs text-zinc-400 bg-zinc-950/50 p-3 rounded-lg border border-zinc-800 font-mono">{item.note}</div>}
-                            </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                } 
-                // --- 移動 ---
-                else if (item.type === 'travel') {
-                  const mode = TRANSPORT_MODES.find(m => m.id === (item.transport_mode || 'car')) || TRANSPORT_MODES[0];
-                  const mapLink = getDirectionsUrl(i);
-
-                  return (
-                    <div key={`travel-${i}`} className="pl-12 mb-8 relative group select-none">
-                        <div className="flex items-center gap-2">
-                            {/* 移動手段チップ (Tech Chip) */}
-                            <div className="bg-black border border-zinc-800 px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-3 shadow-sm text-zinc-500 group-hover:border-zinc-600 transition font-mono">
-                                <div className="cursor-pointer flex items-center gap-2 hover:text-cyan-400 transition" onClick={() => {
-                                    const nextModeIdx = (TRANSPORT_MODES.findIndex(m => m.id === mode.id) + 1) % TRANSPORT_MODES.length;
-                                    handleTransportChange(i, TRANSPORT_MODES[nextModeIdx].id);
-                                }}>
-                                    {mode.icon}
-                                    <span className="uppercase">{mode.label}</span>
-                                </div>
-                                <span className="text-zinc-700">|</span>
-                                <input 
-                                    type="number" 
-                                    value={item.duration_min} 
-                                    onChange={(e) => handleTimeChange(i, e.target.value)}
-                                    className="w-8 bg-transparent text-center outline-none font-bold text-zinc-300"
-                                />
-                                <span className="text-[10px]">MIN</span>
-                            </div>
-                            
-                            {/* Googleマップリンク */}
-                            {mapLink && (
-                                <a href={mapLink} target="_blank" className="p-1.5 bg-zinc-900 text-zinc-400 rounded-md hover:text-green-400 hover:border-green-900 border border-zinc-800 transition">
-                                    <MapPinned size={14} />
-                                </a>
-                            )}
-
-                            <button onClick={() => setEditItem({index: i, type: 'travel', data: item})} className="text-zinc-600 hover:text-cyan-400 p-1 opacity-0 group-hover:opacity-100 transition"><Edit3 size={14}/></button>
-                        </div>
-                    </div>
-                  );
-                }
-              })}
-
-              {/* 未使用スポット */}
-              {unusedSpots.length > 0 && (
-                  <div className="mt-12 pt-8 border-t border-zinc-800">
-                      <h3 className="text-xs font-bold text-zinc-600 mb-4 flex items-center gap-2 uppercase tracking-widest"><Trash2 size={12}/> Standby Spots</h3>
-                      <div className="space-y-3">
-                          {unusedSpots.map((spot, i) => (
-                              <div key={`unused-${i}`} className="bg-zinc-900/50 p-3 rounded-xl border border-zinc-800 flex justify-between items-center opacity-60 hover:opacity-100 transition shadow-sm hover:border-zinc-600">
-                                  <span className="text-xs font-bold text-zinc-400 truncate flex-1">{spot.name}</span>
-                                  <button onClick={() => toggleSpotInclusion(spot, true)} className="bg-zinc-800 text-cyan-400 p-1.5 rounded-lg shadow hover:bg-zinc-700 transition"><PlusCircle size={16}/></button>
-                              </div>
-                          ))}
-                      </div>
-                  </div>
-              )}
-            </div>
-        )}
-      </div>
-      
-      {/* フッター操作ドック (Cyber Dock) */}
-      <div className="absolute bottom-6 left-1/2 transform -translate-x-1/2 z-20 flex gap-4">
-        <div className="bg-zinc-900/90 backdrop-blur-md rounded-2xl shadow-[0_10px_40px_rgba(0,0,0,0.5)] border border-zinc-700 p-2 flex items-center gap-1 ring-1 ring-white/5">
-            <button disabled={!isUnlocked} onClick={handlePinPlan} className="p-3 text-zinc-400 hover:text-cyan-400 hover:bg-zinc-800 rounded-xl transition disabled:opacity-30"><Save size={20}/></button>
-            <button onClick={() => setIsPinListOpen(true)} className="p-3 text-zinc-400 hover:text-cyan-400 hover:bg-zinc-800 rounded-xl transition"><BookOpen size={20}/></button>
-            <div className="w-px h-6 bg-zinc-700 mx-1"></div>
-            <button onClick={() => setTimeline(calculateSchedule(timeline))} disabled={!isUnlocked || isProcessing} className="p-3 text-zinc-400 hover:text-green-400 hover:bg-zinc-800 rounded-xl transition disabled:opacity-30"><RefreshCw size={20}/></button>
-            <button onClick={() => setShowSettings(true)} className="p-3 text-zinc-400 hover:text-fuchsia-400 hover:bg-zinc-800 rounded-xl transition"><Settings size={20}/></button>
-        </div>
-        
-        {/* 再生成ボタン */}
-        <button onClick={handleAutoGenerate} disabled={isProcessing} className="bg-white text-black w-14 h-14 rounded-2xl shadow-[0_0_20px_rgba(255,255,255,0.3)] flex items-center justify-center hover:scale-105 transition active:scale-95 border-2 border-zinc-200">
-            {isProcessing ? <Loader2 className="animate-spin text-black"/> : <Sparkles size={24} className="text-fuchsia-600"/>}
-        </button>
-      </div>
 
       {isPinListOpen && (
-          <div className="absolute inset-0 z-50 bg-black/90 backdrop-blur-sm p-6 flex flex-col animate-in fade-in duration-200">
-              <div className="flex justify-between items-center mb-6 border-b border-zinc-800 pb-4"><h2 className="text-xl font-black text-white flex items-center gap-2 font-mono">SAVED_DATA</h2><button onClick={() => setIsPinListOpen(false)} className="p-2 bg-zinc-800 rounded-full hover:bg-zinc-700 transition"><X size={20}/></button></div>
-              <div className="flex-1 overflow-y-auto space-y-3 p-1">
-                  {pinnedPlans.map((plan) => (
-                      <div key={plan.id} className="bg-zinc-900 border border-zinc-800 p-4 rounded-xl shadow-sm hover:border-cyan-500/50 transition flex justify-between items-center group cursor-pointer" onClick={() => handleLoadPin(plan)}>
-                          <div className="flex-1">
-                              <h3 className="font-bold text-zinc-200">{plan.title}</h3>
-                              <p className="text-[10px] text-zinc-500 font-mono mt-1">{new Date(plan.created_at).toLocaleString()}</p>
+          <div className="absolute inset-0 z-50 bg-black/20 backdrop-blur-sm flex justify-end">
+              <div className="w-full max-w-xs h-full bg-white border-l border-gray-100 p-4 animate-in slide-in-from-right duration-200 flex flex-col shadow-2xl">
+                  <div className="flex justify-between items-center mb-6"><h2 className="font-bold text-gray-800">保存済みプラン</h2><button onClick={() => setIsPinListOpen(false)} className="text-gray-500 hover:bg-gray-100 p-1 rounded-full"><X size={20}/></button></div>
+                  <div className="flex-1 overflow-y-auto space-y-3">
+                      {pinnedPlans.length === 0 && <p className="text-sm text-gray-400 text-center mt-10">保存されたプランはありません</p>}
+                      {pinnedPlans.map((plan) => (
+                          <div key={plan.id} className="bg-white p-4 rounded-xl border border-gray-200 hover:border-indigo-500 hover:shadow-md cursor-pointer group relative transition-all" onClick={() => handleLoadPin(plan)}>
+                              <h3 className="font-bold text-gray-800 text-sm">{plan.title}</h3>
+                              <p className="text-xs text-gray-500 mt-1">{new Date(plan.created_at).toLocaleDateString()}</p>
+                              <button onClick={(e) => { e.stopPropagation(); handleDeletePin(plan.id); }} className="absolute right-2 top-2 p-2 text-gray-400 hover:text-red-500"><Trash2 size={16}/></button>
                           </div>
-                          <button onClick={(e) => { e.stopPropagation(); handleDeletePin(plan.id); }} className="p-2 text-zinc-600 hover:text-red-500 hover:bg-zinc-800 rounded-lg transition"><Trash2 size={18}/></button>
-                      </div>
-                  ))}
+                      ))}
+                  </div>
               </div>
           </div>
       )}
+
+      {/* 上部マップエリア */}
+      <div 
+        className={`w-full relative shrink-0 z-10 border-b border-gray-200 shadow-sm transition-all duration-300 ease-in-out bg-white`}
+        style={{ height: isMapVisible ? '50vh' : '0px', overflow: 'hidden' }}
+      >
+        <div ref={mapContainer} className="w-full h-full" />
+      </div>
+
+      {/* 下部リストエリア (min-h-0でスクロール確保) */}
+      <div className="flex-1 overflow-y-auto relative bg-gray-50 pb-20 custom-scrollbar min-h-0">
+        
+        <div className="bg-white px-4 py-4 border-b border-gray-100 flex flex-col gap-3 sticky top-0 z-20 shadow-sm">
+            <button 
+                onClick={() => setIsMapVisible(!isMapVisible)} 
+                className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold text-sm transition"
+            >
+                {isMapVisible ? <ArrowUp size={16}/> : <MapIcon size={16}/>} {isMapVisible ? "地図を閉じる" : "地図を表示"}
+            </button>
+
+            <div className="flex justify-between items-center gap-2">
+                <div className="flex gap-2 overflow-x-auto no-scrollbar flex-1">
+                    {Array.from({ length: displayDays }).map((_, i) => (
+                        <button 
+                            key={i} 
+                            onClick={() => { setSelectedDay(i + 1); setIsPlanGenerated(false); setRouteGeoJSON(null); }}
+                            className={`px-3 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-all shadow-sm border ${selectedDay === i + 1 ? 'bg-black text-white border-black' : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-100'}`}
+                        >
+                            Day {i + 1}
+                        </button>
+                    ))}
+                </div>
+                
+                <div className="flex items-center gap-2 shrink-0">
+                    <button onClick={() => setShowSettings(true)} className="p-2 bg-white text-gray-500 border border-gray-200 rounded-full shadow-sm hover:text-indigo-600 transition"><Settings size={18}/></button>
+                    <button onClick={() => setIsPinListOpen(true)} className="p-2 bg-white text-gray-500 border border-gray-200 rounded-full shadow-sm hover:text-indigo-600 transition"><BookOpen size={18}/></button>
+                    {isPlanGenerated && (
+                        <>
+                            <button onClick={() => setTimeline(calculateSchedule(timeline))} className="p-2 bg-white text-gray-500 border border-gray-200 rounded-full shadow-sm hover:text-indigo-600 transition"><RefreshCw size={18}/></button>
+                            <button onClick={handlePinPlan} className="p-2 bg-white text-gray-500 border border-gray-200 rounded-full shadow-sm hover:text-indigo-600 transition"><Save size={18}/></button>
+                            <button onClick={() => setShowScreenshotMode(true)} className="p-2 bg-white text-gray-500 border border-gray-200 rounded-full shadow-sm hover:text-indigo-600 transition"><Camera size={18}/></button>
+                        </>
+                    )}
+                </div>
+            </div>
+            
+            <button 
+                onClick={handleAutoGenerate} 
+                disabled={activeDaySpots.length < 2 || isProcessing}
+                className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold text-sm hover:bg-indigo-700 transition flex items-center justify-center gap-2 shadow-sm disabled:opacity-50 disabled:shadow-none"
+            >
+                {isProcessing ? <Loader2 className="animate-spin w-4 h-4"/> : <Sparkles size={16}/>} ルート最適化
+            </button>
+        </div>
+
+        <div className="p-4">
+            {!isPlanGenerated ? (
+                 <div className="flex flex-col items-center justify-center py-12 text-center space-y-4 opacity-60">
+                     <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center border border-gray-200 shadow-sm"><MapPin size={24} className="text-gray-400"/></div>
+                     <div>
+                        <h2 className="text-lg font-bold text-gray-700">ルートを作成しましょう</h2>
+                        <p className="text-xs text-gray-500">Day {selectedDay} には {activeDaySpots.length}箇所のスポットがあります</p>
+                     </div>
+                 </div>
+            ) : (
+                <div className={`relative`}>
+                    <div className="absolute left-[24px] top-4 bottom-4 w-0.5 bg-gray-200 z-0"></div>
+
+                    {unusedSpots.length > 0 && (
+                        <div className="mb-6 relative z-10 pl-14">
+                            <button onClick={() => setShowUnusedList(!showUnusedList)} className="flex items-center gap-2 text-xs font-bold text-gray-500 mb-3 hover:text-indigo-600 transition bg-white/50 px-3 py-1 rounded-full w-max border border-gray-200">
+                                <Layers size={14}/> 待機中スポット ({unusedSpots.length}) {showUnusedList ? <ChevronUp size={12}/> : <ChevronDown size={12}/>}
+                            </button>
+                            {showUnusedList && (
+                                <div className="space-y-2">
+                                    {unusedSpots.map((spot, i) => {
+                                        // 待機中スポットも最新の画像情報を取得
+                                        const latestSpot = spots.find(s => (s.id && String(s.id) === String(spot.id)) || s.name === spot.name) || spot;
+                                        return (
+                                            <div key={`unused-${spot.id || i}`} className="bg-white p-3 rounded-lg border border-gray-200 flex justify-between items-center group shadow-sm">
+                                                <div className="flex items-center gap-2 overflow-hidden">
+                                                    {latestSpot.image_url && <img src={latestSpot.image_url} alt="" className="w-8 h-8 rounded-md object-cover bg-gray-100 shrink-0"/>}
+                                                    <span className="text-xs font-medium text-gray-600 truncate flex-1">{spot.name}</span>
+                                                </div>
+                                                <button onClick={() => toggleSpotInclusion(spot, true)} className="text-indigo-600 hover:text-indigo-500 p-1 bg-indigo-50 rounded-full"><PlusCircle size={18}/></button>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {timeline?.map((item, i) => {
+                        // --- スポット (ドラッグ可能) ---
+                        if (item.type === 'spot') {
+                          spotCounter++;
+                          return (
+                            <div 
+                                key={`spot-${item.spot.id || i}`} 
+                                className={`relative mb-6 z-10 pl-14 group transition-all duration-200 ${draggedItemIndex === i ? 'opacity-40 scale-[0.98]' : ''}`}
+                                draggable={true} 
+                                onDragStart={(e) => onDragStart(e, i)} 
+                                onDragEnd={onDragEnd}
+                                onDragOver={onDragOver} 
+                                onDrop={(e) => onDrop(e, i)}
+                                style={{ touchAction: 'pan-y' }} // タッチ操作対策
+                            >
+                              <div className={`absolute left-0 top-6 -translate-y-1/2 w-12 h-12 rounded-xl flex flex-col items-center justify-center font-bold shadow-md border-[3px] z-20 transition-transform bg-white border-white text-indigo-600 ring-1 ring-gray-100`}>
+                                <span className="text-lg leading-none">{String(spotCounter).padStart(2, '0')}</span>
+                              </div>
+                              
+                              <div className="bg-white border border-gray-200 rounded-xl overflow-hidden hover:border-indigo-400 hover:shadow-md transition-all cursor-grab active:cursor-grabbing" onClick={() => setEditItem({index: i, type: 'spot', data: item})}>
+                                <div className="flex h-24">
+                                    <div className="w-24 bg-gray-100 shrink-0 relative border-r border-gray-100">
+                                        {/* 画像表示ロジック: 最新のspots情報を優先 */}
+                                        {(() => {
+                                            const displaySpot = spots.find(s => 
+                                                (s.id && String(s.id) === String(item.spot.id)) || 
+                                                s.name === item.spot.name
+                                            ) || item.spot;
+                                            const displayImage = displaySpot.image_url || item.image || item.spot.image_url;
+                                            
+                                            return <SpotImage src={displayImage} alt={item.spot.name} className="w-full h-full"/>;
+                                        })()}
+                                        
+                                        {item.is_overnight && <div className="absolute top-0 right-0 bg-indigo-600 text-white text-[9px] font-bold px-1.5 py-0.5 shadow-sm">宿泊</div>}
+                                    </div>
+
+                                    <div className="flex-1 p-3 flex flex-col justify-between">
+                                        <div>
+                                            <div className="flex justify-between items-start mb-1">
+                                                <h3 className="font-bold text-gray-800 text-sm line-clamp-1">{item.spot.name}</h3>
+                                                <button onClick={(e) => { e.stopPropagation(); toggleSpotInclusion(item.spot, false); }} className="text-gray-400 hover:text-red-500 p-1"><MinusCircle size={16}/></button>
+                                            </div>
+                                            <div className="flex items-center gap-2 text-xs font-bold text-indigo-500 font-mono bg-indigo-50 w-max px-2 py-0.5 rounded">
+                                                <span>{item.arrival}</span> <ArrowRight size={10} className="text-indigo-300"/> <span>{item.departure}</span>
+                                            </div>
+                                        </div>
+
+                                        <div className="flex justify-between items-end mt-1">
+                                            {!item.is_overnight && (
+                                                <div className="flex items-center gap-1 bg-gray-50 px-2 py-1 rounded border border-gray-200" onClick={(e) => e.stopPropagation()}>
+                                                    <Clock size={10} className="text-gray-500"/>
+                                                    <input type="number" value={item.stay_min || item.spot.stay_time} onChange={(e) => handleTimeChange(i, e.target.value)} className="w-6 bg-transparent text-center text-xs font-bold outline-none text-gray-700 p-0"/>
+                                                    <span className="text-[9px] text-gray-500">分</span>
+                                                </div>
+                                            )}
+                                            {item.spot.is_hotel && (
+                                                <a href={getAffiliateUrl(item.spot)} target="_blank" onClick={(e)=>e.stopPropagation()} className="bg-orange-50 text-orange-600 px-2 py-1 rounded text-[10px] font-bold border border-orange-200 hover:bg-orange-100 transition shadow-sm">空室確認</a>
+                                            )}
+                                        </div>
+                                    </div>
+                                    <div className="w-8 flex items-center justify-center text-gray-300 hover:text-indigo-500 hover:bg-gray-50 transition border-l border-gray-100 bg-gray-50/50 cursor-grab">
+                                        <GripVertical size={16}/>
+                                    </div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        } 
+                        // --- 移動 (ドラッグ受け入れ) ---
+                        else if (item.type === 'travel') {
+                          const mode = TRANSPORT_MODES.find(m => m.id === (item.transport_mode || 'car')) || TRANSPORT_MODES[0];
+                          const mapLink = getDirectionsUrl(i);
+
+                          return (
+                            <div 
+                                key={`travel-${i}`} 
+                                className="pl-14 mb-6 relative group"
+                                onDragOver={onDragOver}
+                                onDrop={(e) => onDrop(e, i)}
+                            >
+                                <div className="flex items-center gap-3">
+                                    <div className="h-full absolute left-[24px] top-0 bottom-0 flex flex-col items-center justify-center z-0"></div>
+                                    <div className="bg-white border border-gray-200 rounded-full px-4 py-2 flex items-center gap-3 text-xs shadow-sm hover:border-gray-300 transition w-full sm:w-auto">
+                                        <div className="text-gray-500 cursor-pointer hover:text-indigo-600 flex items-center gap-1 transition" onClick={() => {
+                                            const nextModeIdx = (TRANSPORT_MODES.findIndex(m => m.id === mode.id) + 1) % TRANSPORT_MODES.length;
+                                            handleTransportChange(i, TRANSPORT_MODES[nextModeIdx].id);
+                                        }}>
+                                            {mode.icon}
+                                        </div>
+                                        <div className="h-4 w-px bg-gray-200"></div>
+                                        <div className="flex items-center gap-1">
+                                            <input type="number" value={item.duration_min} onChange={(e) => handleTimeChange(i, e.target.value)} className="w-8 bg-transparent text-center font-bold text-gray-600 focus:text-indigo-600 outline-none"/>
+                                            <span className="text-[10px] text-gray-400">分</span>
+                                        </div>
+                                        {mapLink && (
+                                            <a href={mapLink} target="_blank" className="text-gray-400 hover:text-green-600 ml-1 transition"><MapPinned size={14}/></a>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                          );
+                        }
+                    })}
+                    
+                    <div className="absolute left-[24px] bottom-0 w-3 h-3 bg-gray-400 rounded-full -translate-x-1/2 border-2 border-white shadow-sm"></div>
+                </div>
+            )}
+        </div>
+      </div>
     </div>
   );
 }

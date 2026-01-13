@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Dict
 import os
 import json
 import urllib.parse
@@ -14,6 +14,7 @@ import re
 import traceback
 from datetime import date, timedelta 
 import random 
+from contextlib import asynccontextmanager
 
 load_dotenv()
 
@@ -25,7 +26,22 @@ MAPBOX_ACCESS_TOKEN = os.getenv("MAPBOX_ACCESS_TOKEN")
 GEOAPIFY_API_KEY = os.getenv("GEOAPIFY_API_KEY")
 RAKUTEN_APP_ID = os.getenv("RAKUTEN_APP_ID")
 
-app = FastAPI()
+# ★高速化: インメモリキャッシュ
+WIKI_CACHE: Dict[str, str] = {}
+# ★高速化: 共通のHTTPクライアント
+http_client = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 起動時にClient作成
+    global http_client
+    http_client = httpx.AsyncClient(verify=False, timeout=10.0)
+    yield
+    # 終了時にClient破棄
+    if http_client:
+        await http_client.aclose()
+
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -112,27 +128,88 @@ class OptimizeRequest(BaseModel):
 # ---------------------------------------------------------
 # ユーティリティ
 # ---------------------------------------------------------
+
+WIKI_HEADERS = {
+    "User-Agent": "RouteHackerBot/1.0 (contact@example.com)"
+}
+
+async def fetch_wikipedia_image(client, query: str):
+    """
+    Wikipedia APIを使用して画像のURLを取得する
+    ★キャッシュ対応 & タイムアウト短縮
+    """
+    if not query:
+        return None
+
+    if query in WIKI_CACHE:
+        return WIKI_CACHE[query]
+
+    try:
+        # 1. ページを検索
+        search_url = "https://ja.wikipedia.org/w/api.php"
+        search_params = {
+            "action": "query",
+            "list": "search",
+            "srsearch": query,
+            "format": "json",
+            "utf8": 1,
+            "srlimit": 1
+        }
+        
+        res = await client.get(search_url, params=search_params, headers=WIKI_HEADERS, timeout=1.5)
+        data = res.json()
+        
+        if not data.get("query", {}).get("search"):
+            return None
+            
+        page_id = data["query"]["search"][0]["pageid"]
+        
+        # 2. 画像情報を取得
+        img_url = "https://ja.wikipedia.org/w/api.php"
+        img_params = {
+            "action": "query",
+            "prop": "pageimages",
+            "pageids": page_id,
+            "pithumbsize": 400,
+            "format": "json"
+        }
+        img_res = await client.get(img_url, params=img_params, headers=WIKI_HEADERS, timeout=1.5)
+        img_data = img_res.json()
+        pages = img_data.get("query", {}).get("pages", {})
+        page = pages.get(str(page_id))
+        
+        if page and "thumbnail" in page:
+            url = page["thumbnail"]["source"]
+            WIKI_CACHE[query] = url
+            return url
+            
+    except Exception as e:
+        pass
+    return None
+
 async def fetch_spot_coordinates(client, target_name: str, search_query: str):
     try:
         clean_query = re.sub(r'[\(（].*?[\)）]', '', search_query).strip()
         
-        # ★改善: limitを5に設定し、複数候補を取得
         url = "https://api.geoapify.com/v1/geocode/search"
-        params = {"text": clean_query, "apiKey": GEOAPIFY_API_KEY, "lang": "ja", "limit": 5, "countrycode": "jp"}
+        params = {"text": clean_query, "apiKey": GEOAPIFY_API_KEY, "lang": "ja", "limit": 3, "countrycode": "jp"}
         
-        res = await client.get(url, params=params, timeout=10.0)
+        res = await client.get(url, params=params, timeout=5.0)
+
+        image_url = None
+        try:
+             image_url = await fetch_wikipedia_image(client, target_name)
+        except:
+             pass
         
         if res.status_code == 200:
             data = res.json()
             if "features" in data and len(data["features"]) > 0:
-                # ★改善: 上位から順にチェックし、条件に合うものが見つかれば採用
                 for i, feat in enumerate(data["features"]):
                     props = feat["properties"]
                     result_name = props.get("name", "")
                     
-                    # ★改善: 名前がない（空文字やNone）場合はスキップ（無題の間引き）
                     if not result_name or not result_name.strip():
-                        print(f"    🗑️ [Skip #{i+1}] No Name (Address only?) -> Skipping")
                         continue
 
                     formatted_addr = props.get("formatted", "")
@@ -143,7 +220,6 @@ async def fetch_spot_coordinates(client, target_name: str, search_query: str):
                     
                     if len(n_target) == 0: continue
                     
-                    # 照合ロジック
                     is_contained = (n_target in n_result) or (n_result in n_target)
                     common_chars = sum(1 for c in n_target if c in n_result)
                     match_ratio = common_chars / len(n_target) if len(n_target) > 0 else 0
@@ -156,13 +232,29 @@ async def fetch_spot_coordinates(client, target_name: str, search_query: str):
 
                     if is_contained or match_ratio >= 0.5:
                         desc = formatted_addr.replace(result_name, "").strip(", ")
-                        return {"name": result_name, "description": desc or "AIおすすめスポット", "coordinates": feat["geometry"]["coordinates"]}
+                        return {
+                            "name": result_name, 
+                            "description": desc or "AIおすすめスポット", 
+                            "coordinates": feat["geometry"]["coordinates"],
+                            "image_url": image_url
+                        }
             else:
                 print(f"    ⚠️ [NotFound] No results for '{clean_query}'")
 
     except Exception as e:
         print(f"Coord fetch failed for {target_name}: {e}")
     return None
+
+# ---------------------------------------------------------
+# API: 画像単体取得
+# ---------------------------------------------------------
+@app.get("/api/get_spot_image")
+async def get_spot_image(query: str):
+    global http_client
+    if http_client is None: return {"image_url": None}
+    
+    img_url = await fetch_wikipedia_image(http_client, query)
+    return {"image_url": img_url}
 
 # ---------------------------------------------------------
 # API: 楽天URLからのホテルインポート
@@ -175,77 +267,80 @@ async def import_rakuten_hotel(req: ImportRequest):
     hotel_no = None
     final_url = req.url
 
-    async with httpx.AsyncClient(verify=False, follow_redirects=True) as client:
-        try:
-            if "rakuten.co.jp" in req.url:
-                try:
-                    res = await client.get(req.url, timeout=10.0)
-                    final_url = str(res.url)
-                except Exception as e:
-                    print(f"Redirect follow failed: {e}")
-            
-            match = re.search(r'travel\.rakuten\.co\.jp/.*?/(\d+)', final_url)
-            if match:
-                hotel_no = match.group(1)
-            else:
-                parsed = urllib.parse.urlparse(final_url)
-                qs = urllib.parse.parse_qs(parsed.query)
-                if "f_no" in qs: hotel_no = qs["f_no"][0]
-                elif "no" in qs: hotel_no = qs["no"][0]
+    global http_client
+    if http_client is None: return {"error": "Server starting up..."}
+    client = http_client
 
-            if not hotel_no:
-                return {"error": "URLからホテルIDを特定できませんでした。楽天トラベルのホテルページURLか確認してください。"}
+    try:
+        if "rakuten.co.jp" in req.url:
+            try:
+                res = await client.get(req.url, timeout=10.0)
+                final_url = str(res.url)
+            except Exception as e:
+                print(f"Redirect follow failed: {e}")
+        
+        match = re.search(r'travel\.rakuten\.co\.jp/.*?/(\d+)', final_url)
+        if match:
+            hotel_no = match.group(1)
+        else:
+            parsed = urllib.parse.urlparse(final_url)
+            qs = urllib.parse.parse_qs(parsed.query)
+            if "f_no" in qs: hotel_no = qs["f_no"][0]
+            elif "no" in qs: hotel_no = qs["no"][0]
 
-            params = {
-                "applicationId": RAKUTEN_APP_ID,
-                "format": "json",
-                "hotelNo": hotel_no,
-                "datumType": 1,
-            }
-            api_url = "https://app.rakuten.co.jp/services/api/Travel/SimpleHotelSearch/20170426"
-            res = await client.get(api_url, params=params, timeout=10.0)
-            
-            if res.status_code != 200:
-                return {"error": "ホテル情報の取得に失敗しました。"}
+        if not hotel_no:
+            return {"error": "URLからホテルIDを特定できませんでした。"}
 
-            data = res.json()
-            if "hotels" not in data or not data["hotels"]:
-                return {"error": "該当するホテルが見つかりませんでした。"}
+        params = {
+            "applicationId": RAKUTEN_APP_ID,
+            "format": "json",
+            "hotelNo": hotel_no,
+            "datumType": 1,
+        }
+        api_url = "https://app.rakuten.co.jp/services/api/Travel/SimpleHotelSearch/20170426"
+        res = await client.get(api_url, params=params, timeout=10.0)
+        
+        if res.status_code != 200:
+            return {"error": "ホテル情報の取得に失敗しました。"}
 
-            raw_hotel = data["hotels"][0]
-            basic = None
-            
-            hotel_content = raw_hotel
-            if isinstance(raw_hotel, dict) and "hotel" in raw_hotel:
-                hotel_content = raw_hotel["hotel"]
-            
-            if isinstance(hotel_content, list) and len(hotel_content) > 0:
-                basic = hotel_content[0].get("hotelBasicInfo")
-            elif isinstance(hotel_content, dict):
-                basic = hotel_content.get("hotelBasicInfo")
+        data = res.json()
+        if "hotels" not in data or not data["hotels"]:
+            return {"error": "該当するホテルが見つかりませんでした。"}
 
-            if not basic:
-                return {"error": "ホテル情報の解析に失敗しました。"}
+        raw_hotel = data["hotels"][0]
+        basic = None
+        
+        hotel_content = raw_hotel
+        if isinstance(raw_hotel, dict) and "hotel" in raw_hotel:
+            hotel_content = raw_hotel["hotel"]
+        
+        if isinstance(hotel_content, list) and len(hotel_content) > 0:
+            basic = hotel_content[0].get("hotelBasicInfo")
+        elif isinstance(hotel_content, dict):
+            basic = hotel_content.get("hotelBasicInfo")
 
-            spot_data = {
-                "id": str(basic["hotelNo"]),
-                "name": basic["hotelName"],
-                "description": basic.get("hotelSpecial", "")[:100] + "...",
-                "coordinates": [basic["longitude"], basic["latitude"]],
-                "image_url": basic.get("hotelImageUrl"),
-                "url": basic.get("hotelInformationUrl"),
-                "price": basic.get("hotelMinCharge", 0),
-                "rating": basic.get("reviewAverage", 3.0),
-                "source": "rakuten",
-                "is_hotel": True,
-                "status": "hotel_candidate"
-            }
-            
-            return {"spot": spot_data}
+        if not basic:
+            return {"error": "ホテル情報の解析に失敗しました。"}
 
-        except Exception as e:
-            print(f"Import Error: {e}")
-            return {"error": "処理中にエラーが発生しました。"}
+        spot_data = {
+            "id": str(basic["hotelNo"]),
+            "name": basic["hotelName"],
+            "description": basic.get("hotelSpecial", "")[:100] + "...",
+            "coordinates": [basic["longitude"], basic["latitude"]],
+            "image_url": basic.get("hotelImageUrl"),
+            "url": basic.get("hotelInformationUrl"),
+            "price": basic.get("hotelMinCharge", 0),
+            "rating": basic.get("reviewAverage", 3.0),
+            "source": "rakuten",
+            "is_hotel": True,
+            "status": "hotel_candidate"
+        }
+        
+        return {"spot": spot_data}
+
+    except Exception as e:
+        print(f"Import Error: {e}")
+        return {"error": "処理中にエラーが発生しました。"}
 
 # ---------------------------------------------------------
 # API: 楽天トラベル (VacantHotelSearch)
@@ -255,133 +350,140 @@ async def search_hotels_vacant(req: VacantSearchRequest):
     if not RAKUTEN_APP_ID:
         return {"error": "サーバー設定エラー: RAKUTEN_APP_IDが設定されていません"}
 
-    async with httpx.AsyncClient(verify=False) as client:
-        safe_radius = round(req.radius, 1)
-        today = date.today()
-        c_in = req.checkin_date
-        c_out = req.checkout_date
-        
-        if not c_in:
-            next_month = today + timedelta(days=30)
-            c_in = next_month.strftime("%Y-%m-%d")
-        if not c_out:
-            try:
-                c_in_obj = date.fromisoformat(c_in)
-                c_out = (c_in_obj + timedelta(days=1)).strftime("%Y-%m-%d")
-            except:
-                c_out = (today + timedelta(days=31)).strftime("%Y-%m-%d")
+    global http_client
+    if http_client is None: return {"error": "Server starting up..."}
+    client = http_client
 
-        params = {
-            "applicationId": RAKUTEN_APP_ID,
-            "format": "json",
-            "latitude": req.latitude,
-            "longitude": req.longitude,
-            "searchRadius": safe_radius,
-            "datumType": 1,
-            "hits": 30,
-            "sort": "standard",
-            "checkinDate": c_in,
-            "checkoutDate": c_out,
-            "adultNum": req.adult_num,
-        }
-        
-        if req.max_price: params["maxCharge"] = req.max_price
-        if req.min_price: params["minCharge"] = req.min_price
-
+    safe_radius = round(req.radius, 1)
+    today = date.today()
+    c_in = req.checkin_date
+    c_out = req.checkout_date
+    
+    if not c_in:
+        next_month = today + timedelta(days=30)
+        c_in = next_month.strftime("%Y-%m-%d")
+    if not c_out:
         try:
-            url = "https://app.rakuten.co.jp/services/api/Travel/VacantHotelSearch/20170426"
-            res = await client.get(url, params=params, timeout=10.0)
-            
-            if res.status_code == 404:
-                return {"hotels": []}
+            c_in_obj = date.fromisoformat(c_in)
+            c_out = (c_in_obj + timedelta(days=1)).strftime("%Y-%m-%d")
+        except:
+            c_out = (today + timedelta(days=31)).strftime("%Y-%m-%d")
 
-            if res.status_code != 200:
+    params = {
+        "applicationId": RAKUTEN_APP_ID,
+        "format": "json",
+        "latitude": req.latitude,
+        "longitude": req.longitude,
+        "searchRadius": safe_radius,
+        "datumType": 1,
+        "hits": 30,
+        "sort": "standard",
+        "checkinDate": c_in,
+        "checkoutDate": c_out,
+        "adultNum": req.adult_num,
+    }
+    
+    if req.max_price: params["maxCharge"] = req.max_price
+    if req.min_price: params["minCharge"] = req.min_price
+
+    try:
+        url = "https://app.rakuten.co.jp/services/api/Travel/VacantHotelSearch/20170426"
+        res = await client.get(url, params=params, timeout=10.0)
+        
+        if res.status_code == 404:
+            return {"hotels": []}
+
+        if res.status_code != 200:
+            try:
+                error_json = res.json()
+                error_desc = error_json.get("error_description", str(res.text))
+                return {"error": f"楽天APIエラー: {error_desc}"}
+            except:
+                return {"error": f"楽天API通信エラー: HTTP {res.status_code}"}
+
+        data = res.json()
+        hotels = []
+        
+        if "hotels" in data:
+            raw_hotels = data["hotels"]
+            for i, h_group in enumerate(raw_hotels):
                 try:
-                    error_json = res.json()
-                    error_desc = error_json.get("error_description", str(res.text))
-                    return {"error": f"楽天APIエラー: {error_desc}"}
-                except:
-                    return {"error": f"楽天API通信エラー: HTTP {res.status_code}"}
-
-            data = res.json()
-            hotels = []
-            
-            if "hotels" in data:
-                raw_hotels = data["hotels"]
-                for i, h_group in enumerate(raw_hotels):
-                    try:
-                        hotel_content = h_group
-                        if isinstance(h_group, dict) and "hotel" in h_group:
-                            hotel_content = h_group["hotel"]
-                        
-                        if not isinstance(hotel_content, list) or len(hotel_content) == 0:
-                            continue
-
-                        basic = hotel_content[0].get("hotelBasicInfo")
-                        if not basic: continue
-
-                        best_price = float('inf')
-                        best_plan_id = None
-                        best_room_class = None
-                        found_valid_plan = False
-                        
-                        for j in range(1, len(hotel_content)):
-                            room_container = hotel_content[j]
-                            if "roomInfo" in room_container:
-                                r_info = room_container["roomInfo"]
-                                if isinstance(r_info, list) and len(r_info) >= 2:
-                                    r_basic = r_info[0].get("roomBasicInfo")
-                                    r_charge = r_info[1].get("dailyCharge")
-                                    
-                                    if r_basic and r_charge:
-                                        total = r_charge.get("total", 0)
-                                        if total and total > 0:
-                                            if total < best_price:
-                                                best_price = total
-                                                best_plan_id = r_basic.get("planId")
-                                                best_room_class = r_basic.get("roomClass")
-                                                found_valid_plan = True
-
-                        if not found_valid_plan: continue
-                        if req.min_price and best_price < req.min_price: continue
-                        if req.max_price and best_price > req.max_price: continue
-
-                        name = basic["hotelName"]
-                        review_avg = basic.get("reviewAverage")
-                        final_rating = review_avg if review_avg else 3.0
-                        
-                        hotels.append({
-                            "id": str(basic["hotelNo"]),
-                            "name": name,
-                            "description": basic.get("hotelSpecial", "")[:60] + "...",
-                            "coordinates": [basic["longitude"], basic["latitude"]],
-                            "image_url": basic.get("hotelImageUrl"),
-                            "url": basic.get("hotelInformationUrl"),
-                            "price": int(best_price),
-                            "rating": final_rating,
-                            "review_count": basic.get("reviewCount", 0),
-                            "source": "rakuten",
-                            "is_hotel": True,
-                            "plan_id": best_plan_id,
-                            "room_class": best_room_class,
-                            "status": "hotel_candidate"
-                        })
-                    except Exception as parse_err:
-                        print(f"⚠️ Parse Error at index {i}: {parse_err}")
+                    hotel_content = h_group
+                    if isinstance(h_group, dict) and "hotel" in h_group:
+                        hotel_content = h_group["hotel"]
+                    
+                    if not isinstance(hotel_content, list) or len(hotel_content) == 0:
                         continue
-            
-            return {"hotels": hotels}
 
-        except Exception as e:
-            traceback.print_exc()
-            return {"error": f"システムエラー: {str(e)}"}
+                    basic = hotel_content[0].get("hotelBasicInfo")
+                    if not basic: continue
+
+                    best_price = float('inf')
+                    best_plan_id = None
+                    best_room_class = None
+                    found_valid_plan = False
+                    
+                    for j in range(1, len(hotel_content)):
+                        room_container = hotel_content[j]
+                        if "roomInfo" in room_container:
+                            r_info = room_container["roomInfo"]
+                            if isinstance(r_info, list) and len(r_info) >= 2:
+                                r_basic = r_info[0].get("roomBasicInfo")
+                                r_charge = r_info[1].get("dailyCharge")
+                                
+                                if r_basic and r_charge:
+                                    total = r_charge.get("total", 0)
+                                    if total and total > 0:
+                                        if total < best_price:
+                                            best_price = total
+                                            best_plan_id = r_basic.get("planId")
+                                            best_room_class = r_basic.get("roomClass")
+                                            found_valid_plan = True
+
+                    if not found_valid_plan: continue
+                    if req.min_price and best_price < req.min_price: continue
+                    if req.max_price and best_price > req.max_price: continue
+
+                    name = basic["hotelName"]
+                    review_avg = basic.get("reviewAverage")
+                    final_rating = review_avg if review_avg else 3.0
+                    
+                    hotels.append({
+                        "id": str(basic["hotelNo"]),
+                        "name": name,
+                        "description": basic.get("hotelSpecial", "")[:60] + "...",
+                        "coordinates": [basic["longitude"], basic["latitude"]],
+                        "image_url": basic.get("hotelImageUrl"),
+                        "url": basic.get("hotelInformationUrl"),
+                        "price": int(best_price),
+                        "rating": final_rating,
+                        "review_count": basic.get("reviewCount", 0),
+                        "source": "rakuten",
+                        "is_hotel": True,
+                        "plan_id": best_plan_id,
+                        "room_class": best_room_class,
+                        "status": "hotel_candidate"
+                    })
+                except Exception as parse_err:
+                    print(f"⚠️ Parse Error at index {i}: {parse_err}")
+                    continue
+        
+        return {"hotels": hotels}
+
+    except Exception as e:
+        traceback.print_exc()
+        return {"error": f"システムエラー: {str(e)}"}
 
 # ---------------------------------------------------------
-# API: AI提案 (検索精度強化版)
+# API: AI提案
 # ---------------------------------------------------------
 @app.post("/api/suggest_spots")
 async def suggest_spots(req: SuggestRequest):
     formatted_spots = []
+    
+    global http_client
+    if http_client is None: return {"spots": []}
+    client = http_client
     
     prompt = f"""
     場所: {req.theme}
@@ -403,49 +505,44 @@ async def suggest_spots(req: SuggestRequest):
     }}
     """
     
-    async with httpx.AsyncClient(verify=False) as client:
-        try:
-            print(f"\n🚀 [AI Start] Request Theme: {req.theme}")
-            
-            ai_res = await aclient.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-                max_tokens=1000
-            )
-            
-            content = ai_res.choices[0].message.content
-            json_data = json.loads(content)
-            raw_spots = json_data.get("spots", [])
-            
-            spot_names_log = [s.get("name") for s in raw_spots]
-            print(f"🤖 [AI Proposal]: {spot_names_log}")
-            
-            seen_names = set()
-            target_spots = []
-            for s in raw_spots:
-                if s["name"] not in seen_names:
-                    target_spots.append(s)
-                    seen_names.add(s["name"])
-            target_spots = target_spots[:10]
+    try:
+        print(f"\n🚀 [AI Start] Request Theme: {req.theme}")
+        
+        ai_res = await aclient.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            max_tokens=1000
+        )
+        
+        content = ai_res.choices[0].message.content
+        json_data = json.loads(content)
+        raw_spots = json_data.get("spots", [])
+        
+        seen_names = set()
+        target_spots = []
+        for s in raw_spots:
+            if s["name"] not in seen_names:
+                target_spots.append(s)
+                seen_names.add(s["name"])
+        target_spots = target_spots[:10]
 
-            # 2. 住所特定（Geoapify）
-            tasks = [fetch_spot_coordinates(client, s["name"], s["search_query"]) for s in target_spots]
-            results = await asyncio.gather(*tasks)
-            
-            seen_coords = []
-            for res in results:
-                if res and res["coordinates"] != [0.0, 0.0] and res["coordinates"] not in seen_coords:
-                    formatted_spots.append({**res, "stay_time": 90, "source": "ai", "is_hotel": False, "status": "candidate"})
-                    seen_coords.append(res["coordinates"])
-            
-            verified_names = [s['name'] for s in formatted_spots]
-            print(f"✅ [Verified Result]: {verified_names}")
-            print(f"📉 [Drop Rate]: {len(raw_spots)} -> {len(formatted_spots)}\n")
+        # 並列実行で座標と画像を取得
+        tasks = [fetch_spot_coordinates(client, s["name"], s["search_query"]) for s in target_spots]
+        results = await asyncio.gather(*tasks)
+        
+        seen_coords = []
+        for res in results:
+            if res and res["coordinates"] != [0.0, 0.0] and res["coordinates"] not in seen_coords:
+                formatted_spots.append({**res, "stay_time": 90, "source": "ai", "is_hotel": False, "status": "candidate"})
+                seen_coords.append(res["coordinates"])
+        
+        verified_names = [s['name'] for s in formatted_spots]
+        print(f"✅ [Verified Result]: {len(formatted_spots)} spots")
 
-        except Exception as e:
-            print(f"❌ [Error]: {e}")
-            traceback.print_exc()
+    except Exception as e:
+        print(f"❌ [Error]: {e}")
+        traceback.print_exc()
 
     return {"spots": formatted_spots}
 
@@ -458,31 +555,43 @@ async def verify_spots(req: VerifyRequest):
 # ---------------------------------------------------------
 async def calculate_route_fallback(client, ordered_spots, start_min, limit_min):
     if not ordered_spots: return {"error": "スポットがありません"}
-    coords = ";".join([f"{s.coordinates[0]},{s.coordinates[1]}" for s in ordered_spots])
+    
+    # 25個制限対策
+    calc_spots = ordered_spots[:25]
+    
+    coords = ";".join([f"{s.coordinates[0]},{s.coordinates[1]}" for s in calc_spots])
     url = f"https://api.mapbox.com/directions/v5/mapbox/driving/{coords}"
     res = await client.get(url, params={"access_token": MAPBOX_ACCESS_TOKEN, "geometries": "geojson"})
     data = res.json()
+    
     if "routes" not in data or not data['routes']: return {"error": "ルート計算失敗"}
     
     route = data['routes'][0]
     timeline = []
     current = start_min
-    for i, spot in enumerate(ordered_spots):
+    
+    for i, spot in enumerate(calc_spots):
         stay = spot.stay_time or 60
         arr = current
         dep = arr + stay
-        if dep > limit_min: break
+        # if dep > limit_min: break
+        
         timeline.append({
             "type": "spot", "spot": {**spot.model_dump(), "stay_time": stay},
             "arrival": f"{int(arr//60):02d}:{int(arr%60):02d}",
             "departure": f"{int(dep//60):02d}:{int(dep%60):02d}"
         })
-        if i < len(route['legs']):
-            dur = math.ceil(route['legs'][i]['duration'] / 60)
-            if i+1 < len(ordered_spots):
-                gurl = f"https://www.google.com/maps/dir/?api=1&origin={urllib.parse.quote(spot.name)}&destination={urllib.parse.quote(ordered_spots[i+1].name)}&travelmode=driving"
-                timeline.append({"type": "travel", "duration_min": dur, "google_maps_url": gurl})
+        
+        if i < len(calc_spots) - 1:
+            dur = 30 # default
+            if i < len(route.get('legs', [])):
+                dur = math.ceil(route['legs'][i]['duration'] / 60)
+            
+            if i+1 < len(calc_spots):
+                gurl = f"http://googleusercontent.com/maps.google.com/?saddr={urllib.parse.quote(spot.name)}&daddr={urllib.parse.quote(calc_spots[i+1].name)}&travelmode=driving"
+                timeline.append({"type": "travel", "duration_min": dur, "transport_mode": "car", "google_maps_url": gurl})
             current = dep + dur
+            
     used = set(t['spot']['name'] for t in timeline if t['type']=='spot')
     return {"timeline": timeline, "unused_spots": [s for s in ordered_spots if s.name not in used], "route_geometry": route['geometry']}
 
@@ -491,10 +600,20 @@ async def calculate_route_fallback(client, ordered_spots, start_min, limit_min):
 async def calculate_route_endpoint(req: OptimizeRequest):
     spots = [s for s in req.spots if s.coordinates and len(s.coordinates) >= 2]
     if len(spots) < 2: return {"error": "2箇所以上必要"}
+    
+    global http_client
+    if http_client is None: return {"error": "Server starting up..."}
+    client = http_client
+
     try:
         sh, sm = map(int, req.start_time.split(':'))
         eh, em = map(int, req.end_time.split(':'))
         start, limit = sh*60+sm, eh*60+em
     except: start, limit = 540, 1080
-    async with httpx.AsyncClient(verify=False) as client:
-        return await calculate_route_fallback(client, spots, start, limit)
+    
+    return await calculate_route_fallback(client, spots, start, limit)
+
+# ★追加: スリープ対策用エンドポイント
+@app.get("/")
+async def root():
+    return {"status": "active", "message": "Render is awake!"}

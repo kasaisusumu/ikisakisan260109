@@ -235,7 +235,26 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
         });
         const data = await res.json();
-        if (data.hotels?.length > 0) { setHotels(data.hotels); updateHotelMarkers(data.hotels); }
+        if (data.hotels?.length > 0) { 
+            setHotels(data.hotels); 
+            updateHotelMarkers(data.hotels); 
+            
+            if (map.current) {
+                const { latitude, longitude, radius } = searchArea;
+                const kmPerDegLat = 111.32;
+                const kmPerDegLng = 111.32 * Math.cos(latitude * (Math.PI / 180));
+                
+                const latOffset = radius / kmPerDegLat;
+                const lngOffset = radius / kmPerDegLng;
+                
+                const bounds = new mapboxgl.LngLatBounds(
+                    [longitude - lngOffset, latitude - latOffset],
+                    [longitude + lngOffset, latitude + latOffset]
+                );
+                
+                map.current.fitBounds(bounds, { padding: 80, duration: 1500 });
+            }
+        }
         else alert("条件に合う宿が見つかりませんでした");
     } catch (e) { alert("通信エラー"); } finally { setIsLoading(false); }
   };
