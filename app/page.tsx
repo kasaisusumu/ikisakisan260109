@@ -13,7 +13,8 @@ import {
   MapPinned, Users, Edit2, CheckCircle, HelpCircle, 
   BedDouble, ChevronDown, ChevronUp, Calendar, MapPin,
   Image as ImageIcon, Users as UsersIcon,
-  PenTool, Loader2, Clock, ThumbsUp
+  PenTool, Loader2, Clock, ThumbsUp, Link as LinkIcon, MessageSquare,
+  Save, XCircle
 } from 'lucide-react';
 import BottomNav from './components/BottomNav';
 import HotelListView from './components/HotelListView';
@@ -134,6 +135,11 @@ function HomeContent() {
   const [nopedHistory, setNopedHistory] = useState<string[]>([]);
   const [isSuggesting, setIsSuggesting] = useState(false);
 
+  // コメント・リンク編集用state
+  const [isEditingMemo, setIsEditingMemo] = useState(false); 
+  const [editCommentValue, setEditCommentValue] = useState("");
+  const [editLinkValue, setEditLinkValue] = useState("");
+  
   const [isEditingDesc, setIsEditingDesc] = useState(false);
   const [editDescValue, setEditDescValue] = useState("");
   const [showVoteDetailSpot, setShowVoteDetailSpot] = useState<any>(null);
@@ -417,6 +423,10 @@ function HomeContent() {
       // 型エラー修正: prevの型をanyにする
       setSelectedResult({ text: name, place_name: desc, center: center, is_saved: isSaved, voters: [] });
       setViewMode('selected');
+      // 選択時は初期状態として編集モードオフ、入力欄はクリア（保存済みならuseEffectで入る）
+      setIsEditingMemo(false);
+      setEditCommentValue("");
+      setEditLinkValue("");
       setIsEditingDesc(false);
   };
 
@@ -497,15 +507,23 @@ function HomeContent() {
       const uniqueVoters = Array.from(new Set(voters));
       const isSaved = planSpots.some(s => s.name === selectedResult.text);
 
+      // コメント・リンクの状態同期 (保存済みの場合のみ、かつ編集中でなければDB値で上書き)
+      if (isSaved && currentSpot && !isEditingMemo) {
+          if (currentSpot.comment !== editCommentValue) setEditCommentValue(currentSpot.comment || "");
+          if (currentSpot.link !== editLinkValue) setEditLinkValue(currentSpot.link || "");
+      }
+
       // 型エラー修正: prevの型をanyにする
       setSelectedResult((prev: any) => ({
         ...prev,
         id: currentSpot.id || prev.id, 
         voters: uniqueVoters,
         is_saved: isSaved,
+        comment: currentSpot.comment,
+        link: currentSpot.link
       }));
     }
-  }, [spotVotes, planSpots]);
+  }, [spotVotes, planSpots, isEditingMemo]); // isEditingMemoを依存配列に追加
 
   const loadRoomData = async (id: string) => {
     const { data: spots } = await supabase.from('spots').select('*').eq('room_id', id).order('order', { ascending: true });
@@ -587,12 +605,24 @@ function HomeContent() {
         url: spot.url || null,
         plan_id: spot.plan_id || null,
         is_hotel: spot.is_hotel || false,
-        day: 0
+        day: 0,
+        // ★ ここで入力中のコメントとリンクを使用
+        comment: editCommentValue,
+        link: editLinkValue
     };
 
     const { data, error } = await supabase.from('spots').insert([newSpotPayload]).select().single();
     if (error) { console.error("Add spot error:", error); alert("スポットの追加に失敗しました"); return; }
-    if (data) { setPlanSpots(prev => [...prev, data]); resetSearchState(); setQuery(""); setSessionToken(Math.random().toString(36)); }
+    if (data) { 
+        setPlanSpots(prev => [...prev, data]); 
+        resetSearchState(); 
+        setQuery(""); 
+        setSessionToken(Math.random().toString(36)); 
+        // 状態クリア
+        setEditCommentValue("");
+        setEditLinkValue("");
+        setIsEditingMemo(false);
+    }
   };
 
   const removeSpot = async (spot: any) => {
@@ -632,7 +662,17 @@ function HomeContent() {
     const dbSpot = planSpots.find(s => s.name === spot.name);
     const previewId = dbSpot ? dbSpot.id : spot.id;
 
-    const previewData = { ...spot, id: previewId, text: spot.name, place_name: spot.description, is_saved: isSaved, voters: uniqueVoters, added_by: spot.added_by, image_url: spot.image_url };
+    // コメント・リンクを初期セット (編集モードはオフ)
+    setIsEditingMemo(false);
+    if (dbSpot) {
+        setEditCommentValue(dbSpot.comment || "");
+        setEditLinkValue(dbSpot.link || "");
+    } else {
+        setEditCommentValue("");
+        setEditLinkValue("");
+    }
+
+    const previewData = { ...spot, id: previewId, text: spot.name, place_name: spot.description, is_saved: isSaved, voters: uniqueVoters, added_by: spot.added_by, image_url: spot.image_url, comment: spot.comment, link: spot.link };
     setSelectedResult(previewData);
     setViewMode('selected');
     setIsEditingDesc(false);
@@ -645,6 +685,21 @@ function HomeContent() {
   const handleReceiveCandidates = (newCandidates: any[]) => {
       const spotsWithIds = newCandidates.map((s) => ({ ...s, id: `ai-suggest-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`, status: 'candidate' }));
       setCandidates(spotsWithIds);
+  };
+
+  const handleSaveMemo = async () => {
+      if (!selectedResult || !roomId) return;
+      const updated = { ...selectedResult, comment: editCommentValue, link: editLinkValue };
+      setSelectedResult(updated);
+      
+      // ローカルstate更新
+      setPlanSpots(prev => prev.map(s => s.id === updated.id ? { ...s, comment: editCommentValue, link: editLinkValue } : s));
+
+      // DB更新
+      await supabase.from('spots').update({ comment: editCommentValue, link: editLinkValue }).eq('id', updated.id);
+      
+      // 編集モード終了
+      setIsEditingMemo(false);
   };
 
   const handleSaveDescription = () => {
@@ -760,6 +815,11 @@ function HomeContent() {
           setSelectedResult({ id: Date.now(), text: name, place_name: initialDesc, center: coordinates, is_saved: isSaved, voters: [] });
           setViewMode('selected');
           setIsEditingDesc(false);
+          // 選択時は初期状態として編集モードオフ
+          setIsEditingMemo(false);
+          setEditCommentValue("");
+          setEditLinkValue("");
+          
           map.current?.flyTo({ center: coordinates, zoom: 16, offset: [0, -200] });
           
           fetchSpotImage(name).then(img => {
@@ -1008,69 +1068,154 @@ function HomeContent() {
           )}
 
           {viewMode === 'selected' && selectedResult && (
-            <div className="absolute bottom-0 left-0 w-full z-40 p-4 pb-24 pointer-events-none flex justify-center">
-              <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-[0_20px_50px_rgba(0,0,0,0.3)] pointer-events-auto overflow-hidden animate-in slide-in-from-bottom-10 border border-gray-100">
-                <div className="p-6 relative">
-                  <button onClick={() => { setSelectedResult(null); setViewMode('default'); }} className="absolute top-5 right-5 bg-gray-100 hover:bg-gray-200 text-gray-500 p-2 rounded-full transition z-10"><X size={18}/></button>
-                  
-                  {/* 画像表示エリア (SpotImageを使用) */}
-                  <div className="w-full h-40 rounded-xl overflow-hidden mb-4 bg-gray-100 shadow-inner">
-                      <SpotImage 
-                          src={selectedResult.image_url} 
-                          alt={selectedResult.text} 
-                          className="w-full h-full"
-                      />
-                  </div>
-
-                  <div className="pr-10 mb-4">
-                      <h2 className="text-2xl font-black text-gray-900 leading-tight mb-1">{selectedResult.text}</h2>
+            <div className="absolute bottom-0 left-0 w-full z-40 p-4 pb-20 pointer-events-none flex justify-center items-end h-full">
+              {/* カードコンテナ: flex-col, max-hを設定 */}
+              <div className="bg-white w-full max-w-md rounded-[2rem] shadow-2xl pointer-events-auto overflow-hidden animate-in slide-in-from-bottom-10 border border-gray-100 flex flex-col max-h-[70vh]">
+                
+                {/* 1. 画像ヘッダーエリア (固定高さ) */}
+                <div className="relative h-32 shrink-0 bg-gray-200">
+                  <SpotImage 
+                      src={selectedResult.image_url} 
+                      alt={selectedResult.text} 
+                      className="w-full h-full object-cover"
+                  />
+                  {/* 閉じるボタン */}
+                  <button 
+                    onClick={() => { setSelectedResult(null); setViewMode('default'); }} 
+                    className="absolute top-3 right-3 bg-black/40 hover:bg-black/60 text-white p-1.5 rounded-full transition backdrop-blur-sm z-10"
+                  >
+                    <X size={16}/>
+                  </button>
+                  {/* タイトルオーバーレイ */}
+                  <div className="absolute bottom-0 left-0 right-0 p-4 pt-10 bg-gradient-to-t from-black/80 via-black/40 to-transparent">
+                      <h2 className="text-xl font-black text-white leading-tight truncate">{selectedResult.text}</h2>
                       {isEditingDesc ? (
-                          <div className="flex gap-2 mt-2"><input autoFocus value={editDescValue} onChange={(e) => setEditDescValue(e.target.value)} className="flex-1 bg-gray-50 border border-blue-200 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-blue-100"/><button onClick={handleSaveDescription} className="bg-blue-600 text-white px-4 py-2 rounded-xl text-xs font-bold shadow-md">保存</button></div>
+                          <div className="flex gap-2 mt-1 pointer-events-auto">
+                              <input autoFocus value={editDescValue} onChange={(e) => setEditDescValue(e.target.value)} className="flex-1 bg-white/90 text-black text-xs rounded px-2 py-1 outline-none"/>
+                              <button onClick={handleSaveDescription} className="bg-blue-600 text-white px-2 py-1 rounded text-xs font-bold">保存</button>
+                          </div>
                       ) : (
-                          <p className="text-xs text-gray-500 flex items-center gap-2 cursor-pointer hover:text-blue-600 transition font-medium" onClick={() => { setIsEditingDesc(true); setEditDescValue(selectedResult.place_name); }}>
-                              <MapPin size={12} className="shrink-0 text-blue-400"/> {selectedResult.place_name} <Edit2 size={10} className="opacity-50"/>
+                          <p className="text-[10px] text-gray-200 flex items-center gap-1 font-medium truncate" onClick={() => { setIsEditingDesc(true); setEditDescValue(selectedResult.place_name); }}>
+                              <MapPin size={10} className="shrink-0"/> {selectedResult.place_name} <Edit2 size={8} className="opacity-50"/>
                           </p>
                       )}
                   </div>
+                </div>
+
+                {/* 2. スクロール可能コンテンツエリア */}
+                <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-white overscroll-contain">
                   
-                  {/* 詳細モーダル内：投票セクション */}
+                  {/* ★ コメント・リンク入力/表示エリア */}
+                  {selectedResult.is_saved ? (
+                      <div className="bg-gray-50 p-3 rounded-xl border border-gray-100 space-y-2">
+                           <div className="flex justify-between items-center">
+                               <label className="text-[10px] font-bold text-gray-400 uppercase flex items-center gap-1">
+                                   <MessageSquare size={10}/> メモ & リンク
+                               </label>
+                               {!isEditingMemo && (
+                                   <button onClick={() => setIsEditingMemo(true)} className="text-blue-600 hover:bg-blue-50 p-1 rounded transition">
+                                       <Edit2 size={12}/>
+                                   </button>
+                               )}
+                           </div>
+
+                           {isEditingMemo ? (
+                               <div className="space-y-2 animate-in fade-in">
+                                   <textarea 
+                                       placeholder="メモを入力..." 
+                                       value={editCommentValue} 
+                                       onChange={(e) => setEditCommentValue(e.target.value)} 
+                                       className="w-full bg-white p-2 rounded-lg text-xs border border-gray-200 focus:ring-2 focus:ring-blue-100 outline-none resize-none h-16"
+                                   />
+                                   <input 
+                                       type="text"
+                                       placeholder="URL" 
+                                       value={editLinkValue} 
+                                       onChange={(e) => setEditLinkValue(e.target.value)} 
+                                       className="w-full bg-white p-2 rounded-lg text-xs border border-gray-200 focus:ring-2 focus:ring-blue-100 outline-none"
+                                   />
+                                   <div className="flex gap-2">
+                                       <button onClick={() => setIsEditingMemo(false)} className="flex-1 py-1.5 rounded-lg text-[10px] font-bold text-gray-500 bg-gray-200">キャンセル</button>
+                                       <button onClick={handleSaveMemo} className="flex-1 py-1.5 rounded-lg text-[10px] font-bold text-white bg-blue-600">保存</button>
+                                   </div>
+                               </div>
+                           ) : (
+                               <div className="space-y-1.5">
+                                   {selectedResult.comment ? (
+                                       <p className="text-xs text-gray-700 leading-relaxed whitespace-pre-wrap">{selectedResult.comment}</p>
+                                   ) : (
+                                       <span className="text-[10px] text-gray-400 italic">メモなし</span>
+                                   )}
+                                   {selectedResult.link && (
+                                       <a href={selectedResult.link} target="_blank" className="flex items-center gap-1.5 text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-1.5 rounded-lg hover:bg-blue-100 transition w-fit max-w-full">
+                                           <LinkIcon size={10} className="shrink-0"/> <span className="truncate">{selectedResult.link}</span>
+                                       </a>
+                                   )}
+                               </div>
+                           )}
+                      </div>
+                  ) : (
+                      // 未保存時の入力欄（アコーディオン化）
+                      <div className="bg-gray-50 p-3 rounded-xl border border-gray-100">
+                          <div className="flex items-center gap-2 mb-1 cursor-pointer" onClick={() => setIsEditingMemo(!isEditingMemo)}>
+                              <Plus size={12} className="text-gray-400"/>
+                              <span className="text-xs font-bold text-gray-500">メモ・リンクを追加 (任意)</span>
+                              <ChevronDown size={12} className={`text-gray-400 transition-transform ${isEditingMemo ? 'rotate-180' : ''}`}/>
+                          </div>
+                          {isEditingMemo && (
+                              <div className="space-y-2 pt-2 animate-in slide-in-from-top-1">
+                                  <textarea placeholder="メモ..." value={editCommentValue} onChange={(e) => setEditCommentValue(e.target.value)} className="w-full bg-white p-2 rounded-lg text-xs border border-gray-200 outline-none resize-none h-12"/>
+                                  <input type="text" placeholder="URL" value={editLinkValue} onChange={(e) => setEditLinkValue(e.target.value)} className="w-full bg-white p-2 rounded-lg text-xs border border-gray-200 outline-none"/>
+                              </div>
+                          )}
+                      </div>
+                  )}
+                  
+                  {/* 投票セクション (保存済みのみ) */}
                   {selectedResult.is_saved && selectedResult.id && (
-                      <div className="mb-6 bg-gray-50 p-4 rounded-xl border border-gray-100">
-                          <div className="flex justify-between items-center mb-3">
-                              <h3 className="text-xs font-bold text-gray-400 flex items-center gap-1"><UsersIcon size={12}/> 投票メンバー ({selectedResult.voters.length})</h3>
-                              <button 
-                                  onClick={() => handleToggleVote(selectedResult.id)} 
-                                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${selectedResult.voters.includes(userName) ? 'bg-red-50 text-red-600 border border-red-100' : 'bg-blue-600 text-white shadow-md'}`}
-                              >
-                                  {selectedResult.voters.includes(userName) ? '取り消す' : <><ThumbsUp size={12}/> 投票する</>}
-                              </button>
-                          </div>
-                          <div className="flex flex-wrap gap-2">
-                              {selectedResult.voters.length === 0 ? (
-                                  <span className="text-xs text-gray-400">まだ投票はありません</span>
-                              ) : (
-                                  selectedResult.voters.map((voter: string) => (
-                                      <div key={voter} className="flex items-center gap-1 bg-white px-2 py-1 rounded-md border border-gray-200 shadow-sm">
-                                          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: getUDColor(voter) }}></div>
-                                          <span className="text-xs font-bold text-gray-600">{voter}</span>
-                                      </div>
+                      <div className="flex items-center justify-between bg-white p-2 rounded-xl border border-gray-100 shadow-sm">
+                          <div className="flex items-center gap-[-4px] pl-1">
+                              {selectedResult.voters.length > 0 ? (
+                                  selectedResult.voters.map((voter: string, i: number) => (
+                                      <div key={voter} className="w-6 h-6 rounded-full border-2 border-white -ml-1 first:ml-0 shadow-sm" style={{ backgroundColor: getUDColor(voter) }} title={voter}/>
                                   ))
-                              )}
+                              ) : <span className="text-[10px] text-gray-400 pl-1">投票なし</span>}
                           </div>
+                          <button 
+                              onClick={() => handleToggleVote(selectedResult.id)} 
+                              className={`px-3 py-1.5 rounded-lg text-[10px] font-bold transition flex items-center gap-1 ${selectedResult.voters.includes(userName) ? 'bg-red-50 text-red-500 border border-red-100' : 'bg-black text-white shadow-md'}`}
+                          >
+                              {selectedResult.voters.includes(userName) ? '投票取消' : <><ThumbsUp size={10}/> 投票</>}
+                          </button>
                       </div>
                   )}
 
-                  <div className="flex gap-2 mb-6 overflow-x-auto no-scrollbar pb-2">
-                      <a href={`http://googleusercontent.com/maps.google.com/?q=${encodeURIComponent(selectedResult.text)}`} target="_blank" className="flex items-center gap-1.5 bg-gray-50 px-4 py-2.5 rounded-2xl text-xs font-bold text-gray-600 border border-gray-100 hover:bg-gray-100 transition whitespace-nowrap"><MapPinned size={14}/> Google Maps</a>
-                  </div>
-                  <div className="flex gap-3">
-                      {selectedResult.is_saved ? (
-                          <button onClick={() => removeSpot(selectedResult)} className="flex-1 bg-red-50 text-red-600 border border-red-100 py-4 rounded-2xl font-black text-sm flex items-center justify-center gap-2 hover:bg-red-100 transition active:scale-95"><Trash2 size={18}/> 削除する</button>
-                      ) : (
-                          <button onClick={() => { addSpot({ name: selectedResult.text, description: selectedResult.place_name, coordinates: selectedResult.center, status: 'candidate' }); setSelectedResult((prev: any) => ({...prev, is_saved: true})); }} className="flex-1 bg-black text-white py-4 rounded-2xl font-black text-sm flex items-center justify-center gap-2 shadow-xl hover:scale-[1.02] active:scale-95 transition"><Plus size={18}/> リストに追加</button>
+                  {/* 外部リンク (横スクロール) */}
+                  <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
+                      <a href={`http://googleusercontent.com/maps.google.com/?q=${encodeURIComponent(selectedResult.text)}`} target="_blank" className="flex items-center gap-1 bg-gray-100 px-3 py-2 rounded-lg text-[10px] font-bold text-gray-600 hover:bg-gray-200 transition whitespace-nowrap shrink-0">
+                          <MapPinned size={12}/> Google Maps
+                      </a>
+                      {selectedResult.link && (
+                          <a href={selectedResult.link} target="_blank" className="flex items-center gap-1 bg-blue-50 px-3 py-2 rounded-lg text-[10px] font-bold text-blue-600 hover:bg-blue-100 transition whitespace-nowrap shrink-0">
+                              <ExternalLink size={12}/> 公式/参考
+                          </a>
                       )}
                   </div>
                 </div>
+
+                {/* 3. 固定アクションボタンエリア */}
+                <div className="p-4 bg-gray-50 border-t border-gray-100 shrink-0">
+                  {selectedResult.is_saved ? (
+                      <button onClick={() => removeSpot(selectedResult)} className="w-full bg-white text-red-500 border border-red-100 py-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 hover:bg-red-50 transition active:scale-95 shadow-sm">
+                          <Trash2 size={14}/> リストから削除
+                      </button>
+                  ) : (
+                      <button onClick={() => { addSpot({ name: selectedResult.text, description: selectedResult.place_name, coordinates: selectedResult.center, status: 'candidate' }); setSelectedResult((prev: any) => ({...prev, is_saved: true})); }} className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 shadow-lg hover:bg-blue-700 transition active:scale-95">
+                          <Plus size={16}/> リストに追加
+                      </button>
+                  )}
+                </div>
+
               </div>
             </div>
           )}

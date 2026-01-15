@@ -99,6 +99,9 @@ class Spot(BaseModel):
     room_class: Optional[str] = None
     status: str = "candidate"
     day: int = 0
+    # ★追加: コメントとリンク
+    comment: str = ""
+    link: str = ""
 
     @field_validator('stay_time', 'votes', mode='before')
     def parse_int_fields(cls, v):
