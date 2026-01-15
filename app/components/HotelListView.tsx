@@ -6,7 +6,7 @@ import 'mapbox-gl/dist/mapbox-gl.css';
 import { 
   Search, ExternalLink, MapPin, 
   X, TrendingUp, DollarSign,
-  Star, Loader2, PenTool, Trash2, Plus, Calendar, Users, SlidersHorizontal, Link as LinkIcon, Download, ChevronUp, ChevronDown, Check
+  Star, Loader2, PenTool, Trash2, Plus, Calendar, Users, SlidersHorizontal, Link as LinkIcon, Download, ChevronUp, ChevronDown, Check, AlertTriangle
 } from 'lucide-react';
 
 // ==========================================
@@ -123,11 +123,10 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
   const handleSelectHotel = (hotel: any) => {
       setSelectedHotel(hotel);
       if (map.current) {
-          // ★ 修正: 画面の上半分の中央にピンが来るようにオフセットを設定
           map.current.flyTo({ 
               center: hotel.coordinates, 
               zoom: 16, 
-              offset: [0, -window.innerHeight / 4], // 画面の4分の1分、上にずらす
+              offset: [0, -window.innerHeight / 4], 
               duration: 1000 
           });
       }
@@ -217,7 +216,12 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
       const centerLat = (minLat + maxLat) / 2;
       const centerLng = (minLng + maxLng) / 2;
       let radiusKm = (calculateDistance(centerLat, centerLng, maxLat, maxLng) / 2) * 1.1;
-      setSearchArea({ latitude: centerLat, longitude: centerLng, radius: Math.min(radiusKm, 3.0) });
+      
+      // ★上限を5.0kmに緩和（バックエンドで安全に処理されるため）
+      if (radiusKm < 0.1) radiusKm = 0.5;
+      if (radiusKm > 5.0) radiusKm = 5.0;
+      
+      setSearchArea({ latitude: centerLat, longitude: centerLng, radius: Number(radiusKm.toFixed(2)) });
       stopDrawing();
       setShowSettings(true);
   };
@@ -241,6 +245,7 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
             
             if (map.current) {
                 const { latitude, longitude, radius } = searchArea;
+                // 表示用にはユーザーが指定した半径を使う
                 const kmPerDegLat = 111.32;
                 const kmPerDegLng = 111.32 * Math.cos(latitude * (Math.PI / 180));
                 
@@ -363,7 +368,7 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
           </div>
       </div>
 
-      {/* ★ 修正: 詳細カードを画面の下半分に固定 */}
+      {/* 詳細カード */}
       {selectedHotel && (
           <div className="absolute inset-x-0 bottom-0 h-1/2 z-[100] bg-white rounded-t-[3rem] shadow-[0_-20px_60px_rgba(0,0,0,0.3)] border-t border-gray-100 animate-in slide-in-from-bottom-full duration-500 flex flex-col">
               <div className="w-12 h-1.5 bg-gray-100 rounded-full mx-auto mt-4 mb-2 shrink-0" />
@@ -412,6 +417,18 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
           <div className="absolute inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-end animate-in fade-in duration-300">
               <div className="bg-white w-full rounded-t-[2.5rem] p-8 shadow-2xl space-y-8 animate-in slide-in-from-bottom-10 max-h-[90vh] overflow-y-auto">
                   <div className="flex justify-between items-center"><h3 className="text-2xl font-black text-gray-800">Filters</h3><button onClick={() => setShowSettings(false)} className="p-2 bg-slate-100 rounded-full hover:bg-gray-200"><X size={20}/></button></div>
+                  
+                  {/* ★警告エリア：半径が3.0kmを超えた場合に表示 */}
+                  {searchArea && searchArea.radius > 3.0 && (
+                      <div className="bg-yellow-50 border border-yellow-200 rounded-2xl p-4 flex items-start gap-3">
+                          <AlertTriangle className="text-yellow-500 shrink-0 mt-0.5" size={20} />
+                          <div className="text-xs text-yellow-800 font-bold leading-relaxed">
+                              範囲が広すぎます（半径 {searchArea.radius}km）。<br/>
+                              検索結果の精度が落ちる可能性がありますが、可能な限り多くの宿を検索します。
+                          </div>
+                      </div>
+                  )}
+                  
                   <div className="space-y-8">
                       <div className="flex gap-4">
                           <div className="flex-1 space-y-1"><label className="text-[10px] font-black text-gray-400 ml-1 uppercase">Check-in</label><input type="date" value={conditions.checkin} onChange={(e) => setConditions({...conditions, checkin: e.target.value})} className="w-full bg-slate-50 p-4 rounded-2xl font-bold border-none outline-none focus:ring-2 focus:ring-blue-100 transition"/></div>

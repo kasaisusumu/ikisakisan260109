@@ -1,26 +1,36 @@
 "use client";
 
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 // @ts-ignore
 import TinderCard from 'react-tinder-card';
-import { MapPin, RotateCcw, Sparkles, Loader2, Search, CheckCircle, ImageOff, Instagram, MapPinned, Globe, ExternalLink, ChevronDown, History } from 'lucide-react';
+import { MapPin, RotateCcw, Sparkles, Loader2, Search, CheckCircle, ImageOff, Instagram, MapPinned, Globe, BrainCircuit, ScanSearch, History, Radar, Info } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+const LOADING_TIPS = [
+    "💡 気になるスポットは右スワイプで保存しましょう",
+    "💡 興味のないスポットは←スワイプで却下しましょう",
+    "⚠️ AIは指定エリア外の場所を提案することがあります",
+    "🕒 施設の営業時間は季節により変更される場合があります",
+    "📅 正確な情報は必ず公式サイトをご確認ください",
+    "🚗 交通状況により移動時間が変わることがあります",
+    "💡 気になるスポットは右スワイプで保存しましょう"
+];
+
 interface Props {
   spots: any[];
   spotVotes?: any[];
   onRemove: (index: number) => void;
   currentUser?: string;
   roomId?: string;
-  onPreview?: (spot: any) => void;
   candidates?: any[];
-  onStartSuggest?: (theme: string) => void;
   onLike?: (spot: any) => void;
   onNope?: (spot: any) => void;
+  onReceiveCandidates?: (candidates: any[]) => void;
+  onPreview?: (spot: any) => void;
   isLoadingMore?: boolean;
   onSearchOnMap?: (keyword: string) => void;
-  onReceiveCandidates?: (candidates: any[]) => void;
 }
 
 const UD_COLORS = ['#E69F00', '#56B4E9', '#009E73', '#F0E442', '#0072B2', '#D55E00', '#CC79A7', '#000000'];
@@ -32,13 +42,10 @@ const getUDColor = (name: string) => {
   return UD_COLORS[index];
 };
 
-// フリーワード検索になったため、PREFECTURES配列は削除（または未使用）でOKですが、
-// コードの整合性を保つため定義は残しておいても問題ありません。
-// ここではUIで使用しなくなるため削除します。
-
 export default function SwipeView({ 
-  spots, spotVotes = [], onRemove, currentUser = "", roomId = "", onPreview,
-  candidates = [], onLike, onNope, isLoadingMore, onReceiveCandidates 
+  spots, spotVotes = [], currentUser = "", roomId = "",
+  candidates = [], onLike, onNope, onReceiveCandidates,
+  onPreview, isLoadingMore, onSearchOnMap 
 }: Props) {
   
   const [lastDirection, setLastDirection] = useState<string>();
@@ -49,14 +56,39 @@ export default function SwipeView({
   const [isClient, setIsClient] = useState(false);
   const [areImagesReady, setAreImagesReady] = useState(false);
 
+  // 検索・ストリーミング関連ステート
   const [inputTheme, setInputTheme] = useState("");
   const [isSearching, setIsSearching] = useState(false);
+  const [loadingMessage, setLoadingMessage] = useState("");
+  const [detectedCandidates, setDetectedCandidates] = useState<string[]>([]); 
+  const [foundSpots, setFoundSpots] = useState<any[]>([]);
+  
+  // 15秒目安の進捗率
+  const [progress, setProgress] = useState(0);
+  
+  // 現在表示しているTipsのインデックス
+  const [currentTipIndex, setCurrentTipIndex] = useState(0);
+
+  const listEndRef = useRef<HTMLDivElement>(null);
   
   const [tempLikedSpots, setTempLikedSpots] = useState<any[]>([]);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
 
   const isSuggestionMode = candidates && candidates.length > 0;
+
+  // この画面が表示されている間、ブラウザのスクロールを完全に無効化する
+  useEffect(() => {
+    document.body.style.overflow = 'hidden';
+    document.body.style.overscrollBehavior = 'none'; 
+    document.body.style.touchAction = 'none'; 
+
+    return () => {
+      document.body.style.overflow = '';
+      document.body.style.overscrollBehavior = '';
+      document.body.style.touchAction = '';
+    };
+  }, []);
 
   useEffect(() => {
     setIsClient(true);
@@ -70,6 +102,40 @@ export default function SwipeView({
           setShowConfirmModal(true);
       }
   }, [candidates, isSuggestionMode, tempLikedSpots]);
+
+  // 15秒かけて進むプログレスバー
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (isSearching) {
+      setProgress(0);
+      const duration = 15000; // 15秒
+      const intervalTime = 100;
+      const steps = duration / intervalTime;
+      const increment = 95 / steps;
+
+      interval = setInterval(() => {
+        setProgress(prev => {
+          if (prev >= 95) return 95;
+          return prev + increment;
+        });
+      }, intervalTime);
+    } else {
+      setProgress(0);
+    }
+    return () => clearInterval(interval);
+  }, [isSearching]);
+
+  // 4秒ごとにTipsを切り替えるタイマー
+  useEffect(() => {
+      let interval: NodeJS.Timeout;
+      if (isSearching) {
+          setCurrentTipIndex(0);
+          interval = setInterval(() => {
+              setCurrentTipIndex(prev => (prev + 1) % LOADING_TIPS.length);
+          }, 4000); // 4秒おき
+      }
+      return () => clearInterval(interval);
+  }, [isSearching]);
 
   const fetchVoteHistory = async () => {
     const { data } = await supabase
@@ -89,25 +155,72 @@ export default function SwipeView({
   const handleStartSearch = async () => {
       if (!inputTheme.trim() || isSearching) return;
       setIsSearching(true);
+      setLoadingMessage("AIとの接続を確立中...");
+      setDetectedCandidates([]);
+      setFoundSpots([]);
+      setProgress(0);
       
       try {
           const existing = [...spots.map(s => s.name), ...(candidates || []).map(s => s.name)];
-          const res = await fetch(`${API_BASE_URL}/api/suggest_spots`, {
+          const response = await fetch(`${API_BASE_URL}/api/suggest_spots`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ theme: inputTheme, existing_spots: existing }),
           });
-          const data = await res.json();
-          
-          if (data.spots && data.spots.length > 0) {
-              if (onReceiveCandidates) onReceiveCandidates(data.spots);
-          } else {
-              alert("スポットが見つかりませんでした。別の地名やキーワードで試してみてください。");
+
+          if (!response.body) throw new Error("No response body");
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          let finalSpots: any[] = [];
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || ""; 
+
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const data = JSON.parse(line);
+                    
+                    if (data.type === 'status') {
+                        setLoadingMessage(data.message);
+                    } else if (data.type === 'candidates') {
+                        setDetectedCandidates(data.names);
+                        setLoadingMessage(data.message);
+                    } else if (data.type === 'spot_found') {
+                        const newSpot = data.spot;
+                        setFoundSpots(prev => {
+                            if (prev.some(s => s.name === newSpot.name)) return prev;
+                            return [newSpot, ...prev]; 
+                        });
+                        finalSpots.push(newSpot);
+                    } else if (data.type === 'done') {
+                        setProgress(100); 
+                        setLoadingMessage(`完了！ ${data.count}箇所のスポットが見つかりました`);
+                        await new Promise(r => setTimeout(r, 1000));
+                        if (onReceiveCandidates) onReceiveCandidates(finalSpots);
+                        setIsSearching(false);
+                        return;
+                    } else if (data.type === 'error') {
+                        alert(`エラー: ${data.message}`);
+                        setIsSearching(false);
+                        return;
+                    }
+                } catch (e) {
+                    console.error("JSON Parse Error", e);
+                }
+            }
           }
+
       } catch (e) {
           console.error(e);
           alert("通信エラーが発生しました");
-      } finally {
           setIsSearching(false);
       }
   };
@@ -136,16 +249,6 @@ export default function SwipeView({
         setAreImagesReady(false);
         const results = await Promise.all(targets.map(async (spot) => {
             if (spot.image_url) return { name: spot.name, url: spot.image_url };
-            try {
-                const wikiRes = await fetch(`https://ja.wikipedia.org/w/api.php?action=query&format=json&generator=search&gsrsearch=${encodeURIComponent(spot.name)}&gsrlimit=1&prop=pageimages&piprop=original&origin=*`);
-                const wikiData = await wikiRes.json();
-                const pages = wikiData.query?.pages;
-                if (pages) {
-                    const pageId = Object.keys(pages)[0];
-                    const url = pages[pageId]?.original?.source;
-                    if (url) return { name: spot.name, url };
-                }
-            } catch (e) {}
             return { name: spot.name, url: null };
         }));
         setImages(prev => {
@@ -160,8 +263,6 @@ export default function SwipeView({
 
   const onCardLeftScreen = async (direction: string, spot: any) => {
     setLastDirection(direction);
-    
-    // 提案モード: 一時リストへ保存
     if (isSuggestionMode) {
         if (direction === 'right') {
             setTempLikedSpots(prev => [...prev, spot]);
@@ -171,8 +272,6 @@ export default function SwipeView({
         }
         return;
     }
-
-    // 通常モード: 即時保存
     if (!spot.id) return;
     setVotedSpotIds(prev => new Set(prev).add(spot.id));
     const voteType = direction === 'right' ? 'like' : 'nope';
@@ -196,15 +295,7 @@ export default function SwipeView({
   const handleConfirmAddSpots = async () => {
       setIsVerifying(true);
       try {
-          const res = await fetch(`${API_BASE_URL}/api/verify_spots`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ spots: tempLikedSpots }),
-          });
-          const data = await res.json();
-          const verifiedSpots = data.spots || tempLikedSpots;
-
-          for (const spot of verifiedSpots) {
+          for (const spot of tempLikedSpots) {
               const newSpot = { 
                   room_id: roomId, 
                   name: spot.name, 
@@ -213,6 +304,7 @@ export default function SwipeView({
                   order: spots.length, 
                   added_by: currentUser || 'AI', 
                   votes: 0,
+                  image_url: spot.image_url,
                   is_hotel: spot.is_hotel || false 
               };
               await supabase.from('spots').insert([newSpot]);
@@ -226,12 +318,24 @@ export default function SwipeView({
       }
   };
 
+  const sortedDisplayCandidates = useMemo(() => {
+      const pendingNames = detectedCandidates.filter(name => !foundSpots.some(s => s.name === name));
+      
+      return [
+          ...foundSpots.map(s => ({ type: 'found', data: s, key: s.name })),
+          ...pendingNames.map(name => ({ type: 'pending', data: { name }, key: name }))
+      ];
+  }, [detectedCandidates, foundSpots]);
+
   if (!isClient) return null;
 
   return (
-    <div className="relative w-full h-full bg-white overflow-hidden flex flex-col items-center justify-center">
+    <div 
+        className="relative w-full h-full bg-white overflow-hidden flex flex-col items-center justify-center overscroll-none"
+        style={{ touchAction: 'none' }} 
+    >
       
-      {/* 1. 初期状態 (提案検索画面) */}
+      {/* 1. 初期状態 */}
       {activeSpots.length === 0 && !isSearching && !showConfirmModal && (
           <div className="w-full max-w-md p-8 text-center animate-in fade-in zoom-in duration-300">
               <div className="mb-6 flex justify-center">
@@ -240,22 +344,19 @@ export default function SwipeView({
                   </div>
               </div>
               <h2 className="text-2xl font-bold text-gray-800 mb-2">次はどこへ行く？</h2>
-              <p className="text-gray-500 mb-8">地名やエリアを入力すると、<br/>人気の観光スポットを提案します。</p>
+              <p className="text-gray-500 mb-8">地名やテーマを入力して<br/>AIにプランを相談しよう</p>
               
               <div className="relative w-full mb-4">
-                  <div className="relative">
-                    {/* SelectからInputへ変更 */}
                     <input 
                         type="text"
                         value={inputTheme}
                         onChange={(e) => setInputTheme(e.target.value)}
-                        placeholder="例: 箱根、京都の神社、沖縄..."
-                        className="w-full bg-gray-100 text-gray-800 text-lg font-bold text-center border-2 border-transparent focus:border-blue-500 rounded-2xl p-4 outline-none transition shadow-inner placeholder:text-gray-400"
+                        placeholder="例: 京都の穴場、箱根の日帰り..."
+                        className="w-full bg-gray-100 text-gray-800 text-lg font-bold text-center border-2 border-transparent focus:border-blue-500 rounded-2xl p-4 outline-none transition shadow-inner placeholder:text-gray-400 touch-auto"
                         onKeyDown={(e) => {
                             if (e.key === 'Enter') handleStartSearch();
                         }}
                     />
-                  </div>
               </div>
 
               <button 
@@ -268,11 +369,118 @@ export default function SwipeView({
           </div>
       )}
 
-      {/* 2. 検索中 */}
+      {/* 2. 検索中 (ウルトラ・ダイナミック・スキャンUI) */}
       {isSearching && (
-          <div className="flex flex-col items-center gap-4 animate-pulse">
-              <Loader2 className="animate-spin text-blue-500" size={48}/>
-              <p className="text-gray-500 font-bold">「{inputTheme}」のスポットを探しています...</p>
+          <div 
+              className="w-full h-full absolute inset-0 bg-slate-50 z-[200] flex flex-col overflow-hidden animate-in fade-in duration-300"
+              style={{ touchAction: 'none' }}
+          >
+             
+             {/* 2-1. 背景エフェクト */}
+             <div className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden">
+                <div className="w-[150vw] h-[150vw] opacity-10 rounded-full bg-[conic-gradient(from_0deg,transparent_0deg,transparent_200deg,#3B82F6_360deg)] animate-[spin_4s_linear_infinite]"></div>
+             </div>
+             <div className="absolute inset-0 pointer-events-none z-0">
+                 <div className="w-full h-24 bg-gradient-to-b from-transparent via-blue-200/20 to-transparent animate-[translate-y_2s_linear_infinite] absolute top-[-100px] left-0 right-0"></div>
+             </div>
+             
+             <style jsx>{`
+                @keyframes translate-y {
+                    0% { transform: translateY(-100%); }
+                    100% { transform: translateY(120vh); }
+                }
+                @keyframes pop-bounce {
+                    0% { transform: scale(0.5); opacity: 0; }
+                    60% { transform: scale(1.05); opacity: 1; }
+                    100% { transform: scale(1); opacity: 1; }
+                }
+             `}</style>
+
+             {/* ヘッダー */}
+             <div className="relative z-10 flex flex-col items-center justify-center py-6 shrink-0 bg-white/60 backdrop-blur-md border-b border-blue-100 shadow-lg px-6">
+                 <div className="relative mb-2">
+                    <div className="absolute inset-0 bg-blue-500 rounded-full animate-ping opacity-30 duration-1000"></div>
+                    <div className="absolute inset-[-10px] border-2 border-blue-400 rounded-full animate-[spin_3s_linear_infinite] border-t-transparent border-l-transparent opacity-50"></div>
+                    <BrainCircuit size={48} className="text-blue-600 relative z-10 animate-pulse" />
+                 </div>
+                 <h3 className="text-xl font-black text-gray-800 tracking-tight animate-pulse mb-1">{loadingMessage}</h3>
+                 
+                 {/* メーターバー */}
+                 <div className="w-full max-w-xs h-2 bg-gray-200 rounded-full overflow-hidden relative shadow-inner mt-2">
+                     <div 
+                        className="h-full bg-blue-500 rounded-full transition-all duration-300 ease-out shadow-[0_0_8px_rgba(59,130,246,0.6)]"
+                        style={{ width: `${Math.max(0, Math.min(100, progress))}%` }}
+                     ></div>
+                 </div>
+                 <div className="text-[10px] font-bold text-gray-400 mt-1 flex justify-between w-full max-w-xs mb-2">
+                     <span>SCANNING...</span>
+                     <span>{Math.round(progress)}%</span>
+                 </div>
+
+                 {/* Tips */}
+                 <p key={currentTipIndex} className="text-xs text-gray-500 mt-1 text-center animate-in fade-in slide-in-from-bottom-1 duration-500 px-4 min-h-[1.5em] font-medium flex items-center gap-1">
+                     <Info size={12} className="inline text-blue-400"/>
+                     {LOADING_TIPS[currentTipIndex]}
+                 </p>
+             </div>
+
+             {/* コンテンツ: 生成されたスポットのリスト */}
+             <div 
+                className="relative z-10 flex-1 overflow-y-auto w-full max-w-md mx-auto space-y-4 py-6 px-4 scrollbar-hide"
+             >
+                {sortedDisplayCandidates.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center h-64 text-gray-400 space-y-6">
+                        <div className="relative">
+                            <div className="absolute inset-0 border-[4px] border-blue-200 rounded-full animate-[ping_2s_cubic-bezier(0,0,0.2,1)_infinite]"></div>
+                            <div className="absolute inset-[-20px] border border-blue-100 rounded-full animate-[ping_2s_cubic-bezier(0,0,0.2,1)_infinite_0.5s]"></div>
+                            <ScanSearch size={64} className="animate-bounce text-blue-500 relative z-10 drop-shadow-lg"/>
+                        </div>
+                        <span className="text-lg font-black tracking-[0.2em] text-blue-300 animate-pulse">SEARCHING...</span>
+                    </div>
+                ) : (
+                    sortedDisplayCandidates.map((item, i) => {
+                        const isFound = item.type === 'found';
+                        const name = item.data.name;
+                        const spot = isFound ? item.data : null;
+                        
+                        return (
+                            <div key={item.key} 
+                                style={{ animation: isFound ? 'pop-bounce 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) forwards' : 'none' }}
+                                className={`relative overflow-hidden flex items-center p-4 rounded-2xl border-2 transition-all duration-300 ${
+                                    isFound 
+                                    ? "bg-white border-blue-200 shadow-xl translate-y-0 opacity-100 scale-100" 
+                                    : "bg-white/40 border-dashed border-gray-300 opacity-50 translate-y-2 scale-95"
+                                }`}
+                            >
+                                {isFound && <div className="absolute inset-0 bg-white opacity-50 animate-[ping_0.5s_ease-out_1]"></div>}
+
+                                <div className={`w-14 h-14 rounded-xl shrink-0 overflow-hidden flex items-center justify-center mr-4 shadow-sm transition-colors duration-500 ${isFound ? "bg-gray-100" : "bg-blue-50"}`}>
+                                    {isFound && spot.image_url ? (
+                                        <img src={spot.image_url} alt="" className="w-full h-full object-cover"/>
+                                    ) : (
+                                        isFound ? <MapPin size={24} className="text-blue-500"/> : <Loader2 size={20} className="animate-spin text-blue-300"/>
+                                    )}
+                                </div>
+                                
+                                <div className="flex-1 min-w-0">
+                                    <div className="flex justify-between items-center mb-1">
+                                        <p className={`text-base font-black truncate ${isFound ? "text-gray-800" : "text-gray-400"}`}>{name}</p>
+                                        {isFound && <CheckCircle size={20} className="text-green-500 shrink-0 ml-2 drop-shadow-md"/>}
+                                    </div>
+                                    <div className="h-2 w-full bg-gray-100 rounded-full overflow-hidden">
+                                        {isFound ? (
+                                            <div className="h-full bg-gradient-to-r from-blue-400 via-blue-500 to-indigo-600 w-full"></div>
+                                        ) : (
+                                            <div className="h-full w-full bg-gradient-to-r from-gray-200 via-white to-gray-200 animate-[shimmer_1s_infinite]"></div>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        );
+                    })
+                )}
+                <div ref={listEndRef} />
+             </div>
           </div>
       )}
 
@@ -301,7 +509,7 @@ export default function SwipeView({
                           disabled={isVerifying}
                           className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold text-lg hover:bg-blue-500 transition disabled:opacity-70 flex items-center justify-center gap-2 shadow-lg shadow-blue-200"
                       >
-                          {isVerifying ? <><Loader2 className="animate-spin"/> 位置情報を確認中...</> : "確定して追加する"}
+                          {isVerifying ? <><Loader2 className="animate-spin"/> 保存中...</> : "確定して追加する"}
                       </button>
                       <button onClick={() => { setShowConfirmModal(false); setTempLikedSpots([]); }} className="w-full text-gray-400 font-bold py-2 hover:text-gray-600">キャンセル</button>
                   </div>
@@ -310,8 +518,8 @@ export default function SwipeView({
       )}
 
       {/* 4. スワイプカード */}
-      {activeSpots.length > 0 && areImagesReady && !showConfirmModal && (
-        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center">
+      {activeSpots.length > 0 && areImagesReady && !showConfirmModal && !isSearching && (
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center animate-in zoom-in duration-300">
             {!isSuggestionMode && (
                 <div className="absolute top-4 right-4 z-50 flex gap-3">
                 <button onClick={handleRewind} disabled={voteHistory.length === 0} className="p-3 rounded-full shadow-md border bg-white text-yellow-500 border-gray-200 hover:bg-gray-50"><RotateCcw size={20} /></button>
@@ -320,11 +528,12 @@ export default function SwipeView({
             )}
             <div className="relative w-full h-full max-w-md mx-auto flex items-center justify-center pointer-events-none">
                 {activeSpots.map((spot, index) => {
-                const bgImage = images[spot.name]; 
+                const bgImage = images[spot.name] || spot.image_url; 
                 const voters = isSuggestionMode ? [] : spotVotes.filter(v => v.spot_id === spot.id && v.vote_type === 'like').map(v => v.user_name);
                 const uniqueVoters = Array.from(new Set(voters)) as string[];
                 return (
-                    <div key={spot.id || spot.name} className="absolute inset-0 p-4 flex items-center justify-center pointer-events-auto" style={{ zIndex: 1000 + index }}>
+                    // ★タッチ操作無効化でスクロールを防止
+                    <div key={spot.id || spot.name} className="absolute inset-0 p-4 flex items-center justify-center pointer-events-auto" style={{ zIndex: 1000 + index, touchAction: 'none' }}>
                     <TinderCard className="swipe w-full h-full flex items-center justify-center" onSwipe={(dir: string) => {}} onCardLeftScreen={(dir: string) => onCardLeftScreen(dir, spot)} preventSwipe={['up', 'down']} swipeRequirementType="position" swipeThreshold={100}>
                         <div className={`relative w-[90vw] h-[75vh] max-w-[360px] max-h-[640px] bg-white rounded-3xl shadow-2xl overflow-hidden flex flex-col border border-gray-100`}>
                         <div className="absolute inset-0 z-0 bg-gray-100">
@@ -338,20 +547,32 @@ export default function SwipeView({
                         </div>
                         <div className="mt-auto p-6 text-white relative z-10 flex flex-col gap-3 w-full pointer-events-none">
                            
-                            {/* バッジ表示部分: AI Suggestionのみに統一 */}
                             {isSuggestionMode && (
                                 <div className={`self-start text-white text-[10px] font-bold px-2 py-1 rounded-full flex items-center gap-1 mb-1 shadow-sm bg-purple-600`}>
                                     <Sparkles size={10}/> AI Suggestion
                                 </div>
                             )}
 
-                            <div><h3 className="text-3xl font-black drop-shadow-lg leading-tight mb-1">{spot.name}</h3><div className="flex items-center gap-2 text-xs text-gray-200 mb-2"><MapPin size={12} /><span>{spot.is_hotel ? "宿泊施設" : "観光スポット"}</span></div><div className="relative mt-2 mb-2 pointer-events-auto"><div className="bg-white/90 backdrop-blur text-gray-800 text-sm font-bold p-3 rounded-xl shadow-lg leading-relaxed relative"><div className="absolute -top-2 left-4 w-3 h-3 bg-white/90 rotate-45 transform origin-bottom-left"></div><span className="mr-1">💡</span> {spot.description || "説明文はありません"}</div></div></div>
+                            <div>
+                                <h3 className="text-3xl font-black drop-shadow-lg leading-tight mb-1">{spot.name}</h3>
+                                <div className="flex items-center gap-2 text-xs text-gray-200 mb-2">
+                                    <MapPin size={12} />
+                                    {/* ★修正: カテゴリを表示 */}
+                                    <span>{spot.is_hotel ? "宿泊施設" : (spot.category || "観光スポット")}</span>
+                                </div>
+                                <div className="relative mt-2 mb-2 pointer-events-auto">
+                                    <div className="bg-white/90 backdrop-blur text-gray-800 text-sm font-bold p-3 rounded-xl shadow-lg leading-relaxed relative">
+                                        <div className="absolute -top-2 left-4 w-3 h-3 bg-white/90 rotate-45 transform origin-bottom-left"></div>
+                                        {/* ★修正: AI生成の一言説明文を表示 */}
+                                        <span className="mr-1">💡</span> {spot.description || "説明文はありません"}
+                                    </div>
+                                </div>
+                            </div>
                             
                             {!isSuggestionMode && uniqueVoters.length > 0 && (<div className="flex -space-x-2 overflow-hidden py-1">{uniqueVoters.slice(0, 5).map((voter: any, i: number) => (<div key={i} className="w-8 h-8 rounded-full border-2 border-white/50 flex items-center justify-center text-[10px] font-bold text-white shadow-sm" style={{ backgroundColor: getUDColor(voter) }}>{voter.slice(0,1)}</div>))}</div>)}
                             
                             <div className="flex justify-between items-end pt-2 border-t border-white/20 mt-1 pointer-events-auto">
                                 <div className="flex-1"/>
-                                {/* ホテルの場合のみ楽天ボタンを表示、AI提案の場合は非表示(空のdiv) */}
                                 {spot.is_hotel && (
                                     <button onTouchEnd={(e) => { e.stopPropagation(); window.open(getRakutenUrl(spot.query || spot.name), '_blank'); }} onClick={(e) => { e.stopPropagation(); window.open(getRakutenUrl(spot.query || spot.name), '_blank'); }} className="bg-gradient-to-r from-yellow-400 to-orange-500 text-black hover:scale-105 text-xs font-bold py-2 px-4 rounded-full flex items-center gap-1 shadow-lg backdrop-blur-sm transition active:scale-95">
                                         <Search size={14}/> 空室・料金をチェック (PR)

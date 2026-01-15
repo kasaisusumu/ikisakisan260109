@@ -753,9 +753,12 @@ function HomeContent() {
     coords.forEach(c => { const [lng, lat] = c; if (lng < minLng) minLng = lng; if (lng > maxLng) maxLng = lng; if (lat < minLat) minLat = lat; if (lat > maxLat) maxLat = lat; });
     const centerLat = (minLat + maxLat) / 2; const centerLng = (minLng + maxLng) / 2;
     let radiusKm = (calculateDistance(centerLat, centerLng, maxLat, maxLng) / 2) * 1.1;
-    if (radiusKm < 0.1) radiusKm = 0.5; if (radiusKm > 3.0) radiusKm = 3.0;
     
-    setInitialSearchArea({ latitude: centerLat, longitude: centerLng, radius: radiusKm });
+    // ★修正: 上限を5.0kmに緩和（バックエンドで安全に処理されるため）
+    if (radiusKm < 0.1) radiusKm = 0.5; 
+    if (radiusKm > 5.0) radiusKm = 5.0; // ここを3.0から5.0に変更
+    
+    setInitialSearchArea({ latitude: centerLat, longitude: centerLng, radius: Number(radiusKm.toFixed(2)) });
     stopDrawing();
     setCurrentTab('agent');
   };

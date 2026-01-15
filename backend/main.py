@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 from typing import Optional, List, Any, Dict
 import os
@@ -99,9 +100,10 @@ class Spot(BaseModel):
     room_class: Optional[str] = None
     status: str = "candidate"
     day: int = 0
-    # ★追加: コメントとリンク
     comment: str = ""
     link: str = ""
+    # ★追加: カテゴリ
+    category: str = "観光スポット"
 
     @field_validator('stay_time', 'votes', mode='before')
     def parse_int_fields(cls, v):
@@ -139,7 +141,6 @@ WIKI_HEADERS = {
 async def fetch_wikipedia_image(client, query: str):
     """
     Wikipedia APIを使用して画像のURLを取得する
-    ★キャッシュ対応 & タイムアウト短縮
     """
     if not query:
         return None
@@ -227,25 +228,23 @@ async def fetch_spot_coordinates(client, target_name: str, search_query: str):
                     common_chars = sum(1 for c in n_target if c in n_result)
                     match_ratio = common_chars / len(n_target) if len(n_target) > 0 else 0
                     
-                    status_icon = "❌"
-                    if is_contained or match_ratio >= 0.5:
-                        status_icon = "✅"
-                    
+                    # ログ出力用
+                    is_match = is_contained or match_ratio >= 0.5
+                    status_icon = "✅" if is_match else "❌"
                     print(f"    👉 [Check #{i+1}] AI: '{target_name}' vs API: '{result_name}' | Ratio: {match_ratio:.2f} | {status_icon}")
 
-                    if is_contained or match_ratio >= 0.5:
+                    if is_match:
                         desc = formatted_addr.replace(result_name, "").strip(", ")
                         return {
                             "name": result_name, 
-                            "description": desc or "AIおすすめスポット", 
+                            "description": desc or "AIおすすめスポット", # これは住所情報として使われる
                             "coordinates": feat["geometry"]["coordinates"],
                             "image_url": image_url
                         }
-            else:
-                print(f"    ⚠️ [NotFound] No results for '{clean_query}'")
-
     except Exception as e:
         print(f"Coord fetch failed for {target_name}: {e}")
+    
+    print(f"    ⚠️ [NotFound] No results for '{search_query}'")
     return None
 
 # ---------------------------------------------------------
@@ -357,7 +356,9 @@ async def search_hotels_vacant(req: VacantSearchRequest):
     if http_client is None: return {"error": "Server starting up..."}
     client = http_client
 
-    safe_radius = round(req.radius, 1)
+    # ★改善: API制限(3.0)を超えないように安全に丸めるが、最大値を確保する
+    safe_radius = min(round(req.radius, 2), 3.0)
+    
     today = date.today()
     c_in = req.checkin_date
     c_out = req.checkout_date
@@ -372,42 +373,49 @@ async def search_hotels_vacant(req: VacantSearchRequest):
         except:
             c_out = (today + timedelta(days=31)).strftime("%Y-%m-%d")
 
-    params = {
+    base_params = {
         "applicationId": RAKUTEN_APP_ID,
         "format": "json",
         "latitude": req.latitude,
         "longitude": req.longitude,
         "searchRadius": safe_radius,
         "datumType": 1,
-        "hits": 30,
+        "hits": 30, # 1ページあたりの最大
         "sort": "standard",
         "checkinDate": c_in,
         "checkoutDate": c_out,
         "adultNum": req.adult_num,
     }
     
-    if req.max_price: params["maxCharge"] = req.max_price
-    if req.min_price: params["minCharge"] = req.min_price
+    if req.max_price: base_params["maxCharge"] = req.max_price
+    if req.min_price: base_params["minCharge"] = req.min_price
+
+    url = "https://app.rakuten.co.jp/services/api/Travel/VacantHotelSearch/20170426"
+
+    # ★改善: 3ページ分（最大90件）を並列で取得して結合する
+    async def fetch_page(page_num):
+        try:
+            p = base_params.copy()
+            p["page"] = page_num
+            res = await client.get(url, params=p, timeout=10.0)
+            if res.status_code == 200:
+                return res.json()
+        except Exception:
+            pass
+        return None
 
     try:
-        url = "https://app.rakuten.co.jp/services/api/Travel/VacantHotelSearch/20170426"
-        res = await client.get(url, params=params, timeout=10.0)
+        # 1〜3ページ目を並列リクエスト
+        tasks = [fetch_page(i) for i in range(1, 4)]
+        results = await asyncio.gather(*tasks)
         
-        if res.status_code == 404:
-            return {"hotels": []}
+        all_hotels = []
+        seen_ids = set() # 重複排除用
 
-        if res.status_code != 200:
-            try:
-                error_json = res.json()
-                error_desc = error_json.get("error_description", str(res.text))
-                return {"error": f"楽天APIエラー: {error_desc}"}
-            except:
-                return {"error": f"楽天API通信エラー: HTTP {res.status_code}"}
+        for data in results:
+            if not data or "hotels" not in data:
+                continue
 
-        data = res.json()
-        hotels = []
-        
-        if "hotels" in data:
             raw_hotels = data["hotels"]
             for i, h_group in enumerate(raw_hotels):
                 try:
@@ -420,12 +428,18 @@ async def search_hotels_vacant(req: VacantSearchRequest):
 
                     basic = hotel_content[0].get("hotelBasicInfo")
                     if not basic: continue
+                    
+                    # 重複チェック
+                    hotel_id = str(basic["hotelNo"])
+                    if hotel_id in seen_ids:
+                        continue
 
                     best_price = float('inf')
                     best_plan_id = None
                     best_room_class = None
                     found_valid_plan = False
                     
+                    # 安いプランを探すロジック
                     for j in range(1, len(hotel_content)):
                         room_container = hotel_content[j]
                         if "roomInfo" in room_container:
@@ -451,8 +465,8 @@ async def search_hotels_vacant(req: VacantSearchRequest):
                     review_avg = basic.get("reviewAverage")
                     final_rating = review_avg if review_avg else 3.0
                     
-                    hotels.append({
-                        "id": str(basic["hotelNo"]),
+                    all_hotels.append({
+                        "id": hotel_id,
                         "name": name,
                         "description": basic.get("hotelSpecial", "")[:60] + "...",
                         "coordinates": [basic["longitude"], basic["latitude"]],
@@ -467,87 +481,132 @@ async def search_hotels_vacant(req: VacantSearchRequest):
                         "room_class": best_room_class,
                         "status": "hotel_candidate"
                     })
+                    seen_ids.add(hotel_id)
+
                 except Exception as parse_err:
-                    print(f"⚠️ Parse Error at index {i}: {parse_err}")
+                    print(f"⚠️ Parse Error: {parse_err}")
                     continue
         
-        return {"hotels": hotels}
+        return {"hotels": all_hotels}
 
     except Exception as e:
         traceback.print_exc()
         return {"error": f"システムエラー: {str(e)}"}
 
 # ---------------------------------------------------------
-# API: AI提案
+# API: AI提案 (ストリーミング版・高速化)
 # ---------------------------------------------------------
-@app.post("/api/suggest_spots")
-async def suggest_spots(req: SuggestRequest):
-    formatted_spots = []
-    
+async def suggest_spots_generator(req: SuggestRequest):
+    print(f"🚀 [AI Start] Request Theme: {req.theme}")
+
     global http_client
-    if http_client is None: return {"spots": []}
+    if http_client is None:
+        yield json.dumps({"type": "error", "message": "Server starting..."}) + "\n"
+        return
     client = http_client
     
+    yield json.dumps({"type": "status", "message": "AIが候補地をリストアップ中..."}) + "\n"
+
+    # ★修正: summary（一言説明）と category（カテゴリ）を要求するプロンプト
     prompt = f"""
     場所: {req.theme}
-    タスク: 観光客に人気の「超有名・王道観光スポット」を10〜15個挙げてください。
+    タスク: 観光客に人気の「超有名・王道観光スポット」を人気順に15個挙げてください。
     条件:
     1. ホテルや宿泊施設は除外。
     2. 既存リスト: {", ".join(req.existing_spots)} は除外。
     3. 出力はJSON形式のオブジェクト配列とする。
-    4. 各スポットについて、以下の2つのフィールドを含めること。
-       - "name": 地図APIで見つかりやすい正式名称（通称や略称は避ける）
-       - "search_query": そのスポットを地図APIで確実にヒットさせるための検索クエリ（例: "スポット名 + 都道府県 + 市区町村"）
+    4. 各スポットについて、以下の4つのフィールドを含めること。
+       - "name": 地図APIで見つかりやすい正式名称
+       - "search_query": 地図検索クエリ
+       - "summary": その場所の魅力や特徴を伝える、20〜30文字程度の魅力的な一言説明文（例: 「世界遺産に登録された荘厳な木造寺院」）
+       - "category": その場所のカテゴリ（例: "歴史", "自然", "絶景", "美術館", "公園", "ショッピング", "温泉" など簡潔に）
 
     出力例:
     {{
       "spots": [
-        {{ "name": "金閣寺", "search_query": "金閣寺 京都府京都市北区" }},
-        {{ "name": "東京タワー", "search_query": "東京タワー 東京都港区芝公園" }}
+        {{ 
+          "name": "金閣寺", 
+          "search_query": "金閣寺 京都府京都市北区",
+          "summary": "金箔で覆われた美しい舎利殿が池に映える禅寺",
+          "category": "歴史"
+        }}
       ]
     }}
     """
     
+    target_spots = []
     try:
-        print(f"\n🚀 [AI Start] Request Theme: {req.theme}")
-        
         ai_res = await aclient.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
-            max_tokens=1000
+            max_tokens=1500
         )
-        
         content = ai_res.choices[0].message.content
         json_data = json.loads(content)
         raw_spots = json_data.get("spots", [])
         
+        # 重複排除
         seen_names = set()
-        target_spots = []
         for s in raw_spots:
             if s["name"] not in seen_names:
                 target_spots.append(s)
                 seen_names.add(s["name"])
         target_spots = target_spots[:10]
 
-        # 並列実行で座標と画像を取得
-        tasks = [fetch_spot_coordinates(client, s["name"], s["search_query"]) for s in target_spots]
-        results = await asyncio.gather(*tasks)
-        
-        seen_coords = []
-        for res in results:
-            if res and res["coordinates"] != [0.0, 0.0] and res["coordinates"] not in seen_coords:
-                formatted_spots.append({**res, "stay_time": 90, "source": "ai", "is_hotel": False, "status": "candidate"})
-                seen_coords.append(res["coordinates"])
-        
-        verified_names = [s['name'] for s in formatted_spots]
-        print(f"✅ [Verified Result]: {len(formatted_spots)} spots")
+        # 候補名リストを先にクライアントへ送る
+        yield json.dumps({
+            "type": "candidates", 
+            "names": [s["name"] for s in target_spots],
+            "message": "全スポットの情報を収集中..."
+        }) + "\n"
 
     except Exception as e:
-        print(f"❌ [Error]: {e}")
-        traceback.print_exc()
+        yield json.dumps({"type": "error", "message": f"AI生成エラー: {str(e)}"}) + "\n"
+        return
 
-    return {"spots": formatted_spots}
+    found_count = 0
+    seen_coords = []
+    
+    # 非同期タスク作成（fetch_spot_coordinatesの結果に後からsummary/categoryを合成する）
+    async def fetch_and_enrich(spot_info):
+        res = await fetch_spot_coordinates(client, spot_info["name"], spot_info["search_query"])
+        if res:
+            # ★ここでAI生成の要約とカテゴリを注入
+            res["description"] = spot_info.get("summary", res["description"])
+            res["category"] = spot_info.get("category", "観光スポット")
+            return res
+        return None
+
+    tasks = [fetch_and_enrich(s) for s in target_spots]
+    
+    # as_completed で完了したものから順にループ処理
+    for future in asyncio.as_completed(tasks):
+        try:
+            res = await future
+            if res and res["coordinates"] != [0.0, 0.0] and res["coordinates"] not in seen_coords:
+                spot_data = {
+                    **res, 
+                    "stay_time": 90, 
+                    "source": "ai", 
+                    "is_hotel": False, 
+                    "status": "candidate"
+                }
+                seen_coords.append(res["coordinates"])
+                found_count += 1
+                
+                # 見つかったスポットを即座に送信
+                yield json.dumps({"type": "spot_found", "spot": spot_data}) + "\n"
+        except Exception as e:
+            print(f"Error in task: {e}")
+            continue
+    
+    print(f"✅ [Verified Result]: {found_count} spots")
+    yield json.dumps({"type": "done", "count": found_count}) + "\n"
+
+@app.post("/api/suggest_spots")
+async def suggest_spots(req: SuggestRequest):
+    return StreamingResponse(suggest_spots_generator(req), media_type="application/x-ndjson")
 
 @app.post("/api/verify_spots")
 async def verify_spots(req: VerifyRequest):
@@ -616,7 +675,6 @@ async def calculate_route_endpoint(req: OptimizeRequest):
     
     return await calculate_route_fallback(client, spots, start, limit)
 
-# ★追加: スリープ対策用エンドポイント
 @app.get("/")
 async def root():
     return {"status": "active", "message": "Render is awake!"}
