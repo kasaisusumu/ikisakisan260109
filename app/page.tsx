@@ -1237,7 +1237,7 @@ function HomeContent() {
                  <Maximize size={20}/>
              </button>
 
-             {isDrawing && <div className="absolute top-1 right-14 bg-black/80 backdrop-blur text-white px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap shadow-lg">なぞって検索</div>}
+             {isDrawing && <div className="absolute top-1 right-14 bg-black/80 backdrop-blur text-white px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap shadow-lg">かこって検索</div>}
           </div>
 
           {currentTab === 'explore' && allParticipants.length > 0 && (
