@@ -1,22 +1,44 @@
 "use client";
 
-import { useState, useRef } from 'react';
-import { Copy, Check, FileText, Shield, Mail, Info, HelpCircle, ExternalLink, User, Download, Image as ImageIcon, Music } from 'lucide-react';
+import { useState, useRef, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { Copy, Check, FileText, Shield, Mail, Info, HelpCircle, ExternalLink, User, Download, Image as ImageIcon, Music, Clock } from 'lucide-react';
 import html2canvas from 'html2canvas';
 
 interface Props {
   spots: any[];
-  
 }
 
 type Template = 'simple' | 'music' | 'retro';
 
+type RoomHistoryItem = {
+    id: string;
+    name: string;
+    lastVisited: number;
+};
+
 export default function MenuView({ spots }: Props) {
+  const router = useRouter();
   const printRef = useRef<HTMLDivElement>(null);
   const [template, setTemplate] = useState<Template>('simple');
   const [isGenerating, setIsGenerating] = useState(false);
   const [copied, setCopied] = useState(false);
   const [activeSection, setActiveSection] = useState<string | null>(null);
+  const [roomHistory, setRoomHistory] = useState<RoomHistoryItem[]>([]);
+
+  // 履歴の読み込み
+  useEffect(() => {
+      if (typeof window !== 'undefined') {
+          try {
+              const historyStr = localStorage.getItem('rh_room_history');
+              if (historyStr) {
+                  setRoomHistory(JSON.parse(historyStr));
+              }
+          } catch (e) {
+              console.error(e);
+          }
+      }
+  }, []);
 
   // ★ 修正: 安全なコピー機能 (HTTP環境対応)
   const handleCopyLink = () => {
@@ -103,6 +125,32 @@ export default function MenuView({ spots }: Props) {
       <h2 className="text-2xl font-bold mb-6 text-gray-800 flex items-center gap-2">
         ⚙️ メニュー & 設定
       </h2>
+
+      {/* 0. 最近見た旅 (New!) */}
+      {roomHistory.length > 0 && (
+          <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 mb-6 animate-in slide-in-from-left-4">
+              <h3 className="font-bold text-gray-700 mb-3 text-sm flex items-center gap-2">
+                  <Clock size={16} className="text-blue-500"/> 最近見た旅
+              </h3>
+              <div className="space-y-2">
+                  {roomHistory.map((room) => (
+                      <div 
+                          key={room.id} 
+                          onClick={() => router.push(`/?room=${room.id}`)}
+                          className="flex items-center justify-between p-3 bg-gray-50 hover:bg-blue-50 rounded-lg cursor-pointer transition active:scale-[0.98] border border-transparent hover:border-blue-100 group"
+                      >
+                          <div className="overflow-hidden">
+                              <p className="font-bold text-gray-800 text-sm truncate group-hover:text-blue-600 transition-colors">{room.name}</p>
+                              <p className="text-[10px] text-gray-400 font-mono">
+                                  {new Date(room.lastVisited).toLocaleDateString()} {new Date(room.lastVisited).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                              </p>
+                          </div>
+                          <ExternalLink size={14} className="text-gray-300 group-hover:text-blue-400"/>
+                      </div>
+                  ))}
+              </div>
+          </div>
+      )}
 
       {/* 1. 招待リンク共有 */}
       <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 mb-6">
