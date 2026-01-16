@@ -163,13 +163,26 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
       );
   }, [spots, selectedDay]);
 
+  // ★ 修正箇所: 待機中スポットの判定を厳密化（IDまたは名前で重複チェック）
   const unusedSpots = useMemo(() => {
-      const usedSpotIds = new Set(
-          timeline
-              .filter(item => item.type === 'spot')
-              .map(item => getSpotId(item.spot))
-      );
-      return activeDaySpots.filter(spot => !usedSpotIds.has(getSpotId(spot)));
+      const usedSpotIds = new Set<string>();
+      const usedSpotNames = new Set<string>();
+
+      timeline.forEach(item => {
+          if (item.type === 'spot') {
+              if (item.spot.id) usedSpotIds.add(String(item.spot.id));
+              if (item.spot.name) usedSpotNames.add(item.spot.name);
+          }
+      });
+
+      return activeDaySpots.filter(spot => {
+          const id = spot.id ? String(spot.id) : null;
+          const name = spot.name;
+          // IDが一致 または 名前が一致 すれば除外
+          if (id && usedSpotIds.has(id)) return false;
+          if (name && usedSpotNames.has(name)) return false;
+          return true;
+      });
   }, [activeDaySpots, timeline]);
 
   const getAffiliateUrl = (spot: any) => {
@@ -248,6 +261,12 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
       });
       return newTimeline;
   };
+
+  useEffect(() => {
+      if (timeline.length > 0) {
+          setTimeline(calculateSchedule(timeline));
+      }
+  }, [startTime]);
 
   const fetchSpotImage = async (name: string) => {
       try {
@@ -446,6 +465,27 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
       setTimeline(calculateSchedule(newTimeline));
   };
 
+  // ★ 追加: 出発時間の変更処理
+  const handleDepartureChange = (index: number, newDeparture: string) => {
+      const item = timeline[index];
+      if (!item.arrival) return;
+      
+      const [arrH, arrM] = item.arrival.split(':').map(Number);
+      const arrDate = new Date(); arrDate.setHours(arrH, arrM, 0, 0);
+      
+      const [depH, depM] = newDeparture.split(':').map(Number);
+      const depDate = new Date(); depDate.setHours(depH, depM, 0, 0);
+      
+      if (depDate < arrDate) {
+          depDate.setDate(depDate.getDate() + 1);
+      }
+      
+      const diffMs = depDate.getTime() - arrDate.getTime();
+      const diffMin = Math.max(0, Math.floor(diffMs / 60000));
+      
+      handleTimeChange(index, String(diffMin));
+  };
+
   const handleTransportChange = (index: number, mode: string) => {
       const newTimeline = [...timeline];
       newTimeline[index].transport_mode = mode;
@@ -538,13 +578,13 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
     }
   }, [timeline, unusedSpots, routeGeoJSON]);
 
-  // ★ 画像保存処理 (全体キャプチャ & 安定化)
+  // ★ 画像保存処理
   const handleDownloadImage = async () => {
       if (!captureRef.current) return;
       setIsSavingImage(true);
       
       try {
-          // html2canvasの読み込み (動的インポート or CDN)
+          // html2canvasの読み込み
           let html2canvasFunc = window.html2canvas;
           
           if (!html2canvasFunc) {
@@ -552,7 +592,6 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
                   const module = await import('html2canvas');
                   html2canvasFunc = module.default;
               } catch (e) {
-                  // CDNフォールバック
                   if (!document.querySelector('script[src*="html2canvas"]')) {
                       const script = document.createElement('script');
                       script.src = "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
@@ -562,7 +601,6 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
                           script.onerror = reject;
                       });
                   }
-                  // 少し待機
                   await new Promise(r => setTimeout(r, 200));
                   html2canvasFunc = window.html2canvas;
               }
@@ -572,19 +610,16 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
 
           const element = captureRef.current;
           
-          // 一時的にスクロールをリセット（画像切れ防止）
           const originalScroll = window.scrollY;
           window.scrollTo(0, 0);
 
           const canvas = await html2canvasFunc(element, {
-              scale: 2, // 高画質化
-              useCORS: true, // クロスドメイン対応
+              scale: 2, 
+              useCORS: true, 
               backgroundColor: '#ffffff',
               logging: false,
-              // 特定の高さ指定を削除し、html2canvasの自動検知に任せる（これで全体が撮れることが多い）
           });
           
-          // スクロール位置を戻す
           window.scrollTo(0, originalScroll);
 
           const link = document.createElement('a');
@@ -605,7 +640,6 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
       return (
           <div ref={scrollContainerRef} className="fixed inset-0 z-[100] bg-white text-gray-900 overflow-y-auto">
               
-              {/* ヘッダー: pt-20で安全領域を確保し、ボタン配置を調整 */}
               <div className="sticky top-0 left-0 right-0 pt-20 pb-4 px-6 z-50 flex items-center justify-between bg-white/95 backdrop-blur-sm border-b border-gray-100 shadow-sm">
                    <button 
                        onClick={handleCloseScreenshot} 
@@ -910,8 +944,27 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
                                                 <h3 className="font-bold text-gray-800 text-sm line-clamp-1">{item.spot.name}</h3>
                                                 <button onClick={(e) => { e.stopPropagation(); toggleSpotInclusion(item.spot, false); }} className="text-gray-400 hover:text-red-500 p-1"><MinusCircle size={16}/></button>
                                             </div>
-                                            <div className="flex items-center gap-2 text-xs font-bold text-indigo-500 font-mono bg-indigo-50 w-max px-2 py-0.5 rounded">
-                                                <span>{item.arrival}</span> <ArrowRight size={10} className="text-indigo-300"/> <span>{item.departure}</span>
+                                            {/* ★ 修正: 到着/出発時間を編集可能に */}
+                                            <div className="flex items-center gap-2 text-xs font-bold text-indigo-500 font-mono bg-indigo-50 w-max px-2 py-0.5 rounded" onClick={(e) => e.stopPropagation()}>
+                                                {i === 0 ? (
+                                                    <input 
+                                                        type="time" 
+                                                        value={startTime} 
+                                                        onChange={(e) => setStartTime(e.target.value)}
+                                                        className="bg-transparent text-indigo-600 font-bold text-xs font-mono w-[36px] text-center focus:outline-none border-b border-transparent focus:border-indigo-300 p-0"
+                                                    />
+                                                ) : (
+                                                    <span>{item.arrival}</span>
+                                                )}
+                                                
+                                                <ArrowRight size={10} className="text-indigo-300"/>
+                                                
+                                                <input 
+                                                    type="time" 
+                                                    value={item.departure} 
+                                                    onChange={(e) => handleDepartureChange(i, e.target.value)}
+                                                    className="bg-transparent text-indigo-600 font-bold text-xs font-mono w-[36px] text-center focus:outline-none border-b border-transparent focus:border-indigo-300 p-0"
+                                                />
                                             </div>
                                         </div>
 

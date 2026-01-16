@@ -3,7 +3,7 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 // @ts-ignore
 import TinderCard from 'react-tinder-card';
-import { MapPin, RotateCcw, Sparkles, Loader2, Search, CheckCircle, ImageOff, Instagram, MapPinned, Globe, BrainCircuit, ScanSearch, History, Radar, Info } from 'lucide-react';
+import { MapPin, RotateCcw, Sparkles, Loader2, Search, CheckCircle, ImageOff, Instagram, MapPinned, Globe, BrainCircuit, ScanSearch, History, Info } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -63,12 +63,8 @@ export default function SwipeView({
   const [detectedCandidates, setDetectedCandidates] = useState<string[]>([]); 
   const [foundSpots, setFoundSpots] = useState<any[]>([]);
   
-  // 15秒目安の進捗率
   const [progress, setProgress] = useState(0);
-  
-  // 現在表示しているTipsのインデックス
   const [currentTipIndex, setCurrentTipIndex] = useState(0);
-
   const listEndRef = useRef<HTMLDivElement>(null);
   
   const [tempLikedSpots, setTempLikedSpots] = useState<any[]>([]);
@@ -77,7 +73,19 @@ export default function SwipeView({
 
   const isSuggestionMode = candidates && candidates.length > 0;
 
-  // この画面が表示されている間、ブラウザのスクロールを完全に無効化する
+  // --- ★同期ロジック: 親コンポーネント(page.tsx)の投票データと同期 ---
+  useEffect(() => {
+    if (spotVotes && currentUser) {
+        // 自分が「いいね」したスポットのIDセットを作成
+        const myVotedIds = new Set(
+            spotVotes
+                .filter(v => v.user_name === currentUser && v.vote_type === 'like')
+                .map(v => String(v.spot_id))
+        );
+        setVotedSpotIds(myVotedIds);
+    }
+  }, [spotVotes, currentUser]);
+
   useEffect(() => {
     document.body.style.overflow = 'hidden';
     document.body.style.overscrollBehavior = 'none'; 
@@ -92,10 +100,7 @@ export default function SwipeView({
 
   useEffect(() => {
     setIsClient(true);
-    if (!isSuggestionMode && roomId && currentUser) {
-      fetchVoteHistory();
-    }
-  }, [roomId, currentUser, isSuggestionMode]);
+  }, []);
 
   useEffect(() => {
       if (isSuggestionMode && candidates && candidates.length === 0 && tempLikedSpots.length > 0) {
@@ -103,12 +108,11 @@ export default function SwipeView({
       }
   }, [candidates, isSuggestionMode, tempLikedSpots]);
 
-  // 15秒かけて進むプログレスバー
   useEffect(() => {
     let interval: NodeJS.Timeout;
     if (isSearching) {
       setProgress(0);
-      const duration = 15000; // 15秒
+      const duration = 15000;
       const intervalTime = 100;
       const steps = duration / intervalTime;
       const increment = 95 / steps;
@@ -125,32 +129,16 @@ export default function SwipeView({
     return () => clearInterval(interval);
   }, [isSearching]);
 
-  // 4秒ごとにTipsを切り替えるタイマー
   useEffect(() => {
       let interval: NodeJS.Timeout;
       if (isSearching) {
           setCurrentTipIndex(0);
           interval = setInterval(() => {
               setCurrentTipIndex(prev => (prev + 1) % LOADING_TIPS.length);
-          }, 4000); // 4秒おき
+          }, 4000); 
       }
       return () => clearInterval(interval);
   }, [isSearching]);
-
-  const fetchVoteHistory = async () => {
-    const { data } = await supabase
-      .from('votes')
-      .select('id, spot_id, vote_type, created_at, spots(*)')
-      .eq('room_id', roomId)
-      .eq('user_name', currentUser)
-      .order('created_at', { ascending: false });
-
-    if (data) {
-      const ids = new Set(data.map(v => v.spot_id));
-      setVotedSpotIds(ids);
-      setVoteHistory(data);
-    }
-  };
 
   const handleStartSearch = async () => {
       if (!inputTheme.trim() || isSearching) return;
@@ -235,10 +223,11 @@ export default function SwipeView({
     if (isSuggestionMode && candidates) {
         return candidates.map((spot, index) => ({ ...spot, originalIndex: index }));
     }
+    // 通常モード: 自分が追加したスポット以外、かつまだ投票していないスポットを表示
     return spots
       .map((spot, index) => ({ ...spot, originalIndex: index }))
       .filter(s => s.added_by !== currentUser) 
-      .filter(s => s.id && !votedSpotIds.has(s.id)); 
+      .filter(s => s.id && !votedSpotIds.has(String(s.id))); // ★同期: IDチェック
   }, [spots, votedSpotIds, currentUser, candidates, isSuggestionMode]);
 
   useEffect(() => {
@@ -273,26 +262,24 @@ export default function SwipeView({
         return;
     }
     if (!spot.id) return;
-    setVotedSpotIds(prev => new Set(prev).add(spot.id));
+    
+    // 即座にローカルステートを更新してカードを消す
+    setVotedSpotIds(prev => new Set(prev).add(String(spot.id)));
+    
     const voteType = direction === 'right' ? 'like' : 'nope';
+    
+    // DB更新
     await supabase.from('votes').insert([{
       room_id: roomId, spot_id: spot.id, user_name: currentUser, vote_type: voteType
     }]);
+    
+    // Likeの場合はカウントアップRPC
     if (direction === 'right') await supabase.rpc('increment_votes', { spot_id: spot.id });
   };
 
   const handleRewind = async () => {
-    if (isSuggestionMode) return alert("提案モードでは戻れません");
-    if (voteHistory.length === 0) return;
-    const lastVote = voteHistory[0];
-    await supabase.from('votes').delete().eq('id', lastVote.id);
-    if (lastVote.vote_type === 'like') await supabase.rpc('decrement_votes', { spot_id: lastVote.spot_id });
-    setVotedSpotIds(prev => { const next = new Set(prev); next.delete(lastVote.spot_id); return next; });
-    setVoteHistory(prev => prev.slice(1));
-    setLastDirection(undefined);
+    alert("一度投票したスポットは戻せません（リスト画面から変更可能です）");
   };
-
-  // ...
 
   const handleConfirmAddSpots = async () => {
       setIsVerifying(true);
@@ -308,8 +295,8 @@ export default function SwipeView({
                   votes: 0,
                   image_url: spot.image_url,
                   is_hotel: spot.is_hotel || false,
-                  status: 'candidate', // 候補として追加
-                  day: 0 // ★明示的に未定に設定
+                  status: 'candidate', 
+                  day: 0
               };
               await supabase.from('spots').insert([newSpot]);
           }
@@ -321,8 +308,6 @@ export default function SwipeView({
           setIsVerifying(false);
       }
   };
-
-// ...
 
   const sortedDisplayCandidates = useMemo(() => {
       const pendingNames = detectedCandidates.filter(name => !foundSpots.some(s => s.name === name));
@@ -349,8 +334,12 @@ export default function SwipeView({
                       <Sparkles size={40} />
                   </div>
               </div>
-              <h2 className="text-2xl font-bold text-gray-800 mb-2">次はどこへ行く？</h2>
-              <p className="text-gray-500 mb-8">地名やテーマを入力して<br/>AIにプランを相談しよう</p>
+              <h2 className="text-2xl font-bold text-gray-800 mb-2">
+                  {isSuggestionMode ? "候補がなくなりました" : "スワイプ完了！"}
+              </h2>
+              <p className="text-gray-500 mb-8">
+                  {isSuggestionMode ? "右スワイプした場所を確認しましょう" : "地名やテーマを入力して\nAIに新しいプランを相談しよう"}
+              </p>
               
               <div className="relative w-full mb-4">
                     <input 
@@ -375,26 +364,17 @@ export default function SwipeView({
           </div>
       )}
 
-      {/* 2. 検索中 (ウルトラ・ダイナミック・スキャンUI) */}
+      {/* 2. 検索中 */}
       {isSearching && (
           <div 
               className="w-full h-full absolute inset-0 bg-slate-50 z-[200] flex flex-col overflow-hidden animate-in fade-in duration-300"
               style={{ touchAction: 'none' }}
           >
-             
-             {/* 2-1. 背景エフェクト */}
              <div className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden">
                 <div className="w-[150vw] h-[150vw] opacity-10 rounded-full bg-[conic-gradient(from_0deg,transparent_0deg,transparent_200deg,#3B82F6_360deg)] animate-[spin_4s_linear_infinite]"></div>
              </div>
-             <div className="absolute inset-0 pointer-events-none z-0">
-                 <div className="w-full h-24 bg-gradient-to-b from-transparent via-blue-200/20 to-transparent animate-[translate-y_2s_linear_infinite] absolute top-[-100px] left-0 right-0"></div>
-             </div>
              
              <style jsx>{`
-                @keyframes translate-y {
-                    0% { transform: translateY(-100%); }
-                    100% { transform: translateY(120vh); }
-                }
                 @keyframes pop-bounce {
                     0% { transform: scale(0.5); opacity: 0; }
                     60% { transform: scale(1.05); opacity: 1; }
@@ -402,16 +382,13 @@ export default function SwipeView({
                 }
              `}</style>
 
-             {/* ヘッダー */}
              <div className="relative z-10 flex flex-col items-center justify-center py-6 shrink-0 bg-white/60 backdrop-blur-md border-b border-blue-100 shadow-lg px-6">
                  <div className="relative mb-2">
                     <div className="absolute inset-0 bg-blue-500 rounded-full animate-ping opacity-30 duration-1000"></div>
-                    <div className="absolute inset-[-10px] border-2 border-blue-400 rounded-full animate-[spin_3s_linear_infinite] border-t-transparent border-l-transparent opacity-50"></div>
                     <BrainCircuit size={48} className="text-blue-600 relative z-10 animate-pulse" />
                  </div>
                  <h3 className="text-xl font-black text-gray-800 tracking-tight animate-pulse mb-1">{loadingMessage}</h3>
                  
-                 {/* メーターバー */}
                  <div className="w-full max-w-xs h-2 bg-gray-200 rounded-full overflow-hidden relative shadow-inner mt-2">
                      <div 
                         className="h-full bg-blue-500 rounded-full transition-all duration-300 ease-out shadow-[0_0_8px_rgba(59,130,246,0.6)]"
@@ -423,24 +400,18 @@ export default function SwipeView({
                      <span>{Math.round(progress)}%</span>
                  </div>
 
-                 {/* Tips */}
                  <p key={currentTipIndex} className="text-xs text-gray-500 mt-1 text-center animate-in fade-in slide-in-from-bottom-1 duration-500 px-4 min-h-[1.5em] font-medium flex items-center gap-1">
                      <Info size={12} className="inline text-blue-400"/>
                      {LOADING_TIPS[currentTipIndex]}
                  </p>
              </div>
 
-             {/* コンテンツ: 生成されたスポットのリスト */}
              <div 
                 className="relative z-10 flex-1 overflow-y-auto w-full max-w-md mx-auto space-y-4 py-6 px-4 scrollbar-hide"
              >
                 {sortedDisplayCandidates.length === 0 ? (
                     <div className="flex flex-col items-center justify-center h-64 text-gray-400 space-y-6">
-                        <div className="relative">
-                            <div className="absolute inset-0 border-[4px] border-blue-200 rounded-full animate-[ping_2s_cubic-bezier(0,0,0.2,1)_infinite]"></div>
-                            <div className="absolute inset-[-20px] border border-blue-100 rounded-full animate-[ping_2s_cubic-bezier(0,0,0.2,1)_infinite_0.5s]"></div>
-                            <ScanSearch size={64} className="animate-bounce text-blue-500 relative z-10 drop-shadow-lg"/>
-                        </div>
+                        <ScanSearch size={64} className="animate-bounce text-blue-500 relative z-10 drop-shadow-lg"/>
                         <span className="text-lg font-black tracking-[0.2em] text-blue-300 animate-pulse">SEARCHING...</span>
                     </div>
                 ) : (
@@ -458,8 +429,6 @@ export default function SwipeView({
                                     : "bg-white/40 border-dashed border-gray-300 opacity-50 translate-y-2 scale-95"
                                 }`}
                             >
-                                {isFound && <div className="absolute inset-0 bg-white opacity-50 animate-[ping_0.5s_ease-out_1]"></div>}
-
                                 <div className={`w-14 h-14 rounded-xl shrink-0 overflow-hidden flex items-center justify-center mr-4 shadow-sm transition-colors duration-500 ${isFound ? "bg-gray-100" : "bg-blue-50"}`}>
                                     {isFound && spot.image_url ? (
                                         <img src={spot.image_url} alt="" className="w-full h-full object-cover"/>
@@ -467,18 +436,13 @@ export default function SwipeView({
                                         isFound ? <MapPin size={24} className="text-blue-500"/> : <Loader2 size={20} className="animate-spin text-blue-300"/>
                                     )}
                                 </div>
-                                
                                 <div className="flex-1 min-w-0">
                                     <div className="flex justify-between items-center mb-1">
                                         <p className={`text-base font-black truncate ${isFound ? "text-gray-800" : "text-gray-400"}`}>{name}</p>
                                         {isFound && <CheckCircle size={20} className="text-green-500 shrink-0 ml-2 drop-shadow-md"/>}
                                     </div>
                                     <div className="h-2 w-full bg-gray-100 rounded-full overflow-hidden">
-                                        {isFound ? (
-                                            <div className="h-full bg-gradient-to-r from-blue-400 via-blue-500 to-indigo-600 w-full"></div>
-                                        ) : (
-                                            <div className="h-full w-full bg-gradient-to-r from-gray-200 via-white to-gray-200 animate-[shimmer_1s_infinite]"></div>
-                                        )}
+                                        <div className={`h-full w-full ${isFound ? "bg-gradient-to-r from-blue-400 via-blue-500 to-indigo-600" : "bg-gradient-to-r from-gray-200 via-white to-gray-200 animate-[shimmer_1s_infinite]"}`}></div>
                                     </div>
                                 </div>
                             </div>
@@ -526,19 +490,12 @@ export default function SwipeView({
       {/* 4. スワイプカード */}
       {activeSpots.length > 0 && areImagesReady && !showConfirmModal && !isSearching && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center animate-in zoom-in duration-300">
-            {!isSuggestionMode && (
-                <div className="absolute top-4 right-4 z-50 flex gap-3">
-                <button onClick={handleRewind} disabled={voteHistory.length === 0} className="p-3 rounded-full shadow-md border bg-white text-yellow-500 border-gray-200 hover:bg-gray-50"><RotateCcw size={20} /></button>
-                <button onClick={() => setIsHistoryMode(true)} className="bg-white text-gray-600 p-3 rounded-full border border-gray-200 shadow-md hover:bg-gray-50"><History size={20} /></button>
-                </div>
-            )}
             <div className="relative w-full h-full max-w-md mx-auto flex items-center justify-center pointer-events-none">
                 {activeSpots.map((spot, index) => {
                 const bgImage = images[spot.name] || spot.image_url; 
                 const voters = isSuggestionMode ? [] : spotVotes.filter(v => v.spot_id === spot.id && v.vote_type === 'like').map(v => v.user_name);
                 const uniqueVoters = Array.from(new Set(voters)) as string[];
                 return (
-                    // ★タッチ操作無効化でスクロールを防止
                     <div key={spot.id || spot.name} className="absolute inset-0 p-4 flex items-center justify-center pointer-events-auto" style={{ zIndex: 1000 + index, touchAction: 'none' }}>
                     <TinderCard className="swipe w-full h-full flex items-center justify-center" onSwipe={(dir: string) => {}} onCardLeftScreen={(dir: string) => onCardLeftScreen(dir, spot)} preventSwipe={['up', 'down']} swipeRequirementType="position" swipeThreshold={100}>
                         <div className={`relative w-[90vw] h-[75vh] max-w-[360px] max-h-[640px] bg-white rounded-3xl shadow-2xl overflow-hidden flex flex-col border border-gray-100`}>
@@ -563,13 +520,11 @@ export default function SwipeView({
                                 <h3 className="text-3xl font-black drop-shadow-lg leading-tight mb-1">{spot.name}</h3>
                                 <div className="flex items-center gap-2 text-xs text-gray-200 mb-2">
                                     <MapPin size={12} />
-                                    {/* ★修正: カテゴリを表示 */}
                                     <span>{spot.is_hotel ? "宿泊施設" : (spot.category || "観光スポット")}</span>
                                 </div>
                                 <div className="relative mt-2 mb-2 pointer-events-auto">
                                     <div className="bg-white/90 backdrop-blur text-gray-800 text-sm font-bold p-3 rounded-xl shadow-lg leading-relaxed relative">
                                         <div className="absolute -top-2 left-4 w-3 h-3 bg-white/90 rotate-45 transform origin-bottom-left"></div>
-                                        {/* ★修正: AI生成の一言説明文を表示 */}
                                         <span className="mr-1">💡</span> {spot.description || "説明文はありません"}
                                     </div>
                                 </div>
