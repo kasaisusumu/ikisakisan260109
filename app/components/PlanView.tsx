@@ -8,18 +8,26 @@ import {
   Edit3, Train, Plane, Ship, Footprints, Zap, 
   Image as ImageIcon, Link as LinkIcon, Camera, Upload, 
   Save, BookOpen, Trash2, PlusCircle, MapPinned, GripVertical, ArrowRight,
-  ChevronDown, ChevronUp, Layers, Check, Move, Map as MapIcon, ArrowUp
+  ChevronDown, ChevronUp, Layers, Check, Map as MapIcon, ArrowUp, Download, ArrowLeft
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+
+// html2canvasの型定義回避のためのダミー宣言
+declare global {
+    interface Window {
+        html2canvas: any;
+    }
+}
 
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const RAKUTEN_AFFILIATE_ID = "4fcc24e4.174bb117.4fcc24e5.5b178353"; 
 
-// --- 画像表示コンポーネント (修正版) ---
+// --- 画像表示用コンポーネント ---
 const SpotImage = ({ src, alt, className }: { src?: string | null, alt: string, className?: string }) => {
     const [isLoading, setIsLoading] = useState(true);
     const [hasError, setHasError] = useState(false);
+    const imgRef = useRef<HTMLImageElement>(null);
 
     useEffect(() => {
         if (src && (src.startsWith('http') || src.startsWith('data:'))) {
@@ -28,6 +36,12 @@ const SpotImage = ({ src, alt, className }: { src?: string | null, alt: string, 
         } else {
             setIsLoading(false);
             setHasError(true);
+        }
+    }, [src]);
+
+    useEffect(() => {
+        if (imgRef.current && imgRef.current.complete) {
+            setIsLoading(false);
         }
     }, [src]);
 
@@ -50,13 +64,15 @@ const SpotImage = ({ src, alt, className }: { src?: string | null, alt: string, 
                 </div>
             )}
             <img 
-                key={src} // ★重要: URL変更時に確実に再レンダリングさせる
+                ref={imgRef}
+                key={src} 
                 src={src} 
                 alt={alt} 
                 onLoad={handleLoad}
                 onError={handleError}
                 className={`w-full h-full object-cover transition-opacity duration-300 ${isLoading ? 'opacity-0' : 'opacity-100'}`}
                 draggable={false} 
+                crossOrigin="anonymous" // CORS対策
             />
         </div>
     );
@@ -68,6 +84,8 @@ interface Props {
   onUpdateSpots: (newSpots: any[]) => void;
   roomId: string;
   travelDays?: number;
+  autoShowScreenshot?: boolean;
+  onScreenshotClosed?: () => void;
 }
 
 const TRANSPORT_MODES = [
@@ -79,9 +97,16 @@ const TRANSPORT_MODES = [
   { id: 'ship', icon: <Ship size={16}/>, label: '船', googleMode: 'transit' },
 ];
 
-export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, travelDays = 1 }: Props) {
+const getSpotId = (spot: any) => {
+    if (!spot) return "";
+    return String(spot.id || spot.name);
+};
+
+export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, travelDays = 1, autoShowScreenshot, onScreenshotClosed }: Props) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
+  const captureRef = useRef<HTMLDivElement>(null); 
+  const scrollContainerRef = useRef<HTMLDivElement>(null); // スクショ用コンテナの参照
   
   const [isProcessing, setIsProcessing] = useState(false);
   const [timeline, setTimeline] = useState<any[]>([]);
@@ -89,9 +114,7 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
   const [isPlanGenerated, setIsPlanGenerated] = useState(false);
   
   const [optimizeCount, setOptimizeCount] = useState(0);
-  
   const [draggedItemIndex, setDraggedItemIndex] = useState<number | null>(null);
-
   const [selectedMapSpot, setSelectedMapSpot] = useState<any>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [startTime, setStartTime] = useState("09:00");
@@ -100,20 +123,39 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
   const [endSpotName, setEndSpotName] = useState<string>("");
   const [isPinListOpen, setIsPinListOpen] = useState(false);
   const [pinnedPlans, setPinnedPlans] = useState<any[]>([]);
-
   const [editItem, setEditItem] = useState<{index: number, type: 'spot' | 'travel', data: any} | null>(null);
   const [showScreenshotMode, setShowScreenshotMode] = useState(false);
   const [showUnusedList, setShowUnusedList] = useState(true);
-
+  const [isSavingImage, setIsSavingImage] = useState(false);
   const attemptedImageFetch = useRef<Set<string>>(new Set());
   const [isMapVisible, setIsMapVisible] = useState(false);
-
-  const maxSpotDay = Math.max(...spots.map(s => s.day || 0));
-  const displayDays = Math.max(travelDays, maxSpotDay, 1);
-
   const [selectedDay, setSelectedDay] = useState<number>(1);
 
-  // 1. その日の対象スポット
+  const displayDays = Math.max(travelDays, 1);
+
+  useEffect(() => {
+      if (autoShowScreenshot) setShowScreenshotMode(true);
+  }, [autoShowScreenshot]);
+
+  const handleCloseScreenshot = () => {
+      setShowScreenshotMode(false);
+      if (onScreenshotClosed) onScreenshotClosed();
+  };
+
+  useEffect(() => {
+      setTimeline(prev => prev.map(item => {
+          if (item.type !== 'spot') return item;
+          const freshSpot = spots.find(s => 
+              (s.id && String(s.id) === String(item.spot.id)) || 
+              s.name === item.spot.name
+          );
+          if (freshSpot) {
+              return { ...item, spot: freshSpot, image: freshSpot.image_url || item.image };
+          }
+          return item;
+      }));
+  }, [spots]);
+
   const activeDaySpots = useMemo(() => {
       return spots.filter(s => 
           s.status === 'confirmed' && 
@@ -121,18 +163,15 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
       );
   }, [spots, selectedDay]);
 
-  // 2. 待機中スポット (重複防止)
   const unusedSpots = useMemo(() => {
       const usedSpotIds = new Set(
           timeline
               .filter(item => item.type === 'spot')
-              .map(item => String(item.spot.id || item.spot.name))
+              .map(item => getSpotId(item.spot))
       );
-      
-      return activeDaySpots.filter(spot => !usedSpotIds.has(String(spot.id || spot.name)));
+      return activeDaySpots.filter(spot => !usedSpotIds.has(getSpotId(spot)));
   }, [activeDaySpots, timeline]);
 
-  // --- Logic Helpers ---
   const getAffiliateUrl = (spot: any) => {
       if (spot.id && /^\d+$/.test(spot.id)) {
           const today = new Date();
@@ -171,16 +210,13 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
       }
       return null;
   };
-
+  
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file || !editItem) return;
       const reader = new FileReader();
       reader.onloadend = () => {
-          setEditItem({
-              ...editItem,
-              data: { ...editItem.data, image: reader.result as string }
-          });
+          setEditItem({ ...editItem, data: { ...editItem.data, image: reader.result as string } });
       };
       reader.readAsDataURL(file);
   };
@@ -220,9 +256,7 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
               const data = await res.json();
               return data.image_url;
           }
-      } catch (e) {
-          console.error("Image fetch failed", e);
-      }
+      } catch (e) { console.error("Image fetch failed", e); }
       return null;
   };
 
@@ -232,16 +266,13 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
         newTimeline.forEach((item, index) => {
             if (item.type === 'spot') {
                 const spotId = item.spot.id || item.spot.name;
-                
-                // spotsプロップス（親から来た最新データ）に画像があるかチェック
                 const currentSpot = spots.find(s => (s.id && String(s.id) === String(spotId)) || s.name === item.spot.name);
-                if (currentSpot && currentSpot.image_url) return; // すでにあるならfetchしない
+                if (currentSpot && currentSpot.image_url) return; 
 
                 if ((!item.image && !item.spot.image_url) && !attemptedImageFetch.current.has(spotId)) {
                     attemptedImageFetch.current.add(spotId);
                     fetchSpotImage(item.spot.name).then(url => {
                         if (url) {
-                            // Timeline更新（念のため）
                             setTimeline(prev => {
                                 const next = [...prev];
                                 if (next[index] && next[index].type === 'spot') {
@@ -249,7 +280,6 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
                                 }
                                 return next;
                             });
-                            // DB更新
                             if (roomId && item.spot.id && !String(item.spot.id).startsWith('spot-')) {
                                 supabase.from('spots').update({ image_url: url }).eq('id', item.spot.id).then();
                             }
@@ -259,9 +289,8 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
             }
         });
     }
-  }, [timeline, roomId, spots]); // spotsも依存配列に追加
+  }, [timeline, roomId, spots]);
 
-  // --- Effects ---
   useEffect(() => {
     if (roomId && isPlanGenerated) {
         const storageKey = `rh_plan_${roomId}_day_${selectedDay}`;
@@ -294,7 +323,6 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
   };
   useEffect(() => { if (isPinListOpen) fetchPinnedPlans(); }, [isPinListOpen]);
 
-  // --- Handlers ---
   const handlePinPlan = async () => {
       if (!isPlanGenerated) return;
       const title = prompt("プラン名を入力して保存:", `Day ${selectedDay} のプラン`);
@@ -353,32 +381,20 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
     } catch (e: any) { alert(`エラー: ${e.message}`); } finally { setIsProcessing(false); }
   };
 
-  // --- Drag and Drop Logic ---
   const onDragStart = (e: React.DragEvent, timelineIndex: number) => {
       e.dataTransfer.setData('text/plain', String(timelineIndex));
       e.dataTransfer.effectAllowed = "move";
-      setTimeout(() => {
-          setDraggedItemIndex(timelineIndex);
-      }, 0);
+      setTimeout(() => { setDraggedItemIndex(timelineIndex); }, 0);
   };
-
-  const onDragEnd = (e: React.DragEvent) => {
-      setDraggedItemIndex(null);
-  };
-
-  const onDragOver = (e: React.DragEvent) => {
-      e.preventDefault(); 
-      e.dataTransfer.dropEffect = "move";
-  };
+  const onDragEnd = (e: React.DragEvent) => { setDraggedItemIndex(null); };
+  const onDragOver = (e: React.DragEvent) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; };
   
   const onDrop = (e: React.DragEvent, targetTimelineIndex: number) => {
     e.preventDefault();
     e.stopPropagation(); 
-
     const rawIndex = e.dataTransfer.getData('text/plain');
     const sourceIndex = parseInt(rawIndex, 10);
     const effectiveSourceIndex = !isNaN(sourceIndex) ? sourceIndex : draggedItemIndex;
-
     if (effectiveSourceIndex === null || effectiveSourceIndex === targetTimelineIndex) return;
 
     const draggedItem = timeline[effectiveSourceIndex];
@@ -386,14 +402,11 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
 
     const currentSpotsOnly = timeline.filter(item => item.type === 'spot');
     const currentTravelsOnly = timeline.filter(item => item.type === 'travel');
-
     const draggedSpotIndex = currentSpotsOnly.findIndex(s => s.spot.name === draggedItem.spot.name);
     
     let insertIndex = 0;
     for(let i=0; i < targetTimelineIndex; i++) {
-        if(timeline[i].type === 'spot' && i !== effectiveSourceIndex) {
-            insertIndex++;
-        }
+        if(timeline[i].type === 'spot' && i !== effectiveSourceIndex) { insertIndex++; }
     }
 
     const newSpotsOrder = [...currentSpotsOnly];
@@ -405,14 +418,10 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
         reconstructedTimeline.push(spotItem);
         if (i < newSpotsOrder.length - 1) {
             const existingTravel = currentTravelsOnly[i]; 
-            if (existingTravel) {
-                reconstructedTimeline.push(existingTravel);
-            } else {
-                reconstructedTimeline.push({ type: 'travel', duration_min: 30, transport_mode: 'car' });
-            }
+            if (existingTravel) reconstructedTimeline.push(existingTravel);
+            else reconstructedTimeline.push({ type: 'travel', duration_min: 30, transport_mode: 'car' });
         }
     });
-
     setTimeline(calculateSchedule(reconstructedTimeline));
     setDraggedItemIndex(null);
   };
@@ -429,9 +438,8 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
       const val = parseInt(value, 10);
       if (isNaN(val)) return;
       const newTimeline = [...timeline];
-      if (newTimeline[index].type === 'travel') {
-          newTimeline[index].duration_min = val;
-      } else {
+      if (newTimeline[index].type === 'travel') newTimeline[index].duration_min = val;
+      else {
           newTimeline[index].stay_min = val;
           if(newTimeline[index].spot) newTimeline[index].spot.stay_time = val;
       }
@@ -453,33 +461,21 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
             newItems.push({ type: 'travel', duration_min: 30, transport_mode: 'car' });
         }
         newItems.push({ type: 'spot', spot, stay_min: 60 });
-        
         const newTimeline = [...timeline, ...newItems];
         setTimeline(calculateSchedule(newTimeline));
     } else {
         if (!confirm("スケジュールから外しますか？")) return;
         const spotIndex = timeline.findIndex(t => t.type === 'spot' && t.spot.name === spot.name);
         if (spotIndex === -1) return;
-
         let newTimeline = [...timeline];
         if (spotIndex === 0) {
-            if (newTimeline[1]?.type === 'travel') {
-                newTimeline.splice(0, 2); 
-            } else {
-                newTimeline.splice(0, 1);
-            }
+            if (newTimeline[1]?.type === 'travel') newTimeline.splice(0, 2); 
+            else newTimeline.splice(0, 1);
         } else {
-             if (newTimeline[spotIndex - 1]?.type === 'travel') {
-                newTimeline.splice(spotIndex - 1, 2); 
-             } else {
-                newTimeline.splice(spotIndex, 1);
-             }
+             if (newTimeline[spotIndex - 1]?.type === 'travel') newTimeline.splice(spotIndex - 1, 2); 
+             else newTimeline.splice(spotIndex, 1);
         }
-        
-        if (newTimeline.length > 0 && newTimeline[newTimeline.length - 1].type === 'travel') {
-            newTimeline.pop();
-        }
-
+        if (newTimeline.length > 0 && newTimeline[newTimeline.length - 1].type === 'travel') newTimeline.pop();
         setTimeline(calculateSchedule(newTimeline));
     }
   };
@@ -542,24 +538,123 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
     }
   }, [timeline, unusedSpots, routeGeoJSON]);
 
+  // ★ 画像保存処理 (全体キャプチャ & 安定化)
+  const handleDownloadImage = async () => {
+      if (!captureRef.current) return;
+      setIsSavingImage(true);
+      
+      try {
+          // html2canvasの読み込み (動的インポート or CDN)
+          let html2canvasFunc = window.html2canvas;
+          
+          if (!html2canvasFunc) {
+              try {
+                  const module = await import('html2canvas');
+                  html2canvasFunc = module.default;
+              } catch (e) {
+                  // CDNフォールバック
+                  if (!document.querySelector('script[src*="html2canvas"]')) {
+                      const script = document.createElement('script');
+                      script.src = "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
+                      document.head.appendChild(script);
+                      await new Promise((resolve, reject) => {
+                          script.onload = resolve;
+                          script.onerror = reject;
+                      });
+                  }
+                  // 少し待機
+                  await new Promise(r => setTimeout(r, 200));
+                  html2canvasFunc = window.html2canvas;
+              }
+          }
+
+          if (!html2canvasFunc) throw new Error("画像生成ライブラリの読み込みに失敗しました");
+
+          const element = captureRef.current;
+          
+          // 一時的にスクロールをリセット（画像切れ防止）
+          const originalScroll = window.scrollY;
+          window.scrollTo(0, 0);
+
+          const canvas = await html2canvasFunc(element, {
+              scale: 2, // 高画質化
+              useCORS: true, // クロスドメイン対応
+              backgroundColor: '#ffffff',
+              logging: false,
+              // 特定の高さ指定を削除し、html2canvasの自動検知に任せる（これで全体が撮れることが多い）
+          });
+          
+          // スクロール位置を戻す
+          window.scrollTo(0, originalScroll);
+
+          const link = document.createElement('a');
+          link.href = canvas.toDataURL('image/png');
+          link.download = `plan_day${selectedDay}_${Date.now()}.png`;
+          link.click();
+
+      } catch (error) {
+          console.error("Screenshot failed", error);
+          alert("画像の保存に失敗しました。もう一度お試しください。");
+      } finally {
+          setIsSavingImage(false);
+      }
+  };
+
   if (showScreenshotMode) {
       let spotCounter = 0;
       return (
-          <div className="fixed inset-0 z-[100] bg-white text-gray-900 overflow-y-auto">
-              <div className="p-8 max-w-lg mx-auto min-h-screen">
-                  <div className="flex justify-between items-center mb-8 pb-4 border-b border-gray-200">
+          <div ref={scrollContainerRef} className="fixed inset-0 z-[100] bg-white text-gray-900 overflow-y-auto">
+              
+              {/* ヘッダー: pt-20で安全領域を確保し、ボタン配置を調整 */}
+              <div className="sticky top-0 left-0 right-0 pt-20 pb-4 px-6 z-50 flex items-center justify-between bg-white/95 backdrop-blur-sm border-b border-gray-100 shadow-sm">
+                   <button 
+                       onClick={handleCloseScreenshot} 
+                       className="flex items-center gap-2 text-sm font-bold text-gray-600 hover:text-gray-900 transition bg-gray-100 px-4 py-3 rounded-full shadow-sm"
+                   >
+                       <ArrowLeft size={18}/> 戻る
+                   </button>
+                   
+                   <button 
+                       onClick={handleDownloadImage}
+                       disabled={isSavingImage || timeline.length === 0}
+                       className="flex items-center gap-2 text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 transition px-5 py-3 rounded-full shadow-md disabled:opacity-50"
+                   >
+                       {isSavingImage ? <Loader2 size={18} className="animate-spin"/> : <Camera size={18}/>}
+                       <span>画像保存</span>
+                   </button>
+              </div>
+
+              <div ref={captureRef} className="p-8 max-w-lg mx-auto min-h-screen bg-white pb-32">
+                  <div className="flex justify-between items-center mb-6 pb-4 border-b border-gray-200">
                       <div>
                           <p className="text-xs font-bold text-gray-400 tracking-wider">TRAVEL LOG</p>
                           <h1 className="text-3xl font-black tracking-tight text-gray-800">Day {selectedDay}</h1>
                       </div>
-                      {/* 上部にも閉じるボタン（念のため） */}
-                      <button onClick={() => setShowScreenshotMode(false)} className="bg-gray-100 px-4 py-2 rounded-full font-bold text-xs text-gray-600 hover:bg-gray-200">CLOSE</button>
+                      
+                      <div className="flex gap-1" data-html2canvas-ignore="true">
+                         {Array.from({ length: displayDays }).map((_, i) => (
+                              <button 
+                                  key={i} 
+                                  onClick={() => { setSelectedDay(i + 1); setIsPlanGenerated(false); setRouteGeoJSON(null); }}
+                                  className={`w-8 h-8 rounded-full text-xs font-bold transition-all border flex items-center justify-center ${selectedDay === i + 1 ? 'bg-black text-white border-black' : 'bg-gray-100 text-gray-500 border-gray-200 hover:bg-gray-200'}`}
+                              >
+                                  {i + 1}
+                              </button>
+                          ))}
+                      </div>
                   </div>
+
                   <div className="space-y-0 relative pl-4">
                       <div className="absolute left-[19px] top-2 bottom-2 w-[2px] bg-gray-200 z-0"></div>
+                      
+                      {timeline.length === 0 && (
+                          <div className="text-center py-20 text-gray-400 text-sm font-bold">
+                              ルートが生成されていません
+                          </div>
+                      )}
+
                       {timeline.map((item, i) => {
                           if (item.type === 'spot') {
-                              // スクショモードでも最新画像を使用
                               const displaySpot = spots.find(s => 
                                   (s.id && String(s.id) === String(item.spot.id)) || 
                                   s.name === item.spot.name
@@ -580,10 +675,13 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
                                           </div>
                                           <h3 className="text-lg font-bold leading-snug mb-1 text-gray-800">{item.spot.name}</h3>
                                           {displayImage ? (
-                                              <div className="w-full h-32 mb-2 rounded-lg overflow-hidden bg-gray-100 mt-2 border border-gray-200">
-                                                  <SpotImage src={displayImage} alt={item.spot.name} className="w-full h-full"/>
+                                              <div className="w-full h-40 mb-2 rounded-lg overflow-hidden bg-gray-100 mt-2 border border-gray-200 shadow-sm">
+                                                  <img src={displayImage} alt={item.spot.name} className="w-full h-full object-cover" crossOrigin="anonymous"/>
                                               </div>
                                           ) : null}
+                                          {item.spot.comment && (
+                                              <p className="text-xs text-gray-600 bg-gray-50 p-2 rounded border border-gray-100 mt-1 whitespace-pre-wrap">{item.spot.comment}</p>
+                                          )}
                                           <div className="text-xs text-gray-500 flex items-center gap-1 mt-1"><Clock size={12}/> 滞在: {item.stay_min}分</div>
                                       </div>
                                   </div>
@@ -599,13 +697,6 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
                       })}
                   </div>
               </div>
-              {/* スクロール追従する大きな閉じるボタン */}
-              <button 
-                  onClick={() => setShowScreenshotMode(false)} 
-                  className="fixed bottom-8 right-8 bg-black text-white p-4 rounded-full shadow-2xl hover:scale-110 transition z-[110] flex items-center justify-center border-4 border-white"
-              >
-                  <X size={24} />
-              </button>
           </div>
       );
   }
@@ -615,7 +706,6 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
   return (
     <div className="flex flex-col h-full bg-gray-50 relative font-sans text-gray-800 overflow-hidden">
       
-      {/* 編集モーダル */}
       {editItem && (
           <div className="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
               <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl space-y-5 animate-in zoom-in-95 duration-200">
@@ -655,7 +745,6 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
           </div>
       )}
 
-      {/* 設定モーダル */}
       {showSettings && (
           <div className="absolute inset-0 z-50 bg-white/80 backdrop-blur-md flex flex-col justify-end sm:justify-center p-4 animate-in slide-in-from-bottom-10">
               <div className="bg-white w-full max-w-md mx-auto rounded-3xl p-6 shadow-2xl border border-gray-100 space-y-6">
@@ -692,7 +781,6 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
           </div>
       )}
 
-      {/* 上部マップエリア */}
       <div 
         className={`w-full relative shrink-0 z-10 border-b border-gray-200 shadow-sm transition-all duration-300 ease-in-out bg-white`}
         style={{ height: isMapVisible ? '50vh' : '0px', overflow: 'hidden' }}
@@ -700,7 +788,6 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
         <div ref={mapContainer} className="w-full h-full" />
       </div>
 
-      {/* 下部リストエリア (min-h-0でスクロール確保) */}
       <div className="flex-1 overflow-y-auto relative bg-gray-50 pb-20 custom-scrollbar min-h-0">
         
         <div className="bg-white px-4 py-4 border-b border-gray-100 flex flex-col gap-3 sticky top-0 z-20 shadow-sm">
@@ -767,7 +854,6 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
                             {showUnusedList && (
                                 <div className="space-y-2">
                                     {unusedSpots.map((spot, i) => {
-                                        // 待機中スポットも最新の画像情報を取得
                                         const latestSpot = spots.find(s => (s.id && String(s.id) === String(spot.id)) || s.name === spot.name) || spot;
                                         return (
                                             <div key={`unused-${spot.id || i}`} className="bg-white p-3 rounded-lg border border-gray-200 flex justify-between items-center group shadow-sm">
@@ -785,7 +871,6 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
                     )}
 
                     {timeline?.map((item, i) => {
-                        // --- スポット (ドラッグ可能) ---
                         if (item.type === 'spot') {
                           spotCounter++;
                           return (
@@ -797,7 +882,7 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
                                 onDragEnd={onDragEnd}
                                 onDragOver={onDragOver} 
                                 onDrop={(e) => onDrop(e, i)}
-                                style={{ touchAction: 'pan-y' }} // タッチ操作対策
+                                style={{ touchAction: 'pan-y' }} 
                             >
                               <div className={`absolute left-0 top-6 -translate-y-1/2 w-12 h-12 rounded-xl flex flex-col items-center justify-center font-bold shadow-md border-[3px] z-20 transition-transform bg-white border-white text-indigo-600 ring-1 ring-gray-100`}>
                                 <span className="text-lg leading-none">{String(spotCounter).padStart(2, '0')}</span>
@@ -806,7 +891,6 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
                               <div className="bg-white border border-gray-200 rounded-xl overflow-hidden hover:border-indigo-400 hover:shadow-md transition-all cursor-grab active:cursor-grabbing" onClick={() => setEditItem({index: i, type: 'spot', data: item})}>
                                 <div className="flex h-24">
                                     <div className="w-24 bg-gray-100 shrink-0 relative border-r border-gray-100">
-                                        {/* 画像表示ロジック: 最新のspots情報を優先 */}
                                         {(() => {
                                             const displaySpot = spots.find(s => 
                                                 (s.id && String(s.id) === String(item.spot.id)) || 
@@ -851,9 +935,7 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
                               </div>
                             </div>
                           );
-                        } 
-                        // --- 移動 (ドラッグ受け入れ) ---
-                        else if (item.type === 'travel') {
+                        } else if (item.type === 'travel') {
                           const mode = TRANSPORT_MODES.find(m => m.id === (item.transport_mode || 'car')) || TRANSPORT_MODES[0];
                           const mapLink = getDirectionsUrl(i);
 

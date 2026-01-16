@@ -292,6 +292,8 @@ export default function SwipeView({
     setLastDirection(undefined);
   };
 
+  // ...
+
   const handleConfirmAddSpots = async () => {
       setIsVerifying(true);
       try {
@@ -305,7 +307,9 @@ export default function SwipeView({
                   added_by: currentUser || 'AI', 
                   votes: 0,
                   image_url: spot.image_url,
-                  is_hotel: spot.is_hotel || false 
+                  is_hotel: spot.is_hotel || false,
+                  status: 'candidate', // 候補として追加
+                  day: 0 // ★明示的に未定に設定
               };
               await supabase.from('spots').insert([newSpot]);
           }
@@ -317,6 +321,8 @@ export default function SwipeView({
           setIsVerifying(false);
       }
   };
+
+// ...
 
   const sortedDisplayCandidates = useMemo(() => {
       const pendingNames = detectedCandidates.filter(name => !foundSpots.some(s => s.name === name));

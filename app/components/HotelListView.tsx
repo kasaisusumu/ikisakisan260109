@@ -70,6 +70,9 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
   const [isDrawing, setIsDrawing] = useState(false);
   const [importUrl, setImportUrl] = useState("");
   const [isImporting, setIsImporting] = useState(false);
+  
+  // ★追加: インポート完了ポップアップ用のstate
+  const [importedHotel, setImportedHotel] = useState<any>(null);
 
   // 検索条件
   const today = new Date();
@@ -140,9 +143,17 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
   };
 
   const getAffiliateUrl = (hotel: any) => {
-      const [y1, m1, d1] = conditions.checkin.split('-');
-      const [y2, m2, d2] = conditions.checkout.split('-');
-      const targetUrl = `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotel.id}?f_teikei=&f_heya_su=1&f_otona_su=${conditions.adults}&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_sort=min_charge`;
+      let targetUrl = "";
+
+      // ★修正: インポートされたURL（特定のプランURL）がある場合はそれを優先使用
+      if (hotel.url && hotel.url.includes('rakuten.co.jp')) {
+          targetUrl = hotel.url;
+      } else {
+          const [y1, m1, d1] = conditions.checkin.split('-');
+          const [y2, m2, d2] = conditions.checkout.split('-');
+          targetUrl = `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotel.id}?f_teikei=&f_heya_su=1&f_otona_su=${conditions.adults}&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_sort=min_charge`;
+      }
+
       if (RAKUTEN_AFFILIATE_ID) return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent(targetUrl)}&m=${encodeURIComponent(targetUrl)}`;
       return targetUrl;
   };
@@ -272,7 +283,12 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
               method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: importUrl })
           });
           const data = await res.json();
-          if (data.spot) { handleAddCandidate(data.spot); setImportUrl(""); }
+          if (data.spot) { 
+              handleAddCandidate(data.spot); 
+              setImportUrl(""); 
+              // ★追加: 完了ポップアップを表示
+              setImportedHotel(data.spot);
+          }
           else alert(data.error || "エラー");
       } catch (e) { alert("エラー"); } finally { setIsImporting(false); }
   };
@@ -461,6 +477,38 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
 
                       <button onClick={executeSearch} disabled={isLoading} className="w-full bg-black text-white py-5 rounded-[2rem] font-black text-lg shadow-xl flex items-center justify-center gap-2 active:scale-95 transition-transform">
                           {isLoading ? <Loader2 className="animate-spin"/> : <><Search size={22}/> Search properties</>}
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
+      
+      {/* ★追加: インポート完了ポップアップ */}
+      {importedHotel && (
+          <div className="absolute inset-0 z-[100] bg-black/60 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-300">
+              <div className="bg-white w-full max-w-sm rounded-[2.5rem] p-6 shadow-2xl relative flex flex-col items-center text-center animate-in zoom-in-95 duration-300">
+                  <div className="w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mb-4 shadow-sm">
+                      <Check size={32} strokeWidth={3} />
+                  </div>
+                  <h3 className="text-xl font-black text-gray-900 mb-2">追加しました！</h3>
+                  
+                  <div className="w-full aspect-video rounded-2xl overflow-hidden bg-gray-100 mb-4 shadow-inner relative border border-gray-100">
+                       {importedHotel.image_url ? (
+                           <img src={importedHotel.image_url} className="w-full h-full object-cover" alt="" />
+                       ) : (
+                           <div className="w-full h-full flex items-center justify-center text-gray-300"><LinkIcon size={32}/></div>
+                       )}
+                       <div className="absolute bottom-0 left-0 right-0 p-3 bg-gradient-to-t from-black/60 to-transparent">
+                           <p className="text-white font-bold text-xs truncate">{importedHotel.name}</p>
+                       </div>
+                  </div>
+                  
+                  <div className="flex gap-2 w-full">
+                      <button 
+                        onClick={() => setImportedHotel(null)} 
+                        className="flex-1 bg-black text-white py-4 rounded-2xl font-bold hover:scale-[1.02] active:scale-95 transition shadow-lg"
+                      >
+                        OK
                       </button>
                   </div>
               </div>
