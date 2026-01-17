@@ -32,10 +32,9 @@ interface Props {
   onPreview?: (spot: any) => void;
   isLoadingMore?: boolean;
   onSearchOnMap?: (keyword: string) => void;
-  allParticipants?: string[]; // ★親から受け取る参加者リスト（色の同期用）
+  allParticipants?: string[]; 
 }
 
-// 20色のカラーパレット
 const UD_COLORS = [
     '#F59E0B', '#3B82F6', '#10B981', '#EF4444', '#8B5CF6', '#EC4899', '#6366F1', '#14B8A6',
     '#F97316', '#06B6D4', '#84CC16', '#EAB308', '#D946EF', '#64748B', '#A855F7', '#FB7185',
@@ -46,7 +45,7 @@ export default function SwipeView({
   spots, spotVotes = [], currentUser = "", roomId = "",
   candidates = [], onLike, onNope, onReceiveCandidates,
   onPreview, isLoadingMore, onSearchOnMap,
-  allParticipants = [] // ★デフォルト値設定
+  allParticipants = [] 
 }: Props) {
   
   const [lastDirection, setLastDirection] = useState<string>();
@@ -72,25 +71,49 @@ export default function SwipeView({
 
   const isSuggestionMode = candidates && candidates.length > 0;
 
-  // ★色決定関数（親から受け取ったallParticipantsの順序に基づく）
+  // ストレージキー (ルーム・ユーザーごとに保存)
+  const storageKey = `swiped_ids_${roomId}_${currentUser}`;
+
+  // ★改善: 初期マウント時にSessionStorageから状態を復元
+  useEffect(() => {
+    setIsClient(true);
+    const saved = sessionStorage.getItem(storageKey);
+    if (saved) {
+        try {
+            const parsed = JSON.parse(saved);
+            if (Array.isArray(parsed)) {
+                setVotedSpotIds(new Set(parsed));
+            }
+        } catch (e) {
+            console.error("Failed to load swiped ids", e);
+        }
+    }
+  }, [storageKey]);
+
   const getUserColor = (name: string) => {
       const index = allParticipants.indexOf(name);
       if (index === -1) return '#9CA3AF';
       return UD_COLORS[index % UD_COLORS.length];
   };
 
-  // --- ★同期ロジック: 親コンポーネント(page.tsx)の投票データと同期 ---
+  // 外部(DB)からの投票データとローカルの状態を同期
   useEffect(() => {
     if (spotVotes && currentUser) {
-        // ★修正: vote_typeによる絞り込みを削除 (NOPEも済みIDに含めることで復活を防ぐ)
-        const myVotedIds = new Set(
-            spotVotes
+        const myVotedIds = spotVotes
                 .filter(v => v.user_name === currentUser)
-                .map(v => String(v.spot_id))
-        );
-        setVotedSpotIds(myVotedIds);
+                .map(v => String(v.spot_id));
+        
+        setVotedSpotIds(prev => {
+            const next = new Set(prev);
+            myVotedIds.forEach(id => next.add(id));
+            // sessionStorageにも反映
+            if (next.size > prev.size) {
+                sessionStorage.setItem(storageKey, JSON.stringify(Array.from(next)));
+            }
+            return next;
+        });
     }
-  }, [spotVotes, currentUser]);
+  }, [spotVotes, currentUser, storageKey]);
 
   useEffect(() => {
     document.body.style.overflow = 'hidden';
@@ -102,10 +125,6 @@ export default function SwipeView({
       document.body.style.overscrollBehavior = '';
       document.body.style.touchAction = '';
     };
-  }, []);
-
-  useEffect(() => {
-    setIsClient(true);
   }, []);
 
   useEffect(() => {
@@ -219,20 +238,34 @@ export default function SwipeView({
       }
   };
 
-  const getRakutenUrl = (query: string) => `https://search.travel.rakuten.co.jp/ds/hotel/search?f_teikei=&f_query=${encodeURIComponent(query)}`;
+  // ★修正: 人数・日付指定なしのシンプルな検索URL
+  // ★修正箇所: アフィリエイトIDを組み込み、詳細ページに誘導するリンク形式
+// ★修正箇所: アフィリエイトIDを組み込み、詳細ページに誘導するリンク形式
+const getRakutenUrl = (query: string) => {
+    // PlanView.tsx で使用されているアフィリエイトIDを設定
+    const AFFILIATE_ID = "4fcc24e4.174bb117.4fcc24e5.5b178353"; 
+    
+    // 目的地・宿名で直接検索し、該当があれば宿ページを優先表示するURL
+    const baseUrl = `https://search.travel.rakuten.co.jp/ds/hotel/search?f_query=${encodeURIComponent(query)}`;
+    
+    // アフィリエイトリンクとして機能させるためのラップURL
+    return `https://hb.afl.rakuten.co.jp/hgc/${AFFILIATE_ID}/?pc=${encodeURIComponent(baseUrl)}`;
+};
+  
   const getInstagramTag = (query: string) => encodeURIComponent(query.replace(/[\s\(\)（）「」、。]/g, ''));
   const openInstagramApp = (query: string) => window.location.href = `instagram://explore/tags/${getInstagramTag(query)}`;
   const openWebSearch = (query: string) => window.open(`https://www.google.com/search?q=${encodeURIComponent(query)}`, '_blank');
 
   const activeSpots = useMemo(() => {
     if (isSuggestionMode && candidates) {
-        return candidates.map((spot, index) => ({ ...spot, originalIndex: index }));
+        return candidates
+            .map((spot, index) => ({ ...spot, originalIndex: index }))
+            .filter(s => !votedSpotIds.has(s.id ? String(s.id) : s.name));
     }
-    // 通常モード: 自分が追加したスポット以外、かつまだ投票していない(NOPE含む)スポットを表示
     return spots
       .map((spot, index) => ({ ...spot, originalIndex: index }))
       .filter(s => s.added_by !== currentUser) 
-      .filter(s => s.id && !votedSpotIds.has(String(s.id))); // ★同期: IDチェック
+      .filter(s => s.id && !votedSpotIds.has(String(s.id))); 
   }, [spots, votedSpotIds, currentUser, candidates, isSuggestionMode]);
 
   useEffect(() => {
@@ -257,28 +290,32 @@ export default function SwipeView({
 
   const onCardLeftScreen = async (direction: string, spot: any) => {
     setLastDirection(direction);
+
+    // スワイプした瞬間にローカルStateとSessionStorageを即時更新
+    const spotKey = spot.id ? String(spot.id) : spot.name;
+    setVotedSpotIds(prev => {
+        const next = new Set(prev).add(spotKey);
+        sessionStorage.setItem(storageKey, JSON.stringify(Array.from(next)));
+        return next;
+    });
+
     if (isSuggestionMode) {
         if (direction === 'right') {
             setTempLikedSpots(prev => [...prev, spot]);
             if (onLike) onLike(spot); 
         } else if (onNope) {
-            if (onNope) onNope(spot);
+            onNope(spot);
         }
         return;
     }
+    
     if (!spot.id) return;
     
-    // 即座にローカルステートを更新してカードを消す
-    setVotedSpotIds(prev => new Set(prev).add(String(spot.id)));
-    
     const voteType = direction === 'right' ? 'like' : 'nope';
-    
-    // DB更新
     await supabase.from('votes').insert([{
       room_id: roomId, spot_id: spot.id, user_name: currentUser, vote_type: voteType
     }]);
     
-    // Likeの場合はカウントアップRPC
     if (direction === 'right') await supabase.rpc('increment_votes', { spot_id: spot.id });
   };
 
@@ -326,7 +363,6 @@ export default function SwipeView({
         className="relative w-full h-full bg-white overflow-hidden flex flex-col items-center justify-center overscroll-none"
         style={{ touchAction: 'none' }} 
     >
-      
       {/* 1. 初期状態 */}
       {activeSpots.length === 0 && !isSearching && !showConfirmModal && (
           <div className="w-full max-w-md p-8 text-center animate-in fade-in zoom-in duration-300">
@@ -338,7 +374,7 @@ export default function SwipeView({
               <h2 className="text-2xl font-bold text-gray-800 mb-2">
                   {isSuggestionMode ? "候補がなくなりました" : "スワイプ完了！"}
               </h2>
-              <p className="text-gray-500 mb-8">
+              <p className="text-gray-500 mb-8 whitespace-pre-wrap">
                   {isSuggestionMode ? "右スワイプした場所を確認しましょう" : "地名やテーマを入力して\nAIに新しいプランを相談しよう"}
               </p>
               
@@ -407,16 +443,14 @@ export default function SwipeView({
                  </p>
              </div>
 
-             <div 
-                className="relative z-10 flex-1 overflow-y-auto w-full max-w-md mx-auto space-y-4 py-6 px-4 scrollbar-hide"
-             >
+             <div className="relative z-10 flex-1 overflow-y-auto w-full max-w-md mx-auto space-y-4 py-6 px-4 scrollbar-hide">
                 {sortedDisplayCandidates.length === 0 ? (
                     <div className="flex flex-col items-center justify-center h-64 text-gray-400 space-y-6">
                         <ScanSearch size={64} className="animate-bounce text-blue-500 relative z-10 drop-shadow-lg"/>
                         <span className="text-lg font-black tracking-[0.2em] text-blue-300 animate-pulse">SEARCHING...</span>
                     </div>
                 ) : (
-                    sortedDisplayCandidates.map((item, i) => {
+                    sortedDisplayCandidates.map((item) => {
                         const isFound = item.type === 'found';
                         const name = item.data.name;
                         const spot = isFound ? item.data : null;
@@ -505,9 +539,7 @@ export default function SwipeView({
                             <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/20 pointer-events-none"></div>
                         </div>
                         
-                        {/* ボタンエリア */}
                         <div className="absolute top-16 right-4 z-20 flex flex-col gap-3 items-center">
-                            {/* ★変更: 詳細(Pageで表示)ボタン */}
                             <button 
                                 onTouchEnd={(e) => { e.stopPropagation(); if (onPreview) onPreview(spot); }} 
                                 onClick={(e) => { e.stopPropagation(); if (onPreview) onPreview(spot); }} 
@@ -515,9 +547,7 @@ export default function SwipeView({
                             >
                                 <Info size={20}/>
                             </button>
-                            {/* Instagram */}
                             <button onTouchEnd={(e) => { e.stopPropagation(); openInstagramApp(spot.name); }} onClick={(e) => { e.stopPropagation(); openInstagramApp(spot.name); }} className="w-10 h-10 bg-gradient-to-tr from-yellow-500 via-pink-500 to-purple-600 rounded-full flex items-center justify-center text-white border border-white/30 shadow-lg hover:scale-110 transition active:scale-95"><Instagram size={20}/></button>
-                            {/* Google Search */}
                             <button 
                                 onTouchEnd={(e) => { e.stopPropagation(); openWebSearch(spot.name); }} 
                                 onClick={(e) => { e.stopPropagation(); openWebSearch(spot.name); }} 
@@ -529,7 +559,6 @@ export default function SwipeView({
                         </div>
 
                         <div className="mt-auto p-6 text-white relative z-10 flex flex-col gap-3 w-full pointer-events-none">
-                           
                             {isSuggestionMode && (
                                 <div className={`self-start text-white text-[10px] font-bold px-2 py-1 rounded-full flex items-center gap-1 mb-1 shadow-sm bg-purple-600`}>
                                     <Sparkles size={10}/> AI Suggestion
@@ -550,14 +579,23 @@ export default function SwipeView({
                                 </div>
                             </div>
                             
-                            {/* ユーザーアイコン (色の同期が適用されます) */}
-                            {!isSuggestionMode && uniqueVoters.length > 0 && (<div className="flex -space-x-2 overflow-hidden py-1">{uniqueVoters.slice(0, 5).map((voter: any, i: number) => (<div key={i} className="w-8 h-8 rounded-full border-2 border-white/50 flex items-center justify-center text-[10px] font-bold text-white shadow-sm" style={{ backgroundColor: getUserColor(voter) }}>{voter.slice(0,1)}</div>))}</div>)}
+                            {!isSuggestionMode && uniqueVoters.length > 0 && (
+                                <div className="flex -space-x-2 overflow-hidden py-1">
+                                    {uniqueVoters.slice(0, 5).map((voter, i) => (
+                                        <div key={i} className="w-8 h-8 rounded-full border-2 border-white/50 flex items-center justify-center text-[10px] font-bold text-white shadow-sm" style={{ backgroundColor: getUserColor(voter) }}>{voter.slice(0,1)}</div>
+                                    ))}
+                                </div>
+                            )}
                             
                             <div className="flex justify-between items-end pt-2 border-t border-white/20 mt-1 pointer-events-auto">
                                 <div className="flex-1"/>
                                 {spot.is_hotel && (
-                                    <button onTouchEnd={(e) => { e.stopPropagation(); window.open(getRakutenUrl(spot.query || spot.name), '_blank'); }} onClick={(e) => { e.stopPropagation(); window.open(getRakutenUrl(spot.query || spot.name), '_blank'); }} className="bg-gradient-to-r from-yellow-400 to-orange-500 text-black hover:scale-105 text-xs font-bold py-2 px-4 rounded-full flex items-center gap-1 shadow-lg backdrop-blur-sm transition active:scale-95">
-                                        <Search size={14}/> 空室・料金をチェック (PR)
+                                    <button 
+                                        onTouchEnd={(e) => { e.stopPropagation(); window.open(getRakutenUrl(spot.query || spot.name), '_blank'); }} 
+                                        onClick={(e) => { e.stopPropagation(); window.open(getRakutenUrl(spot.query || spot.name), '_blank'); }} 
+                                        className="bg-gradient-to-r from-yellow-400 to-orange-500 text-black hover:scale-105 text-xs font-bold py-2 px-4 rounded-full flex items-center gap-1 shadow-lg backdrop-blur-sm transition active:scale-95"
+                                    >
+                                        <Search size={14}/> 楽天で詳細を見る
                                     </button>
                                 )}
                             </div>

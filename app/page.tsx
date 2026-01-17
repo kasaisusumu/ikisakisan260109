@@ -640,13 +640,43 @@ useEffect(() => {
       return targetUrl;
   };
 
-  const allParticipants = useMemo(() => {
-      const users = new Set<string>();
-      if (userName) users.add(userName);
-      planSpots.forEach(s => { if (s.added_by) users.add(s.added_by); });
-      spotVotes.forEach(v => { if (v.user_name) users.add(v.user_name); });
-      return Array.from(users).sort();
-  }, [planSpots, spotVotes, userName]);
+ // page.tsx 690行目付近の allParticipants を以下に書き換え
+
+// page.tsx 750行目付近
+
+const allParticipants = useMemo(() => {
+    // ユーザーごとの「最初の活動時間」を記録
+    const userActivityMap = new Map<string, number>();
+
+    // 1. スポット追加データから時間を取得
+    planSpots.forEach(s => {
+        if (!s.added_by) return;
+        const time = new Date(s.created_at).getTime();
+        if (!userActivityMap.has(s.added_by) || time < userActivityMap.get(s.added_by)!) {
+            userActivityMap.set(s.added_by, time);
+        }
+    });
+
+    // 2. 投票データから時間を取得
+    spotVotes.forEach(v => {
+        if (!v.user_name) return;
+        const time = new Date(v.created_at).getTime();
+        if (!userActivityMap.has(v.user_name) || time < userActivityMap.get(v.user_name)!) {
+            userActivityMap.set(v.user_name, time);
+        }
+    });
+
+    // 3. 自分自身を追加（まだ活動がない場合）
+    if (userName && !userActivityMap.has(userName)) {
+        userActivityMap.set(userName, mountTimeRef.current);
+    }
+
+    // ★ データベース上の「活動開始が古い順」に並び替える
+    // これにより、新しい人が入っても既存メンバーのインデックス（色）が変わらない
+    return Array.from(userActivityMap.keys()).sort((a, b) => 
+        (userActivityMap.get(a) || 0) - (userActivityMap.get(b) || 0)
+    );
+}, [planSpots, spotVotes, userName]);
 
   const getUserColor = (name: string) => {
       const index = allParticipants.indexOf(name);
