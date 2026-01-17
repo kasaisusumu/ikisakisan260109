@@ -539,51 +539,39 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
   };
 
   // ★修正: 入力値を処理する関数
-  const handleTimeChange = (index: number, value: string) => {
-      // 空文字の場合は 0 として扱う
-      if (value === '') {
-          const newTimeline = [...timeline];
-          if (newTimeline[index].type === 'travel') {
-              newTimeline[index].duration_min = 0;
-          } else {
-              newTimeline[index].stay_min = 0;
-              if(newTimeline[index].spot) newTimeline[index].spot.stay_time = 0;
-          }
-          setTimeline(calculateSchedule(newTimeline));
-          return;
-      }
+ // 修正後：単一の項目のみを更新し、全体再計算をしない
+const handleTimeChange = (index: number, value: string) => {
+    const val = value === '' ? 0 : parseInt(value, 10);
+    if (isNaN(val)) return;
+    
+    const newTimeline = [...timeline];
+    if (newTimeline[index].type === 'travel') {
+        newTimeline[index].duration_min = val;
+    } else {
+        newTimeline[index].stay_min = val;
+        if(newTimeline[index].spot) newTimeline[index].spot.stay_time = val;
+    }
+    // calculateSchedule(newTimeline) を呼ばずにセット
+    setTimeline(newTimeline);
+};
 
-      const val = parseInt(value, 10);
-      if (isNaN(val)) return;
-      
-      const newTimeline = [...timeline];
-      if (newTimeline[index].type === 'travel') newTimeline[index].duration_min = val;
-      else {
-          newTimeline[index].stay_min = val;
-          if(newTimeline[index].spot) newTimeline[index].spot.stay_time = val;
-      }
-      setTimeline(calculateSchedule(newTimeline));
-  };
+ // 出発時間を独立して変更
+const handleDepartureChange = (index: number, newDeparture: string) => {
+    const newTimeline = [...timeline];
+    if (newTimeline[index]) {
+        newTimeline[index].departure = newDeparture;
+        setTimeline(newTimeline);
+    }
+};
 
-  const handleDepartureChange = (index: number, newDeparture: string) => {
-      const item = timeline[index];
-      if (!item.arrival) return;
-      
-      const [arrH, arrM] = item.arrival.split(':').map(Number);
-      const arrDate = new Date(); arrDate.setHours(arrH, arrM, 0, 0);
-      
-      const [depH, depM] = newDeparture.split(':').map(Number);
-      const depDate = new Date(); depDate.setHours(depH, depM, 0, 0);
-      
-      if (depDate < arrDate) {
-          depDate.setDate(depDate.getDate() + 1);
-      }
-      
-      const diffMs = depDate.getTime() - arrDate.getTime();
-      const diffMin = Math.max(0, Math.floor(diffMs / 60000));
-      
-      handleTimeChange(index, String(diffMin));
-  };
+// 到着時間を独立して変更（新規追加）
+const handleArrivalChange = (index: number, newArrival: string) => {
+    const newTimeline = [...timeline];
+    if (newTimeline[index]) {
+        newTimeline[index].arrival = newArrival;
+        setTimeline(newTimeline);
+    }
+};
 
   const handleTransportChange = (index: number, mode: string) => {
       const newTimeline = [...timeline];
@@ -1087,27 +1075,26 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
                                                 <h3 className="font-bold text-gray-800 text-sm line-clamp-1">{item.spot.name}</h3>
                                                 <button onClick={(e) => { e.stopPropagation(); toggleSpotInclusion(item.spot, false); }} className="text-gray-400 hover:text-red-500 p-1"><MinusCircle size={16}/></button>
                                             </div>
-                                            <div className="flex items-center gap-2 text-xs font-bold text-indigo-500 font-mono bg-indigo-50 w-max px-2 py-0.5 rounded" onClick={(e) => e.stopPropagation()}>
-                                                {i === 0 ? (
-                                                    <input 
-                                                        type="time" 
-                                                        value={startTime} 
-                                                        onChange={(e) => setStartTime(e.target.value)}
-                                                        className="bg-transparent text-indigo-600 font-bold text-xs font-mono w-[36px] text-center focus:outline-none border-b border-transparent focus:border-indigo-300 p-0"
-                                                    />
-                                                ) : (
-                                                    <span>{item.arrival}</span>
-                                                )}
-                                                
-                                                <ArrowRight size={10} className="text-indigo-300"/>
-                                                
-                                                <input 
-                                                    type="time" 
-                                                    value={item.departure} 
-                                                    onChange={(e) => handleDepartureChange(i, e.target.value)}
-                                                    className="bg-transparent text-indigo-600 font-bold text-xs font-mono w-[36px] text-center focus:outline-none border-b border-transparent focus:border-indigo-300 p-0"
-                                                />
-                                            </div>
+                                           {/* 修正箇所：スポットの到着・出発時間入力部分 */}
+<div className="flex items-center gap-2 text-xs font-bold text-indigo-500 font-mono bg-indigo-50 w-max px-2 py-0.5 rounded" onClick={(e) => e.stopPropagation()}>
+    {/* 到着時間を入力可能にする */}
+    <input 
+        type="time" 
+        value={item.arrival || ""} 
+        onChange={(e) => handleArrivalChange(i, e.target.value)}
+        className="bg-transparent text-indigo-600 font-bold text-xs font-mono w-[36px] text-center focus:outline-none border-b border-transparent focus:border-indigo-300 p-0"
+    />
+    
+    <ArrowRight size={10} className="text-indigo-300"/>
+    
+    {/* 出発時間を入力可能にする */}
+    <input 
+        type="time" 
+        value={item.departure || ""} 
+        onChange={(e) => handleDepartureChange(i, e.target.value)}
+        className="bg-transparent text-indigo-600 font-bold text-xs font-mono w-[36px] text-center focus:outline-none border-b border-transparent focus:border-indigo-300 p-0"
+    />
+</div>
                                         </div>
 
                                         <div className="flex justify-between items-end mt-1">

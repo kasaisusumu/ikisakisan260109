@@ -6,7 +6,7 @@ import 'mapbox-gl/dist/mapbox-gl.css';
 import { 
   Search, ExternalLink, MapPin, 
   X, TrendingUp, DollarSign,
-  Star, Loader2, PenTool, Trash2, Plus, Calendar, Users, SlidersHorizontal, Link as LinkIcon, Download, ChevronUp, ChevronDown, Check, AlertTriangle
+  Star, Loader2, PenTool, Trash2, Plus, Calendar, Users, SlidersHorizontal, Link as LinkIcon, Download, ChevronUp, ChevronDown, Check, AlertTriangle,BedDouble
 } from 'lucide-react';
 
 // ==========================================
@@ -344,31 +344,69 @@ const getAffiliateUrl = (hotel: any) => {
       <div className={`absolute bottom-0 left-0 right-0 z-30 bg-white rounded-t-[2.5rem] shadow-[0_-10px_60px_rgba(0,0,0,0.15)] flex flex-col transition-all duration-500 overflow-hidden ${hotels.length > 0 ? 'h-1/2' : 'h-auto max-h-[85vh]'}`}>
           <div className="w-12 h-1.5 bg-gray-100 rounded-full mx-auto mt-4 mb-2 shrink-0" />
           <div className="flex-1 overflow-y-auto px-8 pb-32">
-              {hotels.length === 0 ? (
-                  <div className="flex flex-col gap-8 pt-4 animate-in fade-in slide-in-from-bottom-4">
-                      <div className="text-center">
-                          <h2 className="text-2xl font-black text-gray-800">Hotel Finder</h2>
-                          <p className="text-xs text-gray-400 font-bold uppercase tracking-widest mt-1">Select your stay</p>
-                      </div>
-                      <div className="bg-slate-50 p-6 rounded-[2rem] border border-gray-100">
-                          <label className="text-[10px] font-black text-gray-400 block mb-3 uppercase tracking-tighter flex items-center gap-1"><Download size={12}/> Import URL</label>
-                          <div className="flex gap-2">
-                              <input type="text" value={importUrl} onChange={(e) => setImportUrl(e.target.value)} placeholder="Rakuten Travel URL..." className="flex-1 bg-white border border-gray-200 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 transition"/>
-                              <button onClick={executeImport} disabled={isImporting || !importUrl} className="bg-blue-600 text-white px-5 rounded-xl font-bold text-sm disabled:opacity-50">{isImporting ? <Loader2 className="animate-spin"/> : <Plus size={20}/>}</button>
-                          </div>
-                      </div>
-                      
-                      {/* ★変更: 楽天トラベルで探すボタンのリンク先を日程・人数付きの検索URLに変更 */}
-                      <a 
-                          href={rakutenHomeUrl} 
-                          target="_blank" 
-                          rel="noopener noreferrer"
-                          className="w-full bg-black text-white py-5 rounded-[2rem] font-black text-center flex items-center justify-center gap-3 shadow-xl active:scale-95 transition-transform"
-                      >
-                          楽天トラベルで探す <ExternalLink size={20}/>
-                      </a>
-                  </div>
-              ) : (
+             {hotels.length === 0 ? (
+    <div className="flex flex-col gap-6 pt-4 animate-in fade-in slide-in-from-bottom-4">
+        {/* ヘッダーセクション */}
+        <div className="text-center space-y-2">
+            <div className="inline-block p-3 bg-blue-50 rounded-2xl text-blue-600 mb-2">
+                <BedDouble size={32} />
+            </div>
+            <h2 className="text-2xl font-black text-gray-800 tracking-tight">宿泊先を検討する</h2>
+            <p className="text-sm text-gray-500 font-medium leading-relaxed">
+                あなたの旅にぴったりの宿を見つけて、<br />候補リストに追加しましょう。
+            </p>
+        </div>
+
+        {/* ガイドセクション：ここをわかりやすく追加 */}
+        <div className="grid grid-cols-1 gap-3">
+            <div className="bg-white border border-gray-100 p-4 rounded-2xl shadow-sm flex items-start gap-3">
+                <div className="w-8 h-8 bg-black text-white rounded-full flex items-center justify-center font-bold text-sm shrink-0">1</div>
+                <div>
+                    <p className="text-sm font-bold text-gray-800">範囲を囲って探す</p>
+                    <p className="text-[11px] text-gray-500 leading-normal">右上のペンツールでマップ上のエリアを囲むと、その付近の空室状況を検索できます。</p>
+                </div>
+            </div>
+
+            <div className="bg-blue-50/50 border border-blue-100 p-4 rounded-2xl shadow-sm flex items-start gap-3">
+                <div className="w-8 h-8 bg-blue-600 text-white rounded-full flex items-center justify-center font-bold text-sm shrink-0">2</div>
+                <div className="flex-1">
+                    <p className="text-sm font-bold text-blue-900">楽天トラベルから直接取り込む</p>
+                    <p className="text-[11px] text-blue-700/70 leading-normal mb-3">お気に入りの宿のURLを貼り付けるだけで、写真や詳細を自動でリストに追加できます。</p>
+                    
+                    <div className="flex gap-2">
+                        <input 
+                            type="text" 
+                            value={importUrl} 
+                            onChange={(e) => setImportUrl(e.target.value)} 
+                            placeholder="https://hotel.travel.rakuten.co.jp/..." 
+                            className="flex-1 bg-white border border-blue-200 rounded-xl px-3 py-2.5 text-xs outline-none focus:ring-2 focus:ring-blue-300 transition shadow-inner"
+                        />
+                        <button 
+                            onClick={executeImport} 
+                            disabled={isImporting || !importUrl} 
+                            className="bg-blue-600 text-white px-4 rounded-xl font-bold text-xs disabled:opacity-50 shadow-md active:scale-95 transition"
+                        >
+                            {isImporting ? <Loader2 size={16} className="animate-spin"/> : "追加"}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {/* 外部検索ボタン */}
+        <div className="space-y-3">
+            <p className="text-[10px] font-black text-gray-400 text-center uppercase tracking-widest">Or Search on Web</p>
+            <a 
+                href={rakutenHomeUrl} 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="w-full bg-[#BF0000] text-white py-4 rounded-2xl font-black text-center flex items-center justify-center gap-3 shadow-lg active:scale-95 transition-transform"
+            >
+                楽天トラベルで探す <ExternalLink size={18}/>
+            </a>
+        </div>
+    </div>
+) : (
                   <div className="flex flex-col gap-6 pt-2 animate-in fade-in">
                       <div className="flex justify-between items-center">
                           <h3 className="text-xl font-black text-gray-800 flex items-center gap-2"><TrendingUp size={22} className="text-blue-500"/> 分析結果</h3>
