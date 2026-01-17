@@ -142,52 +142,27 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
       }
   };
 
-  const getAffiliateUrl = (hotel: any) => {
-      let targetUrl = "";
+  // 修正前
+const getAffiliateUrl = (hotel: any) => {
+    let targetUrl = "";
 
-      if (hotel.url && hotel.url.includes('rakuten.co.jp')) {
-          targetUrl = hotel.url;
-      } else {
-          const [y1, m1, d1] = conditions.checkin.split('-');
-          const [y2, m2, d2] = conditions.checkout.split('-');
-          targetUrl = `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotel.id}?f_teikei=&f_heya_su=1&f_otona_su=${conditions.adults}&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_sort=min_charge`;
-      }
+    if (hotel.url && hotel.url.includes('rakuten.co.jp')) {
+        targetUrl = hotel.url;
+    } else {
+        // 日付と人数(f_otona_su)を削除
+        targetUrl = `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotel.id}?f_teikei=&f_heya_su=1&f_sort=min_charge`;
+    }
 
-      if (RAKUTEN_AFFILIATE_ID) return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent(targetUrl)}&m=${encodeURIComponent(targetUrl)}`;
-      return targetUrl;
-  };
+    // PCとモバイル(&m=)の両方に同じエンコード済みURLを設定
+    if (RAKUTEN_AFFILIATE_ID) {
+        const encodedUrl = encodeURIComponent(targetUrl);
+        return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodedUrl}&m=${encodedUrl}`;
+    }
+    return targetUrl;
+};
 
   // ★追加: 楽天トラベルの検索URL（日程・人数反映）を作成
-  const rakutenSearchUrl = useMemo(() => {
-      try {
-          const [y1, m1, d1] = conditions.checkin.split('-');
-          const [y2, m2, d2] = conditions.checkout.split('-');
-          
-          const baseUrl = "https://search.travel.rakuten.co.jp/ds/hotel/search";
-          const queryParams = [
-              "f_teikei=",
-              "f_heya_su=1",
-              `f_otona_su=${conditions.adults}`,
-              `f_nen1=${y1}`,
-              `f_tuki1=${m1}`,
-              `f_hi1=${d1}`,
-              `f_nen2=${y2}`,
-              `f_tuki2=${m2}`,
-              `f_hi2=${d2}`,
-              "f_sort=min_charge"
-          ].join('&');
-          
-          const targetUrl = `${baseUrl}?${queryParams}`;
-
-          if (RAKUTEN_AFFILIATE_ID) {
-              return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent(targetUrl)}&m=${encodeURIComponent(targetUrl)}`;
-          }
-          return targetUrl;
-      } catch (e) {
-          // エラー時のフォールバック
-          return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent("https://travel.rakuten.co.jp/")}`;
-      }
-  }, [conditions]);
+ const rakutenHomeUrl = `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent("https://travel.rakuten.co.jp/")}&m=${encodeURIComponent("https://travel.rakuten.co.jp/")}`; // conditionsへの依存は残しておきます（副作用はないため）
 
   const updateHotelMarkers = (hotelList: any[]) => {
       if (!map.current) return;
@@ -384,7 +359,14 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                       </div>
                       
                       {/* ★変更: 楽天トラベルで探すボタンのリンク先を日程・人数付きの検索URLに変更 */}
-                      <a href={rakutenSearchUrl} target="_blank" className="w-full bg-black text-white py-5 rounded-[2rem] font-black text-center flex items-center justify-center gap-3 shadow-xl active:scale-95 transition-transform">楽天トラベルで探す <ExternalLink size={20}/></a>
+                      <a 
+                          href={rakutenHomeUrl} 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          className="w-full bg-black text-white py-5 rounded-[2rem] font-black text-center flex items-center justify-center gap-3 shadow-xl active:scale-95 transition-transform"
+                      >
+                          楽天トラベルで探す <ExternalLink size={20}/>
+                      </a>
                   </div>
               ) : (
                   <div className="flex flex-col gap-6 pt-2 animate-in fade-in">

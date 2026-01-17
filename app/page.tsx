@@ -8,7 +8,6 @@ import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
-// ... (imports省略: 変更なし) ...
 import { 
   Search, X, Plus, ExternalLink, Map as MapIcon, History, Trash2, 
   MapPinned, Users, Edit2, CheckCircle, HelpCircle, 
@@ -17,10 +16,9 @@ import {
   PenTool, Loader2, Clock, ThumbsUp, Link as LinkIcon, MessageSquare,
   Save, XCircle, Edit3, ArrowRight, Maximize,
   Car, Train, Footprints, Zap, Plane, Ship, Camera, Globe, ArrowLeftCircle, Database,
-  Banknote, ExternalLink as ExternalLinkIcon, StickyNote // アイコン追加確認
+  Banknote, ExternalLink as ExternalLinkIcon, StickyNote, Check
 } from 'lucide-react';
 
-// ... (コンポーネントインポート省略: 変更なし) ...
 import BottomNav from './components/BottomNav';
 import HotelListView from './components/HotelListView';
 import PlanView from './components/PlanView';
@@ -32,9 +30,7 @@ import WelcomePage from './components/WelcomePage';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-// ... (SpotImage コンポーネント省略: 変更なし) ...
 const SpotImage = ({ src, alt, className, onClick }: { src?: string | null, alt: string, className?: string, onClick?: () => void }) => {
-    // ... (中身変更なし) ...
     const [isLoading, setIsLoading] = useState(true);
     const [hasError, setHasError] = useState(false);
     const imgRef = useRef<HTMLImageElement>(null);
@@ -89,7 +85,6 @@ const SpotImage = ({ src, alt, className, onClick }: { src?: string | null, alt:
     );
 };
 
-// ... (型定義など省略: 変更なし) ...
 type Tab = 'explore' | 'agent' | 'swipe' | 'plan' | 'menu';
 type FilterStatus = 'all' | 'confirmed' | 'candidate' | 'hotel_candidate';
 
@@ -165,7 +160,6 @@ const calculateSimpleSchedule = (items: any[], startTime: string = "09:00") => {
 };
 
 function HomeContent() {
-  // ... (Hooks定義省略: 変更なし) ...
   const router = useRouter();
   const searchParams = useSearchParams();
   const roomId = searchParams.get('room');
@@ -183,6 +177,10 @@ function HomeContent() {
   const [likedHistory, setLikedHistory] = useState<string[]>([]);
   const [nopedHistory, setNopedHistory] = useState<string[]>([]);
   const [isSuggesting, setIsSuggesting] = useState(false);
+
+  // ★追加: スワイプチュートリアルの状態管理
+  const [showSwipeTutorial, setShowSwipeTutorial] = useState(false);
+  const [dontShowTutorial, setDontShowTutorial] = useState(false);
 
   const [isEditingMemo, setIsEditingMemo] = useState(false); 
   const [editCommentValue, setEditCommentValue] = useState("");
@@ -212,7 +210,6 @@ function HomeContent() {
   const [isDragging, setIsDragging] = useState(false);
   const dragInfo = useRef({ startY: 0, startHeight: 0, hasMoved: false });
 
-  // ... (handleDragStart, handleDragMove, handleDragEnd, handleHeaderClick 省略: 変更なし) ...
   const handleDragStart = (e: React.TouchEvent | React.MouseEvent) => {
       const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
       dragInfo.current = { startY: clientY, startHeight: sheetHeight, hasMoved: false };
@@ -264,7 +261,7 @@ function HomeContent() {
   const planSpotsRef = useRef(planSpots);
   useEffect(() => { planSpotsRef.current = planSpots; }, [planSpots]);
 
-  // ... (未読管理ロジック 省略: 変更なし) ...
+  // 未読管理
   const mountTimeRef = useRef(Date.now());
   const [lastVisited, setLastVisited] = useState<Record<string, number>>({});
   const getContextKey = (status: string, day: number) => {
@@ -297,8 +294,6 @@ function HomeContent() {
       };
   }, [filterStatus, selectedConfirmDay, selectedCandidateDay, roomId]);
   const isNewSpot = (spot: any) => {
-      // 自分が追加したものもハイライトする場合はここをコメントアウト解除
-      // if (spot.added_by === userName) return false; 
       const key = getContextKey(spot.status, spot.day);
       const threshold = lastVisited[key] ?? mountTimeRef.current;
       return new Date(spot.created_at).getTime() > threshold;
@@ -329,7 +324,23 @@ function HomeContent() {
       return counts;
   }, [planSpots, lastVisited, userName]);
 
-  // ... (useEffect for drawing reset etc 省略) ...
+  // ★追加: スワイプチュートリアルの表示トリガー
+  useEffect(() => {
+      if (currentTab === 'swipe' && (candidates.length > 0 || planSpots.length > 0)) {
+          const seen = localStorage.getItem('rh_swipe_tutorial_seen');
+          if (!seen) {
+              setShowSwipeTutorial(true);
+          }
+      }
+  }, [currentTab, candidates.length, planSpots.length]);
+
+  const handleCloseTutorial = () => {
+      if (dontShowTutorial) {
+          localStorage.setItem('rh_swipe_tutorial_seen', 'true');
+      }
+      setShowSwipeTutorial(false);
+  };
+
   useEffect(() => {
     setIsDrawing(false);
     setInitialSearchArea(null);
@@ -352,7 +363,6 @@ function HomeContent() {
       return () => clearInterval(intervalId);
   }, []);
 
-  // ... (設定読み込み useEffect 省略) ...
   useEffect(() => {
     if (roomId) {
         const savedSettings = localStorage.getItem(`rh_settings_${roomId}`);
@@ -395,7 +405,6 @@ function HomeContent() {
       }
   }, [startDate, endDate, adultNum, roomId, isSettingsLoaded]);
 
-  // ... (Timeline構築 logic 省略) ...
   useEffect(() => {
       if (filterStatus === 'confirmed' && roomId) {
           const day = selectedConfirmDay === 0 ? 0 : selectedConfirmDay;
@@ -426,7 +435,6 @@ function HomeContent() {
       }
   }, [filterStatus, selectedConfirmDay, planSpots, roomId, currentTab]);
 
-  // ... (fetchSpotImage useEffect 省略) ...
   const fetchSpotImage = async (name: string) => {
       try {
           const res = await fetch(`${API_BASE_URL}/api/get_spot_image?query=${encodeURIComponent(name)}`);
@@ -483,8 +491,10 @@ function HomeContent() {
           targetUrl = spot.url || `https://search.travel.rakuten.co.jp/ds/hotel/search?f_teikei=&f_query=${encodeURIComponent(queryName)}&f_sort=min_charge`;
       }
       if (RAKUTEN_AFFILIATE_ID) {
-           return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent(targetUrl)}&m=${encodeURIComponent(targetUrl)}`;
+          const encodedUrl = encodeURIComponent(targetUrl);
+          return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodedUrl}`;
       }
+
       return targetUrl;
   };
 
@@ -502,30 +512,8 @@ function HomeContent() {
       return UD_COLORS[index % UD_COLORS.length];
   };
 
-  const rakutenHomeUrl = useMemo(() => {
-      let targetUrl = 'https://travel.rakuten.co.jp/';
-      if (startDate) {
-          try {
-              const [y, m, d] = startDate.split('-').map(Number);
-              const start = new Date(y, m - 1, d);
-              const end = new Date(start); 
-              end.setDate(start.getDate() + 1); 
-              const y1 = start.getFullYear();
-              const m1 = start.getMonth() + 1;
-              const d1 = start.getDate();
-              const y2 = end.getFullYear();
-              const m2 = end.getMonth() + 1;
-              const d2 = end.getDate();
-              targetUrl = `https://search.travel.rakuten.co.jp/ds/hotel/search?f_teikei=&f_heya_su=1&f_otona_su=${adultNum}&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_sort=min_charge`;
-          } catch(e) { console.error("Date parse error for Rakuten URL", e); }
-      }
-      if (RAKUTEN_AFFILIATE_ID) {
-          return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent(targetUrl)}&m=${encodeURIComponent(targetUrl)}`;
-      }
-      return targetUrl;
-  }, [startDate, adultNum]);
+  const rakutenHomeUrl = `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent("https://travel.rakuten.co.jp/")}&m=${encodeURIComponent("https://travel.rakuten.co.jp/")}`;
 
-  // ... (filteredSpots, fitBoundsToSpots useEffect 省略) ...
   const filteredSpots = useMemo(() => {
       if (filterStatus === 'all') return planSpots;
       let spots = planSpots;
@@ -565,10 +553,9 @@ function HomeContent() {
 
   const updateSpotStatus = async (spot: any, newStatus: string, day: number = 0) => {
       if (!roomId) return;
-      // Optimistic update
       setPlanSpots(prev => prev.map(s => s.id === spot.id ? { ...s, status: newStatus, day: day } : s));
       const { error } = await supabase.from('spots').update({ status: newStatus, day: day }).eq('id', spot.id);
-      if (error) { console.error("Status update failed:", error); loadRoomData(roomId); } // Fallback
+      if (error) { console.error("Status update failed:", error); loadRoomData(roomId); } 
   };
 
   const updateSpotDay = async (spot: any, newDay: number) => {
@@ -586,12 +573,10 @@ function HomeContent() {
 
     if (myVote) {
         if (myVote.vote_type === 'like') {
-            // Like -> Nope (論理削除的な扱いだが、スワイプ除外のためNopeへ更新)
             const newVote = { ...myVote, vote_type: 'nope' };
             setSpotVotes(prev => prev.map(v => v.id === myVote.id ? newVote : v));
             await supabase.from('votes').update({ vote_type: 'nope' }).eq('id', myVote.id);
         } else {
-            // Nope -> Like
             const newVote = { ...myVote, vote_type: 'like' };
             setSpotVotes(prev => prev.map(v => v.id === myVote.id ? newVote : v));
             await supabase.from('votes').update({ vote_type: 'like' }).eq('id', myVote.id);
@@ -605,7 +590,6 @@ function HomeContent() {
     }
   };
 
-  // ... (Search logic 省略: 変更なし) ...
   const handleSearch = async (overrideQuery?: string) => {
       const activeQuery = overrideQuery || query; 
       if(!activeQuery) return;
@@ -639,7 +623,6 @@ function HomeContent() {
       } catch (e) { console.error(e); } finally { setIsSearching(false); }
   }; 
 
-  // ... (Map marker logic 省略: 変更なし) ...
   const showResultOnMap = (name: string, desc: string, center: number[], isSaved: boolean) => {
       if (!map.current) return;
       map.current.flyTo({ center: center as [number, number], zoom: 16, offset: [0, -150] });
@@ -710,19 +693,19 @@ function HomeContent() {
     setIsAuthLoading(false);
   }, [roomId]);
 
-  // ★★★ 重要変更箇所：リアルタイム更新の最適化 ★★★
+  useEffect(() => {
+   // ▼▼▼ この useEffect ブロック全体を、以下のように書き換えてください ▼▼▼
   useEffect(() => {
     if (roomId && isJoined) {
-      // 初期ロードだけ行う
       loadRoomData(roomId);
 
       const channel = supabase.channel('room_updates')
+        // 1. スポットの変更監視
         .on('postgres_changes', { event: '*', schema: 'public', table: 'spots', filter: `room_id=eq.${roomId}` }, (payload) => {
-            // 全読み込み(loadRoomData)をやめて、Payloadを使ってローカルStateを更新
             if (payload.eventType === 'INSERT') {
                 const newSpot = payload.new;
                 setPlanSpots(prev => {
-                    if (prev.some(s => s.id === newSpot.id)) return prev; // 重複防止
+                    if (prev.some(s => s.id === newSpot.id)) return prev; 
                     return [...prev, newSpot].sort((a, b) => (a.order || 0) - (b.order || 0));
                 });
             } else if (payload.eventType === 'UPDATE') {
@@ -733,8 +716,8 @@ function HomeContent() {
                 setPlanSpots(prev => prev.filter(s => s.id !== deletedSpotId));
             }
         })
+        // 2. 投票の変更監視
         .on('postgres_changes', { event: '*', schema: 'public', table: 'votes', filter: `room_id=eq.${roomId}` }, (payload) => {
-            // Votesも同様に差分更新
             if (payload.eventType === 'INSERT') {
                 setSpotVotes(prev => [...prev, payload.new]);
             } else if (payload.eventType === 'UPDATE') {
@@ -743,20 +726,31 @@ function HomeContent() {
                 setSpotVotes(prev => prev.filter(v => v.id !== payload.old.id));
             }
         })
+        // ★★★ 追加: 旅行設定（日付・人数）のリアルタイム同期 ★★★
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'rooms', filter: `id=eq.${roomId}` }, (payload) => {
+            const newData = payload.new;
+            // 変更があった場合、即座にStateに反映
+            if (newData.start_date) setStartDate(newData.start_date);
+            if (newData.end_date) setEndDate(newData.end_date);
+            if (newData.adult_num) setAdultNum(newData.adult_num);
+            
+            // 通知を出す
+            setNotification({ text: "旅行設定が更新されました", color: "bg-blue-600" });
+            setTimeout(() => setNotification(null), 3000);
+        })
         .subscribe();
 
       return () => { supabase.removeChannel(channel); };
     }
   }, [roomId, isJoined]);
+  }, [roomId, isJoined]);
 
-  // ... (他のuseEffect類 省略: 変更なし) ...
   useEffect(() => {
     const delayDebounceFn = setTimeout(() => { if (query.trim()) { handleSearch(); } else { setSearchResults([]); } }, 300);
     return () => clearTimeout(delayDebounceFn);
   }, [query]);
 
   useEffect(() => {
-    // ここでの loadRoomData は削除（上のuseEffectで初期化済み）
     if (currentTab === 'explore' && map.current) { setTimeout(() => { map.current?.resize(); fitBoundsToSpots(planSpots); }, 100); }
   }, [currentTab]);
 
@@ -799,10 +793,24 @@ function HomeContent() {
   };
 
   const loadRoomData = async (id: string) => {
+    // ▼▼▼ 変更点1: select('name') を select('*') に変更して、日付や人数も取得できるようにする
+    const { data: roomData } = await supabase.from('rooms').select('*').eq('id', id).single();
+    
+    // ▼▼▼ 変更点2: 取得したデータをStateに反映させる処理を追加
+    if (roomData) { 
+        saveToRoomHistory(id, roomData.name); 
+
+        // DBに保存されている値があれば、それを現在の設定としてセットする
+        if (roomData.start_date) setStartDate(roomData.start_date);
+        if (roomData.end_date) setEndDate(roomData.end_date);
+        if (roomData.adult_num) setAdultNum(roomData.adult_num);
+    } else { 
+        saveToRoomHistory(id, 'Unknown Trip'); 
+    }
+
+    // --- 以下は既存のまま ---
     const { data: spots } = await supabase.from('spots').select('*').eq('room_id', id).order('order', { ascending: true });
     const { data: allVotes } = await supabase.from('votes').select('*').eq('room_id', id);
-    const { data: roomData } = await supabase.from('rooms').select('name').eq('id', id).single();
-    if (roomData) { saveToRoomHistory(id, roomData.name); } else { saveToRoomHistory(id, 'Unkown Trip'); }
 
     if (spots) {
       setPlanSpots(spots);
@@ -811,7 +819,6 @@ function HomeContent() {
     if (allVotes) setSpotVotes(allVotes);
   };
 
-  // ... (以下、各種ヘルパー関数など省略: 変更なし) ...
   const fitBoundsToSpots = (spots: any[]) => {
       if (!map.current || spots.length === 0) return;
       const bounds = new mapboxgl.LngLatBounds();
@@ -880,16 +887,9 @@ function HomeContent() {
         link: editLinkValue
     };
 
-    // Optimistic update
-    // setPlanSpots(prev => [...prev, { ...newSpotPayload, id: `temp-${Date.now()}` }]); // リアルタイムリスナーがあるので楽観的更新は不要、あるいはリスナーで重複除外する
-
     const { data, error } = await supabase.from('spots').insert([newSpotPayload]).select().single();
     if (error) { console.error("Add spot error:", error); alert("スポットの追加に失敗しました"); return; }
     if (data) { 
-        // リアルタイムリスナーが追加してくれるのでここでは何もしなくても良いが、即時反映のため残してもOK
-        // ただし重複に注意
-        // setPlanSpots(prev => [...prev, data]); 
-        
         if (userName) {
             const { data: voteData } = await supabase.from('votes').insert({ room_id: roomId, spot_id: data.id, user_name: userName, vote_type: 'like' }).select().single();
             if (voteData) { setSpotVotes(prev => [...prev, voteData]); }
@@ -910,10 +910,7 @@ function HomeContent() {
     if (!roomId) return;
     if (!spot.id) return; 
     if (!confirm(`本当に「${spot.name || spot.text}」をリストから削除しますか？`)) return;
-    
-    // Optimistic delete
     setPlanSpots(prev => prev.filter(s => s.id !== spot.id));
-    
     await supabase.from('spots').delete().eq('id', spot.id);
     if (selectedResult?.id === spot.id) setSelectedResult(null); 
   };
@@ -924,7 +921,6 @@ function HomeContent() {
     setSearchResults([]); setSelectedResult(null); setViewMode('default'); searchMarkersRef.current.forEach(marker => marker.remove()); searchMarkersRef.current = []; setIsEditingDesc(false); setIsFocused(false);
   };
 
-  // ... (handlePreviewSpot, handleAutoSearch, handleSearchFromChat, handleReceiveCandidates, handleSaveMemo, handleSaveDescription, getIconForSuggestion, Drawing関連 logic 省略: 変更なし) ...
   const handlePreviewSpot = (spot: any, openMemo: boolean = false) => {
     setCurrentTab('explore');
     const isSaved = planSpots.some(s => s.name === spot.name);
@@ -995,7 +991,6 @@ function HomeContent() {
       if (!selectedResult || !roomId) return;
       const updated = { ...selectedResult, comment: editCommentValue, link: editLinkValue };
       setSelectedResult(updated);
-      // Optimistic
       setPlanSpots(prev => prev.map(s => s.id === updated.id ? { ...s, comment: editCommentValue, link: editLinkValue } : s));
       await supabase.from('spots').update({ comment: editCommentValue, link: editLinkValue }).eq('id', updated.id);
       setIsEditingMemo(false);
@@ -1007,6 +1002,29 @@ function HomeContent() {
       setSelectedResult(updated);
       setIsEditingDesc(false);
   };
+  // 旅行設定モーダルの「保存して閉じる」ボタンのonClick処理を修正
+
+const handleSaveSettings = async () => {
+    if (!roomId) {
+        setShowDateModal(false);
+        return;
+    }
+
+    // DBを更新
+    const { error } = await supabase.from('rooms').update({
+        start_date: startDate,
+        end_date: endDate,
+        adult_num: adultNum
+    }).eq('id', roomId);
+
+    if (error) {
+        console.error("Settings update failed", error);
+        alert("設定の保存に失敗しました");
+    } else {
+        // 設定完了
+        setShowDateModal(false);
+    }
+};
 
   const getIconForSuggestion = (item: any) => {
     if (item.is_room_cache) return <Database size={16} className="text-blue-500 mt-0.5 shrink-0" />;
@@ -1129,7 +1147,6 @@ function HomeContent() {
     }
   }, [isAuthLoading, isJoined]);
 
-  // ... (Map marker rendering useEffect 省略: 変更なし) ...
   useEffect(() => {
     if (!map.current) return;
     const markers = document.getElementsByClassName('marker-plan');
@@ -1183,12 +1200,56 @@ function HomeContent() {
     return <WelcomePage inviteRoomId={roomId} />;
   }
 
-  // ... (return JSX 省略: 変更なし) ...
   return (
     <main className="relative w-screen h-[100dvh] bg-slate-100 overflow-hidden flex flex-col font-sans">
       <LegalModal />
       <Ticker />
       
+      {/* ★追加: スワイプチュートリアルモーダル */}
+      {showSwipeTutorial && (
+          <div className="fixed inset-0 z-[150] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-300">
+              <div className="bg-white w-full max-w-sm rounded-3xl p-6 shadow-2xl relative overflow-hidden">
+                  <div className="flex justify-center gap-8 mb-6">
+                      <div className="flex flex-col items-center gap-2">
+                          <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center text-red-500 shadow-sm border border-red-200">
+                              <X size={32} strokeWidth={3}/>
+                          </div>
+                          <span className="text-xs font-bold text-gray-400">NOPE</span>
+                          <div className="text-[10px] text-gray-400 font-bold">← Left</div>
+                      </div>
+                      <div className="flex flex-col items-center gap-2">
+                          <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center text-blue-500 shadow-sm border border-blue-200">
+                              <ThumbsUp size={32} strokeWidth={3}/>
+                          </div>
+                          <span className="text-xs font-bold text-blue-500">LIKE</span>
+                          <div className="text-[10px] text-blue-400 font-bold">Right →</div>
+                      </div>
+                  </div>
+                  
+                  <h3 className="text-xl font-black text-center text-gray-800 mb-2">スワイプで仕分け</h3>
+                  <p className="text-sm text-gray-500 text-center mb-6 leading-relaxed">
+                      気になるスポットは右へ、<br/>
+                      興味がないなら左へスワイプ。<br/>
+                      あなたの好みをAIが学習します。
+                  </p>
+
+                  <div className="flex items-center justify-center gap-2 mb-6 cursor-pointer" onClick={() => setDontShowTutorial(!dontShowTutorial)}>
+                      <div className={`w-5 h-5 rounded-md border flex items-center justify-center transition-colors ${dontShowTutorial ? 'bg-blue-600 border-blue-600' : 'border-gray-300 bg-white'}`}>
+                          {dontShowTutorial && <Check size={14} className="text-white"/>}
+                      </div>
+                      <span className="text-xs font-bold text-gray-500 select-none">今後表示しない</span>
+                  </div>
+
+                  <button 
+                      onClick={handleCloseTutorial} 
+                      className="w-full py-4 bg-black text-white rounded-2xl font-bold text-sm hover:scale-[1.02] active:scale-95 transition shadow-lg"
+                  >
+                      はじめる
+                  </button>
+              </div>
+          </div>
+      )}
+
       {showVoterListModal && selectedResult && (
           <div className="fixed inset-0 z-[120] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200" onClick={() => setShowVoterListModal(false)}>
               <div className="bg-white w-full max-w-xs rounded-[2rem] p-6 shadow-2xl relative overflow-hidden flex flex-col max-h-[60vh]" onClick={(e) => e.stopPropagation()}>
@@ -1229,8 +1290,6 @@ function HomeContent() {
           </div>
       )}
 
-      {/* Activity Log, Date Modal, AssignDay Modal, etc. (omitted for brevity as logic didn't change) */}
-      
       {showActivityLog && (
           <div 
             className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-200"
@@ -1293,7 +1352,7 @@ function HomeContent() {
                           <input type="number" min="1" max="10" value={adultNum} onChange={(e)=>setAdultNum(parseInt(e.target.value) || 1)} className="w-full bg-gray-50 p-4 rounded-2xl font-bold text-gray-800 border border-gray-100 focus:ring-2 focus:ring-blue-100 outline-none"/>
                       </div>
                   </div>
-                  <button onClick={() => setShowDateModal(false)} className="w-full bg-black text-white py-4 rounded-2xl font-bold mt-6 hover:scale-[1.02] active:scale-95 transition shadow-xl">保存して閉じる</button>
+                  <button onClick={handleSaveSettings} className="w-full bg-black text-white py-4 rounded-2xl font-bold mt-6 hover:scale-[1.02] active:scale-95 transition shadow-xl">保存して閉じる</button>
               </div>
           </div>
       )}
@@ -1322,7 +1381,6 @@ function HomeContent() {
         <div className={`relative h-full w-full md:flex-1 ${currentTab === 'explore' ? 'block' : 'hidden md:block'}`}>
           <div ref={mapContainer} className="absolute top-0 left-0 w-full h-full z-0" style={{ touchAction: isDrawing ? 'none' : 'auto' }} />
 
-          {/* ... (Map controls 省略: 変更なし) ... */}
           <div className="absolute top-32 right-4 z-20 flex flex-col gap-3">
              <button 
                 onClick={() => isDrawing ? stopDrawing() : startDrawing()} 
@@ -1361,13 +1419,11 @@ function HomeContent() {
           
           {currentTab === 'explore' && (
             <div className="absolute top-0 left-0 right-0 z-20 flex flex-col items-center pt-4 px-4 pointer-events-none">
-              {/* ★修正1: pr-12 を追加して、右側にAIボタン1個分強の余白を作り、ボタン全体を左に寄せます */}
-              <div className="bg-white/90 backdrop-blur-xl p-2 pr-3 rounded-[2rem] shadow-2xl flex items-center gap-2 border border-white/50 w-full max-w-md pointer-events-auto transition-all duration-300 focus-within:ring-4 focus-within:ring-blue-100/50">
+              <div className="bg-white/90 backdrop-blur-xl p-2 pr-4 rounded-[2rem] shadow-2xl flex items-center gap-2 border border-white/50 w-full max-w-md pointer-events-auto transition-all duration-300 focus-within:ring-4 focus-within:ring-blue-100/50">
                 <button onClick={() => setShowActivityLog(true)} className="p-3 bg-gray-50 hover:bg-gray-100 rounded-full text-gray-500 transition shrink-0"><History size={18}/></button>
                 <button onClick={() => setShowDateModal(true)} className="p-3 bg-gray-50 hover:bg-gray-100 rounded-full text-gray-500 transition shrink-0"><Calendar size={18}/></button>
                 <div className="h-6 w-px bg-gray-200 shrink-0"></div>
                 
-                {/* ★修正2: min-w-0 を追加して、画面が狭い時に正しく縮むようにします */}
                 <input 
                     type="text" 
                     value={query} 
@@ -1389,11 +1445,9 @@ function HomeContent() {
                     AI
                 </button>
 
-                {/* ★修正3: shrink-0 を追加して、ボタンが潰れないようにします */}
                 <button onClick={() => handleSearch()} className="bg-black text-white p-3 rounded-full hover:bg-gray-800 shadow-md transition active:scale-95 shrink-0"><Search size={18} /></button>
               </div>
               
-              {/* ... (Search results dropdown 省略: 変更なし) ... */}
               {isFocused && ((query && searchResults.length > 0) || (!query && searchHistory.length > 0)) && (
                 <div className="mt-2 w-full max-w-md bg-white/95 backdrop-blur-xl rounded-3xl shadow-2xl border border-white/50 overflow-hidden max-h-60 overflow-y-auto pointer-events-auto animate-in slide-in-from-top-2">
                   {(query ? searchResults : searchHistory.map(h => ({...h, is_history: true}))).map((item) => (
@@ -1405,7 +1459,6 @@ function HomeContent() {
                 </div>
               )}
 
-              {/* ... (Filter buttons 省略: 変更なし) ... */}
               <div className="flex gap-2 mt-3 overflow-x-auto max-w-full pb-2 px-1 pointer-events-auto no-scrollbar mask-gradient">
                   <button 
                       onClick={() => { 
@@ -1487,7 +1540,6 @@ function HomeContent() {
                   </div>
                 </div>
 
-                {/* Detail modal content (omitted for brevity) - No logic changes needed here, as selectedResult is local state */}
                 <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-white overscroll-contain">
                   
                   {selectedResult.is_saved && selectedResult.id && (
@@ -1809,12 +1861,14 @@ function HomeContent() {
 
                   {/* List content (same logic, visual only) */}
                   <div className="flex-1 overflow-y-auto p-4 space-y-3 pb-32 bg-gray-50/50">
-                      {/* ... (Rakuten Banner, empty state, and list rendering logic omitted as it's identical) ... */}
+                      
                       {filterStatus === 'hotel_candidate' && (
-                          <div 
-                              onClick={() => window.open(rakutenHomeUrl, '_blank')}
-                              className="block w-full mb-1 group cursor-pointer"
-                          >
+                          <a 
+    href={rakutenHomeUrl}
+    target="_blank"
+    rel="noopener noreferrer"
+    className="block w-full mb-1 group cursor-pointer no-underline"
+>
                               <div className="bg-white border border-gray-200 rounded-xl p-3 shadow-sm flex items-center justify-between hover:bg-orange-50/50 hover:border-orange-200 transition active:scale-[0.98]">
                                   <div className="flex items-center gap-3">
                                       <div className="w-10 h-10 bg-[#BF0000] rounded-full flex items-center justify-center text-white shrink-0 shadow-sm">
@@ -1832,7 +1886,7 @@ function HomeContent() {
                                       <ExternalLink size={16} />
                                   </div>
                               </div>
-                          </div>
+                          </a>
                       )}
                       
                       {filteredSpots.length === 0 ? (
