@@ -76,10 +76,12 @@ export default function SwipeView({
   // --- ★同期ロジック: 親コンポーネント(page.tsx)の投票データと同期 ---
   useEffect(() => {
     if (spotVotes && currentUser) {
-        // 自分が「いいね」したスポットのIDセットを作成
+        // 変更前: const myVotedIds = new Set(spotVotes.filter(v => v.user_name === currentUser && v.vote_type === 'like').map(v => String(v.spot_id)));
+        
+        // ★変更後: vote_typeによる絞り込みを削除 (NOPEも済みIDに含める)
         const myVotedIds = new Set(
             spotVotes
-                .filter(v => v.user_name === currentUser && v.vote_type === 'like')
+                .filter(v => v.user_name === currentUser)
                 .map(v => String(v.spot_id))
         );
         setVotedSpotIds(myVotedIds);
@@ -503,11 +505,30 @@ export default function SwipeView({
                             {bgImage ? (<img src={bgImage} alt={spot.name} className="w-full h-full object-cover"/>) : (<div className="w-full h-full flex flex-col items-center justify-center text-gray-400"><ImageOff size={48} className="mb-2 opacity-30"/><span className="text-xs font-bold tracking-widest opacity-30">NO IMAGE</span></div>)}
                             <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/20 pointer-events-none"></div>
                         </div>
-                        <div className="absolute top-16 right-4 z-20 flex flex-col gap-3">
-                            <button onTouchEnd={(e) => { e.stopPropagation(); window.open(getGoogleMapUrl(spot.name), '_blank'); }} onClick={(e) => { e.stopPropagation(); window.open(getGoogleMapUrl(spot.name), '_blank'); }} className="w-10 h-10 bg-white/20 backdrop-blur-md rounded-full flex items-center justify-center text-white border border-white/30 shadow-lg hover:bg-white/40 transition active:scale-95"><MapPinned size={20}/></button>
+                        
+                        {/* ★ 変更箇所: ボタンエリア */}
+                        <div className="absolute top-16 right-4 z-20 flex flex-col gap-3 items-center">
+                            {/* Google Map */}
+                            <button 
+                                onTouchEnd={(e) => { e.stopPropagation(); if (onPreview) onPreview(spot); }} 
+                                onClick={(e) => { e.stopPropagation(); if (onPreview) onPreview(spot); }} 
+                                className="w-10 h-10 bg-white/20 backdrop-blur-md rounded-full flex items-center justify-center text-white border border-white/30 shadow-lg hover:bg-white/40 transition active:scale-95"
+                            >
+                            <Info size={20}/>
+                            </button>
+                            {/* Instagram */}
                             <button onTouchEnd={(e) => { e.stopPropagation(); openInstagramApp(spot.name); }} onClick={(e) => { e.stopPropagation(); openInstagramApp(spot.name); }} className="w-10 h-10 bg-gradient-to-tr from-yellow-500 via-pink-500 to-purple-600 rounded-full flex items-center justify-center text-white border border-white/30 shadow-lg hover:scale-110 transition active:scale-95"><Instagram size={20}/></button>
-                            <button onTouchEnd={(e) => { e.stopPropagation(); openWebSearch(spot.name); }} onClick={(e) => { e.stopPropagation(); openWebSearch(spot.name); }} className="w-10 h-10 bg-blue-500/80 backdrop-blur-md rounded-full flex items-center justify-center text-white border border-white/30 shadow-lg hover:scale-110 transition active:scale-95"><Globe size={20}/></button>
+                            {/* Google Search (Updated) */}
+                            <button 
+                                onTouchEnd={(e) => { e.stopPropagation(); openWebSearch(spot.name); }} 
+                                onClick={(e) => { e.stopPropagation(); openWebSearch(spot.name); }} 
+                                className="h-10 px-3 bg-blue-500/80 backdrop-blur-md rounded-full flex items-center justify-center text-white border border-white/30 shadow-lg hover:scale-110 transition active:scale-95 gap-1.5"
+                            >
+                                <Globe size={16}/>
+                                <span className="text-xs font-bold">Google</span>
+                            </button>
                         </div>
+
                         <div className="mt-auto p-6 text-white relative z-10 flex flex-col gap-3 w-full pointer-events-none">
                            
                             {isSuggestionMode && (

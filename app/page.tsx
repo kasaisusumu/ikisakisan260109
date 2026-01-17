@@ -1,3 +1,4 @@
+
 "use client";
 
 // ビルドエラー回避：動的レンダリングを強制
@@ -15,7 +16,7 @@ import {
   Image as ImageIcon, Users as UsersIcon,
   PenTool, Loader2, Clock, ThumbsUp, Link as LinkIcon, MessageSquare,
   Save, XCircle, Edit3, ArrowRight, Maximize,
-  Car, Train, Footprints, Zap, Plane, Ship, Camera, Globe, ArrowLeftCircle
+  Car, Train, Footprints, Zap, Plane, Ship, Camera, Globe, ArrowLeftCircle, Database
 } from 'lucide-react';
 
 // --- コンポーネントのインポート ---
@@ -446,7 +447,10 @@ function HomeContent() {
           const res = await fetch(`${API_BASE_URL}/api/get_spot_image?query=${encodeURIComponent(name)}`);
           if (res.ok) {
               const data = await res.json();
-              return data.image_url;
+              // ★ URLであることを確認して返す
+              if (data.image_url && (data.image_url.startsWith('http') || data.image_url.startsWith('https'))) {
+                  return data.image_url;
+              }
           }
       } catch (e) {
           console.error("Image fetch failed", e);
@@ -460,6 +464,14 @@ function HomeContent() {
             if (!spot.image_url && !attemptedImageFetch.current.has(spot.id)) {
                 attemptedImageFetch.current.add(spot.id);
                 
+                // ★ キャッシュ/既存データからの再利用を試みる
+                const existingSpotWithImage = planSpots.find(s => s.name === spot.name && s.image_url);
+                if (existingSpotWithImage) {
+                     setPlanSpots(prev => prev.map(s => s.id === spot.id ? { ...s, image_url: existingSpotWithImage.image_url } : s));
+                     if (roomId) supabase.from('spots').update({ image_url: existingSpotWithImage.image_url }).eq('id', spot.id).then();
+                     return;
+                }
+
                 const url = await fetchSpotImage(spot.name);
                 if (url) {
                     setPlanSpots(prev => prev.map(s => s.id === spot.id ? { ...s, image_url: url } : s));
@@ -562,7 +574,7 @@ function HomeContent() {
     if (!userName || !roomId) return alert("名前を入力してください");
     
     const targetId = String(spotId);
-    const myVote = spotVotes.find(v => String(v.spot_id) === targetId && v.user_name === userName);
+    const myVote = spotVotes.find(v => String(v.spot_id) === targetId && v.user_name === userName && v.vote_type === 'like');
 
     if (myVote) {
         setSpotVotes(prev => prev.filter(v => v.id !== myVote.id));
@@ -581,7 +593,33 @@ function HomeContent() {
       const activeQuery = overrideQuery || query; 
       if(!activeQuery) return;
       setIsSearching(true);
+      
       try {
+        let results: any[] = [];
+
+        // ★ ルーム内キャッシュ(DB)から検索
+        if (roomId) {
+            const { data: cached } = await supabase
+                .from('room_search_cache')
+                .select('*')
+                .eq('room_id', roomId)
+                .ilike('text', `%${activeQuery}%`)
+                .limit(5);
+
+            if (cached && cached.length > 0) {
+                const cachedResults = cached.map(item => ({
+                    id: item.id,
+                    name: item.text,
+                    place_name: item.place_name || item.text,
+                    center: item.center,
+                    image_url: item.image_url,
+                    is_room_cache: true // キャッシュであることを識別
+                }));
+                results = [...cachedResults];
+            }
+        }
+
+        // Mapbox API検索 (既存)
         const token = MAPBOX_TOKEN;
         const bounds = map.current!.getBounds();
         let bbox = "";
@@ -589,12 +627,23 @@ function HomeContent() {
         let url = `https://api.mapbox.com/search/searchbox/v1/suggest?q=${encodeURIComponent(activeQuery)}&access_token=${token}&session_token=${sessionToken}&language=ja&limit=10&bbox=${bbox}&types=poi,place,address`;
         let res = await fetch(url);
         let data = await res.json();
+        
         if (!data.suggestions || data.suggestions.length < 2) {
           url = `https://api.mapbox.com/search/searchbox/v1/suggest?q=${encodeURIComponent(activeQuery)}&access_token=${token}&session_token=${sessionToken}&language=ja&limit=10&proximity=${lng},${lat}&types=poi,place,address`;
           res = await fetch(url);
           data = await res.json();
         }
-        if (data.suggestions) { setSearchResults(data.suggestions); }
+        
+        if (data.suggestions) {
+            // 重複排除 (Mapbox IDとキャッシュの名前で簡易チェック)
+            const newSuggestions = data.suggestions.filter((s: any) => 
+                !results.some(r => r.name === s.name || r.text === s.name)
+            );
+            results = [...results, ...newSuggestions];
+        }
+        
+        setSearchResults(results);
+
       } catch (e) { console.error(e); } finally { setIsSearching(false); }
   }; 
 
@@ -614,8 +663,20 @@ function HomeContent() {
   };
 
   const handleSelectSuggestion = async (suggestion: any) => {
-    setSearchResults([]); setQuery(suggestion.name);
+    setSearchResults([]); setQuery(suggestion.name || suggestion.text);
     setIsFocused(false); 
+
+    // ★ ルームキャッシュからの選択
+    if (suggestion.is_room_cache) {
+        const isSaved = planSpots.some(s => s.name === suggestion.name);
+        showResultOnMap(suggestion.name, suggestion.place_name, suggestion.center, isSaved);
+        // キャッシュに画像があればそれを使う
+        if (suggestion.image_url) {
+             setSelectedResult((prev: any) => ({ ...prev, image_url: suggestion.image_url }));
+        }
+        return;
+    }
+
     if (suggestion.is_history && suggestion.center) {
         const isSaved = planSpots.some(s => s.name === suggestion.name);
         showResultOnMap(suggestion.name, suggestion.place_name, suggestion.center, isSaved);
@@ -623,6 +684,7 @@ function HomeContent() {
         if(img) setSelectedResult((prev: any) => ({...prev, image_url: img}));
         return;
     }
+
     try {
       const token = MAPBOX_TOKEN;
       const url = `https://api.mapbox.com/search/searchbox/v1/retrieve/${suggestion.mapbox_id}?access_token=${token}&session_token=${sessionToken}`;
@@ -636,8 +698,21 @@ function HomeContent() {
         const isSaved = planSpots.some(s => s.name === name);
         showResultOnMap(name, address, [searchLng, searchLat], isSaved);
         
+        // ★ 画像取得とキャッシュ保存
         const img = await fetchSpotImage(name);
         if(img) setSelectedResult((prev: any) => ({...prev, image_url: img}));
+
+        // ★ DBのキャッシュテーブルに保存（ルーム内の他の人が再検索しなくて済むように）
+        if (roomId) {
+            await supabase.from('room_search_cache').insert({
+                room_id: roomId,
+                text: name,
+                place_name: address,
+                center: [searchLng, searchLat],
+                image_url: img || null, // URLのみ保存
+                mapbox_id: suggestion.mapbox_id
+            });
+        }
       }
     } catch(e) { alert("詳細情報の取得に失敗しました"); }
   };
@@ -729,7 +804,7 @@ function HomeContent() {
       setPlanSpots(spots);
       if (currentTab === 'explore' && !isSearching && !selectedResult) { fitBoundsToSpots(spots); }
     }
-    if (allVotes) setSpotVotes(allVotes.filter((v: any) => v.vote_type === 'like'));
+    if (allVotes) setSpotVotes(allVotes);
   };
 
   const fitBoundsToSpots = (spots: any[]) => {
@@ -783,13 +858,31 @@ function HomeContent() {
 
     const status = spot.status || 'candidate';
 
+    // ★ 画像URLの最適化と再利用ロジック
     let imageToSave = spot.image_url;
-    if (selectedResult && selectedResult.text === spotName && selectedResult.image_url) {
+    
+    // 1. 選択中の結果に画像があればそれを使う
+    if (!imageToSave && selectedResult && selectedResult.text === spotName && selectedResult.image_url) {
         imageToSave = selectedResult.image_url;
     }
 
+    // 2. 既に同じ名前のスポットがルーム内にあれば、その画像URLを再利用する（DB容量削減）
+    if (!imageToSave) {
+        const existingSpot = planSpots.find(s => s.name === spotName && s.image_url);
+        if (existingSpot) {
+            imageToSave = existingSpot.image_url;
+        }
+    }
+
+    // 3. なければAPIからフェッチ (URLのみ取得)
     if (!imageToSave) {
         imageToSave = await fetchSpotImage(spotName);
+    }
+    
+    // 4. Base64データだった場合は保存しない（URL保存の原則）
+    if (imageToSave && imageToSave.startsWith('data:')) {
+        console.warn("Base64 image detected, skipping save to avoid DB bloat.");
+        imageToSave = null;
     }
 
     const newSpotPayload = { 
@@ -803,7 +896,7 @@ function HomeContent() {
         status: status,
         price: spot.price || null,
         rating: spot.rating || null,
-        image_url: imageToSave || null,
+        image_url: imageToSave || null, // ★ 必ずURLまたはnull
         url: spot.url || null,
         plan_id: spot.plan_id || null,
         is_hotel: spot.is_hotel || false,
@@ -898,7 +991,26 @@ function HomeContent() {
     setViewMode('selected');
     setIsEditingDesc(false);
     setTimeout(() => { if (map.current) { map.current?.resize(); map.current?.flyTo({ center: spot.coordinates, zoom: 16, offset: [0, -150] }); } }, 300);
-  };
+    if (map.current && spot.coordinates) {
+        // 既存の一時マーカーがあれば削除
+        searchMarkersRef.current.forEach(marker => marker.remove());
+        searchMarkersRef.current = [];
+
+        // 赤いピンを作成
+        const el = document.createElement('div'); 
+        el.innerHTML = `<div style="width:24px; height:24px; background:#EF4444; border:3px solid white; border-radius:50%; box-shadow:0 4px 10px rgba(239,68,68,0.4);"></div>`;
+        
+        const marker = new mapboxgl.Marker({ element: el })
+            .setLngLat(spot.coordinates)
+            .addTo(map.current);
+            
+        searchMarkersRef.current.push(marker);
+    }
+
+    setTimeout(() => { if (map.current) { map.current?.resize(); map.current?.flyTo({ center: spot.coordinates, zoom: 16, offset: [0, -150] }); } }, 300);
+
+
+};
 
   const handleAutoSearch = (keyword: string) => { setQuery(keyword); setCurrentTab('explore'); };
   const handleSearchFromChat = (keyword: string) => { setCurrentTab('explore'); setQuery(keyword); setIsFocused(true); setTimeout(() => { handleSearch(keyword); }, 300); };
@@ -926,6 +1038,7 @@ function HomeContent() {
   };
 
   const getIconForSuggestion = (item: any) => {
+    if (item.is_room_cache) return <Database size={16} className="text-blue-500 mt-0.5 shrink-0" />;
     if (item.is_history) return <History size={16} className="text-gray-600 mt-0.5 shrink-0" />;
     return <MapIcon size={16} className="text-gray-600 mt-0.5 shrink-0" />;
   };
@@ -1053,7 +1166,7 @@ function HomeContent() {
     while(markers.length > 0) markers[0].parentNode?.removeChild(markers[0]);
     
     filteredSpots.forEach((spot) => {
-        const voters = spotVotes.filter(v => v.spot_id === spot.id).map(v => v.user_name);
+        const voters = spotVotes.filter(v => v.spot_id === spot.id && v.vote_type === 'like').map(v => v.user_name);
         const participants = [spot.added_by, ...voters];
         const uniqueParticipants = Array.from(new Set(participants));
         const size = 24; 
@@ -1488,13 +1601,14 @@ function HomeContent() {
                       )}
 
                       {(isHotel(selectedResult.text) || selectedResult.is_hotel) && (
-                          <button 
-                              onClick={() => window.open(getAffiliateUrl(selectedResult), '_blank')} 
-                              className="flex items-center gap-1 bg-[#BF0000] text-white px-3 py-2 rounded-lg text-[10px] font-bold hover:bg-[#900000] transition whitespace-nowrap shrink-0 shadow-sm"
-                          >
-                              楽天で見る <ExternalLink size={12}/>
-                          </button>
-                      )}
+    <button 
+        onClick={() => window.open(getAffiliateUrl(selectedResult), '_blank')} 
+        className="flex items-center gap-1 bg-[#BF0000] text-white px-3 py-2 rounded-lg text-[10px] font-bold hover:bg-[#900000] transition whitespace-nowrap shrink-0 shadow-sm"
+    >
+        <span className="opacity-75 text-[9px] border border-white/50 px-0.5 rounded-[2px] mr-0.5">PR</span>
+        楽天で見る <ExternalLink size={12}/>
+    </button>
+)}
 
                       <a 
                           href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(selectedResult.text)}`} 
@@ -1689,7 +1803,7 @@ function HomeContent() {
                                           {displayTimeline.map((item, idx) => {
                                               if (item.type === 'spot') {
                                                   const spot = item.spot;
-                                                  const voteCount = spotVotes.filter((v: any) => String(v.spot_id) === String(spot.id)).length;
+                                                  const voteCount = spotVotes.filter((v: any) => String(v.spot_id) === String(spot.id) && v.vote_type === 'like').length;
                                                   const isSpotHotel = isHotel(spot.name) || spot.is_hotel;
 
                                                   return (
@@ -1723,16 +1837,17 @@ function HomeContent() {
 
                                                                       <div className="flex gap-2 items-center shrink-0">
                                                                            {isSpotHotel && (
-                                                                               <button 
-                                                                                   onClick={(e) => { 
-                                                                                       e.stopPropagation(); 
-                                                                                       window.open(getAffiliateUrl(spot), '_blank'); 
-                                                                                   }}
-                                                                                   className="flex items-center gap-1 bg-[#BF0000] text-white px-2 py-0.5 rounded text-[9px] font-bold hover:bg-[#900000] transition shrink-0 shadow-sm"
-                                                                               >
-                                                                                   楽天 <ExternalLink size={8}/>
-                                                                               </button>
-                                                                           )}
+   <button 
+       onClick={(e) => { 
+           e.stopPropagation(); 
+           window.open(getAffiliateUrl(spot), '_blank'); 
+       }}
+       className="flex items-center gap-1 bg-[#BF0000] text-white px-2 py-0.5 rounded text-[9px] font-bold hover:bg-[#900000] transition shrink-0 shadow-sm"
+   >
+       <span className="opacity-75 text-[8px] border border-white/50 px-0.5 rounded-[2px]">PR</span>
+       楽天 <ExternalLink size={8}/>
+   </button>
+)}
                                                                            <button onClick={(e) => { e.stopPropagation(); removeSpot(spot); }} className="text-gray-300 hover:text-red-500 transition"><Trash2 size={12}/></button>
                                                                       </div>
                                                                   </div>
@@ -1760,7 +1875,7 @@ function HomeContent() {
                               return (
                                 <div className="space-y-3">
                                     {displaySpots.map((spot, idx) => {
-                                        const voteCount = spotVotes.filter((v: any) => String(v.spot_id) === String(spot.id)).length;
+                                        const voteCount = spotVotes.filter((v: any) => String(v.spot_id) === String(spot.id) && v.vote_type === 'like').length;
                                         const isSpotHotel = isHotel(spot.name) || spot.is_hotel;
                                         
                                         return (
@@ -1798,16 +1913,17 @@ function HomeContent() {
                                                         )}
                                                         
                                                         {isSpotHotel && (
-                                                            <button 
-                                                                onClick={(e) => { 
-                                                                    e.stopPropagation(); 
-                                                                    window.open(getAffiliateUrl(spot), '_blank'); 
-                                                                }}
-                                                                className="flex items-center gap-1 bg-[#BF0000] text-white px-2 py-0.5 rounded text-[9px] font-bold hover:bg-[#900000] transition shrink-0 shadow-sm"
-                                                            >
-                                                                楽天で見る <ExternalLink size={8}/>
-                                                            </button>
-                                                        )}
+    <button 
+        onClick={(e) => { 
+            e.stopPropagation(); 
+            window.open(getAffiliateUrl(spot), '_blank'); 
+        }}
+        className="flex items-center gap-1 bg-[#BF0000] text-white px-2 py-0.5 rounded text-[9px] font-bold hover:bg-[#900000] transition shrink-0 shadow-sm"
+    >
+        <span className="opacity-75 text-[8px] border border-white/50 px-0.5 rounded-[2px]">PR</span>
+        楽天で見る <ExternalLink size={8}/>
+    </button>
+)}
 
                                                         <button onClick={(e) => { e.stopPropagation(); removeSpot(spot); }} className="p-1 text-gray-300 hover:text-red-500 transition"><Trash2 size={12}/></button>
                                                     </div>

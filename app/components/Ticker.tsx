@@ -18,10 +18,10 @@ export default function Ticker() {
   const [currentIndex, setCurrentIndex] = useState(0);
 
   useEffect(() => {
-    // 3秒ごとにメッセージを切り替える
+    // 5秒ごとにメッセージを切り替える
     const interval = setInterval(() => {
       setCurrentIndex((prev) => (prev + 1) % messages.length);
-    }, 4000);
+    }, 6000);
     return () => clearInterval(interval);
   }, []);
 
