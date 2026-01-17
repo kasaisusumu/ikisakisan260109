@@ -71,7 +71,7 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
   const [importUrl, setImportUrl] = useState("");
   const [isImporting, setIsImporting] = useState(false);
   
-  // ★追加: インポート完了ポップアップ用のstate
+  // インポート完了ポップアップ用のstate
   const [importedHotel, setImportedHotel] = useState<any>(null);
 
   // 検索条件
@@ -145,7 +145,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
   const getAffiliateUrl = (hotel: any) => {
       let targetUrl = "";
 
-      // ★修正: インポートされたURL（特定のプランURL）がある場合はそれを優先使用
       if (hotel.url && hotel.url.includes('rakuten.co.jp')) {
           targetUrl = hotel.url;
       } else {
@@ -157,6 +156,38 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
       if (RAKUTEN_AFFILIATE_ID) return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent(targetUrl)}&m=${encodeURIComponent(targetUrl)}`;
       return targetUrl;
   };
+
+  // ★追加: 楽天トラベルの検索URL（日程・人数反映）を作成
+  const rakutenSearchUrl = useMemo(() => {
+      try {
+          const [y1, m1, d1] = conditions.checkin.split('-');
+          const [y2, m2, d2] = conditions.checkout.split('-');
+          
+          const baseUrl = "https://search.travel.rakuten.co.jp/ds/hotel/search";
+          const queryParams = [
+              "f_teikei=",
+              "f_heya_su=1",
+              `f_otona_su=${conditions.adults}`,
+              `f_nen1=${y1}`,
+              `f_tuki1=${m1}`,
+              `f_hi1=${d1}`,
+              `f_nen2=${y2}`,
+              `f_tuki2=${m2}`,
+              `f_hi2=${d2}`,
+              "f_sort=min_charge"
+          ].join('&');
+          
+          const targetUrl = `${baseUrl}?${queryParams}`;
+
+          if (RAKUTEN_AFFILIATE_ID) {
+              return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent(targetUrl)}&m=${encodeURIComponent(targetUrl)}`;
+          }
+          return targetUrl;
+      } catch (e) {
+          // エラー時のフォールバック
+          return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent("https://travel.rakuten.co.jp/")}`;
+      }
+  }, [conditions]);
 
   const updateHotelMarkers = (hotelList: any[]) => {
       if (!map.current) return;
@@ -228,7 +259,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
       const centerLng = (minLng + maxLng) / 2;
       let radiusKm = (calculateDistance(centerLat, centerLng, maxLat, maxLng) / 2) * 1.1;
       
-      // ★上限を5.0kmに緩和（バックエンドで安全に処理されるため）
       if (radiusKm < 0.1) radiusKm = 0.5;
       if (radiusKm > 5.0) radiusKm = 5.0;
       
@@ -256,7 +286,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
             
             if (map.current) {
                 const { latitude, longitude, radius } = searchArea;
-                // 表示用にはユーザーが指定した半径を使う
                 const kmPerDegLat = 111.32;
                 const kmPerDegLng = 111.32 * Math.cos(latitude * (Math.PI / 180));
                 
@@ -286,7 +315,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
           if (data.spot) { 
               handleAddCandidate(data.spot); 
               setImportUrl(""); 
-              // ★追加: 完了ポップアップを表示
               setImportedHotel(data.spot);
           }
           else alert(data.error || "エラー");
@@ -354,7 +382,9 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                               <button onClick={executeImport} disabled={isImporting || !importUrl} className="bg-blue-600 text-white px-5 rounded-xl font-bold text-sm disabled:opacity-50">{isImporting ? <Loader2 className="animate-spin"/> : <Plus size={20}/>}</button>
                           </div>
                       </div>
-                      <a href={`https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent("https://travel.rakuten.co.jp/")}`} target="_blank" className="w-full bg-black text-white py-5 rounded-[2rem] font-black text-center flex items-center justify-center gap-3 shadow-xl active:scale-95 transition-transform">楽天トラベルで探す <ExternalLink size={20}/></a>
+                      
+                      {/* ★変更: 楽天トラベルで探すボタンのリンク先を日程・人数付きの検索URLに変更 */}
+                      <a href={rakutenSearchUrl} target="_blank" className="w-full bg-black text-white py-5 rounded-[2rem] font-black text-center flex items-center justify-center gap-3 shadow-xl active:scale-95 transition-transform">楽天トラベルで探す <ExternalLink size={20}/></a>
                   </div>
               ) : (
                   <div className="flex flex-col gap-6 pt-2 animate-in fade-in">
@@ -434,7 +464,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
               <div className="bg-white w-full rounded-t-[2.5rem] p-8 shadow-2xl space-y-8 animate-in slide-in-from-bottom-10 max-h-[90vh] overflow-y-auto">
                   <div className="flex justify-between items-center"><h3 className="text-2xl font-black text-gray-800">Filters</h3><button onClick={() => setShowSettings(false)} className="p-2 bg-slate-100 rounded-full hover:bg-gray-200"><X size={20}/></button></div>
                   
-                  {/* ★警告エリア：半径が3.0kmを超えた場合に表示 */}
                   {searchArea && searchArea.radius > 3.0 && (
                       <div className="bg-yellow-50 border border-yellow-200 rounded-2xl p-4 flex items-start gap-3">
                           <AlertTriangle className="text-yellow-500 shrink-0 mt-0.5" size={20} />
@@ -483,7 +512,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
           </div>
       )}
       
-      {/* ★追加: インポート完了ポップアップ */}
       {importedHotel && (
           <div className="absolute inset-0 z-[100] bg-black/60 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-300">
               <div className="bg-white w-full max-w-sm rounded-[2.5rem] p-6 shadow-2xl relative flex flex-col items-center text-center animate-in zoom-in-95 duration-300">

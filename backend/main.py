@@ -16,6 +16,8 @@ import traceback
 from datetime import date, timedelta 
 import random 
 from contextlib import asynccontextmanager
+import sqlite3
+import hashlib
 
 load_dotenv()
 
@@ -27,18 +29,63 @@ MAPBOX_ACCESS_TOKEN = os.getenv("MAPBOX_ACCESS_TOKEN")
 GEOAPIFY_API_KEY = os.getenv("GEOAPIFY_API_KEY")
 RAKUTEN_APP_ID = os.getenv("RAKUTEN_APP_ID")
 
-# ★高速化: インメモリキャッシュ
-WIKI_CACHE: Dict[str, str] = {}
-# ★高速化: 共通のHTTPクライアント
+# HTTPクライアント
 http_client = None
 
+# ==========================================
+# 💾 キャッシュシステム (SQLite)
+# ==========================================
+DB_PATH = "cache.db"
+
+def init_db():
+    """キャッシュ用データベースの初期化"""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS api_cache (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+
+def get_cache(key: str) -> Optional[Dict]:
+    """キャッシュの取得"""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.execute("SELECT value FROM api_cache WHERE key = ?", (key,))
+            row = cursor.fetchone()
+            if row:
+                return json.loads(row[0])
+    except Exception as e:
+        print(f"Cache Read Error: {e}")
+    return None
+
+def set_cache(key: str, data: Any):
+    """キャッシュの保存"""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO api_cache (key, value) VALUES (?, ?)",
+                (key, json.dumps(data))
+            )
+            conn.commit()
+    except Exception as e:
+        print(f"Cache Write Error: {e}")
+
+# ==========================================
+# 🚀 アプリケーションライフサイクル
+# ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 起動時にClient作成
+    # 起動時: DB初期化 & HTTPクライアント作成
+    init_db()
     global http_client
-    http_client = httpx.AsyncClient(verify=False, timeout=10.0)
+    # タイムアウトを長めに設定 (デフォルト30秒)
+    http_client = httpx.AsyncClient(verify=False, timeout=30.0)
+    print("✅ System initialized with SQLite Cache & Robust Retry Logic")
     yield
-    # 終了時にClient破棄
+    # 終了時: Client破棄
     if http_client:
         await http_client.aclose()
 
@@ -52,7 +99,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-aclient = AsyncOpenAI(api_key=OPENAI_API_KEY)
+# AIクライアントのリトライ設定を強化
+aclient = AsyncOpenAI(
+    api_key=OPENAI_API_KEY,
+    max_retries=5,     # リトライ回数を増加
+    timeout=60.0       # AI応答待ち時間を延長
+)
 
 # --- 型定義 ---
 class SearchRequest(BaseModel):
@@ -102,7 +154,6 @@ class Spot(BaseModel):
     day: int = 0
     comment: str = ""
     link: str = ""
-    # ★追加: カテゴリ
     category: str = "観光スポット"
 
     @field_validator('stay_time', 'votes', mode='before')
@@ -131,22 +182,58 @@ class OptimizeRequest(BaseModel):
     end_spot_name: Optional[str] = None
 
 # ---------------------------------------------------------
-# ユーティリティ
+# ユーティリティ: 堅牢なリトライ機能
 # ---------------------------------------------------------
 
 WIKI_HEADERS = {
     "User-Agent": "RouteHackerBot/1.0 (contact@example.com)"
 }
 
+async def fetch_with_retry(client, url, params=None, headers=None, retries=5, initial_timeout=10.0):
+    """
+    サーバー混雑時などに粘り強くリトライするラッパー関数
+    """
+    current_timeout = initial_timeout
+    wait_time = 1.0
+    
+    for attempt in range(retries + 1):
+        try:
+            res = await client.get(url, params=params, headers=headers, timeout=current_timeout)
+            
+            # 成功 (200-499の範囲ならレスポンスとして扱う)
+            # ただし 429 (Too Many Requests) はリトライ対象
+            if res.status_code != 429 and res.status_code < 500:
+                return res
+            
+            # サーバーエラー or 混雑
+            print(f"⚠️ API Busy (Status: {res.status_code}). Retrying... ({attempt+1}/{retries})")
+            
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError, httpx.PoolTimeout) as e:
+            print(f"⏳ Timeout/Network Error: {e}. Retrying... ({attempt+1}/{retries})")
+        
+        # リトライ待機
+        if attempt < retries:
+            await asyncio.sleep(wait_time)
+            wait_time *= 1.5  # 待機時間を徐々に増やす
+            current_timeout += 5.0 # タイムアウト時間も徐々に延ばす
+        else:
+            print(f"❌ Max retries reached for {url}")
+            # 最後に取得できたレスポンスがあればそれを返す（エラー解析用）
+            if 'res' in locals():
+                return res
+            return None
+
 async def fetch_wikipedia_image(client, query: str):
     """
-    Wikipedia APIを使用して画像のURLを取得する
+    Wikipedia APIを使用して画像のURLを取得する (SQLiteキャッシュ付き)
     """
     if not query:
         return None
 
-    if query in WIKI_CACHE:
-        return WIKI_CACHE[query]
+    cache_key = f"wiki_img:{query}"
+    cached = get_cache(cache_key)
+    if cached and "url" in cached:
+        return cached["url"]
 
     try:
         # 1. ページを検索
@@ -160,9 +247,11 @@ async def fetch_wikipedia_image(client, query: str):
             "srlimit": 1
         }
         
-        res = await client.get(search_url, params=search_params, headers=WIKI_HEADERS, timeout=1.5)
-        data = res.json()
+        # ★リトライ適用
+        res = await fetch_with_retry(client, search_url, params=search_params, headers=WIKI_HEADERS, initial_timeout=5.0)
+        if not res: return None
         
+        data = res.json()
         if not data.get("query", {}).get("search"):
             return None
             
@@ -177,28 +266,46 @@ async def fetch_wikipedia_image(client, query: str):
             "pithumbsize": 400,
             "format": "json"
         }
-        img_res = await client.get(img_url, params=img_params, headers=WIKI_HEADERS, timeout=1.5)
+        
+        # ★リトライ適用
+        img_res = await fetch_with_retry(client, img_url, params=img_params, headers=WIKI_HEADERS, initial_timeout=5.0)
+        if not img_res: return None
+
         img_data = img_res.json()
         pages = img_data.get("query", {}).get("pages", {})
         page = pages.get(str(page_id))
         
         if page and "thumbnail" in page:
             url = page["thumbnail"]["source"]
-            WIKI_CACHE[query] = url
+            set_cache(cache_key, {"url": url})
             return url
             
     except Exception as e:
+        print(f"Wiki fetch error: {e}")
         pass
+    
+    set_cache(cache_key, {"url": None})
     return None
 
 async def fetch_spot_coordinates(client, target_name: str, search_query: str):
+    """
+    Geoapifyを使用して座標を取得する (SQLiteキャッシュ付き)
+    """
+    cache_key = f"geo:{target_name}:{search_query}"
+    cached = get_cache(cache_key)
+    if cached:
+        print(f"    ✨ [Cache Hit] {target_name}")
+        return cached
+
     try:
-        clean_query = re.sub(r'[\(（].*?[\)）]', '', search_query).strip()
+        # 修正: エスケープシーケンスの警告を解消するため、raw stringでバックスラッシュを削除
+        clean_query = re.sub(r'[(（].*?[)）]', '', search_query).strip()
         
         url = "https://api.geoapify.com/v1/geocode/search"
         params = {"text": clean_query, "apiKey": GEOAPIFY_API_KEY, "lang": "ja", "limit": 3, "countrycode": "jp"}
         
-        res = await client.get(url, params=params, timeout=5.0)
+        # ★リトライ適用 (重要度高いため長めに設定)
+        res = await fetch_with_retry(client, url, params=params, initial_timeout=8.0, retries=5)
 
         image_url = None
         try:
@@ -206,7 +313,7 @@ async def fetch_spot_coordinates(client, target_name: str, search_query: str):
         except:
              pass
         
-        if res.status_code == 200:
+        if res and res.status_code == 200:
             data = res.json()
             if "features" in data and len(data["features"]) > 0:
                 for i, feat in enumerate(data["features"]):
@@ -228,19 +335,18 @@ async def fetch_spot_coordinates(client, target_name: str, search_query: str):
                     common_chars = sum(1 for c in n_target if c in n_result)
                     match_ratio = common_chars / len(n_target) if len(n_target) > 0 else 0
                     
-                    # ログ出力用
                     is_match = is_contained or match_ratio >= 0.5
-                    status_icon = "✅" if is_match else "❌"
-                    print(f"    👉 [Check #{i+1}] AI: '{target_name}' vs API: '{result_name}' | Ratio: {match_ratio:.2f} | {status_icon}")
 
                     if is_match:
                         desc = formatted_addr.replace(result_name, "").strip(", ")
-                        return {
+                        result_data = {
                             "name": result_name, 
-                            "description": desc or "AIおすすめスポット", # これは住所情報として使われる
+                            "description": desc or "AIおすすめスポット",
                             "coordinates": feat["geometry"]["coordinates"],
                             "image_url": image_url
                         }
+                        set_cache(cache_key, result_data)
+                        return result_data
     except Exception as e:
         print(f"Coord fetch failed for {target_name}: {e}")
     
@@ -274,10 +380,16 @@ async def import_rakuten_hotel(req: ImportRequest):
     client = http_client
 
     try:
+        cache_key = f"rakuten_import:{req.url}"
+        cached = get_cache(cache_key)
+        if cached: return cached
+
         if "rakuten.co.jp" in req.url:
             try:
-                res = await client.get(req.url, timeout=10.0)
-                final_url = str(res.url)
+                # リダイレクト追跡もリトライ
+                res = await fetch_with_retry(client, req.url, initial_timeout=10.0)
+                if res:
+                    final_url = str(res.url)
             except Exception as e:
                 print(f"Redirect follow failed: {e}")
         
@@ -300,9 +412,11 @@ async def import_rakuten_hotel(req: ImportRequest):
             "datumType": 1,
         }
         api_url = "https://app.rakuten.co.jp/services/api/Travel/SimpleHotelSearch/20170426"
-        res = await client.get(api_url, params=params, timeout=10.0)
         
-        if res.status_code != 200:
+        # ★リトライ適用
+        res = await fetch_with_retry(client, api_url, params=params, initial_timeout=15.0)
+        
+        if not res or res.status_code != 200:
             return {"error": "ホテル情報の取得に失敗しました。"}
 
         data = res.json()
@@ -338,7 +452,9 @@ async def import_rakuten_hotel(req: ImportRequest):
             "status": "hotel_candidate"
         }
         
-        return {"spot": spot_data}
+        result = {"spot": spot_data}
+        set_cache(cache_key, result)
+        return result
 
     except Exception as e:
         print(f"Import Error: {e}")
@@ -356,7 +472,10 @@ async def search_hotels_vacant(req: VacantSearchRequest):
     if http_client is None: return {"error": "Server starting up..."}
     client = http_client
 
-    # ★改善: API制限(3.0)を超えないように安全に丸めるが、最大値を確保する
+    cache_key = f"rakuten_vacant:{req.latitude}:{req.longitude}:{req.checkin_date}:{req.min_price}:{req.max_price}"
+    cached = get_cache(cache_key)
+    if cached: return cached
+
     safe_radius = min(round(req.radius, 2), 3.0)
     
     today = date.today()
@@ -380,7 +499,7 @@ async def search_hotels_vacant(req: VacantSearchRequest):
         "longitude": req.longitude,
         "searchRadius": safe_radius,
         "datumType": 1,
-        "hits": 30, # 1ページあたりの最大
+        "hits": 30,
         "sort": "standard",
         "checkinDate": c_in,
         "checkoutDate": c_out,
@@ -392,25 +511,25 @@ async def search_hotels_vacant(req: VacantSearchRequest):
 
     url = "https://app.rakuten.co.jp/services/api/Travel/VacantHotelSearch/20170426"
 
-    # ★改善: 3ページ分（最大90件）を並列で取得して結合する
     async def fetch_page(page_num):
         try:
             p = base_params.copy()
             p["page"] = page_num
-            res = await client.get(url, params=p, timeout=10.0)
-            if res.status_code == 200:
+            # ★リトライ適用 (楽天APIは混雑しやすいため)
+            res = await fetch_with_retry(client, url, params=p, initial_timeout=15.0, retries=5)
+            if res and res.status_code == 200:
                 return res.json()
-        except Exception:
+        except Exception as e:
+            print(f"Hotel search page {page_num} failed: {e}")
             pass
         return None
 
     try:
-        # 1〜3ページ目を並列リクエスト
         tasks = [fetch_page(i) for i in range(1, 4)]
         results = await asyncio.gather(*tasks)
         
         all_hotels = []
-        seen_ids = set() # 重複排除用
+        seen_ids = set()
 
         for data in results:
             if not data or "hotels" not in data:
@@ -429,7 +548,6 @@ async def search_hotels_vacant(req: VacantSearchRequest):
                     basic = hotel_content[0].get("hotelBasicInfo")
                     if not basic: continue
                     
-                    # 重複チェック
                     hotel_id = str(basic["hotelNo"])
                     if hotel_id in seen_ids:
                         continue
@@ -439,7 +557,6 @@ async def search_hotels_vacant(req: VacantSearchRequest):
                     best_room_class = None
                     found_valid_plan = False
                     
-                    # 安いプランを探すロジック
                     for j in range(1, len(hotel_content)):
                         room_container = hotel_content[j]
                         if "roomInfo" in room_container:
@@ -487,7 +604,11 @@ async def search_hotels_vacant(req: VacantSearchRequest):
                     print(f"⚠️ Parse Error: {parse_err}")
                     continue
         
-        return {"hotels": all_hotels}
+        result = {"hotels": all_hotels}
+        if all_hotels:
+            set_cache(cache_key, result)
+        
+        return result
 
     except Exception as e:
         traceback.print_exc()
@@ -507,7 +628,6 @@ async def suggest_spots_generator(req: SuggestRequest):
     
     yield json.dumps({"type": "status", "message": "AIが候補地をリストアップ中..."}) + "\n"
 
-    # ★修正: summary（一言説明）と category（カテゴリ）を要求するプロンプト
     prompt = f"""
     場所: {req.theme}
     タスク: 観光客に人気の「超有名・王道観光スポット」を人気順に15個挙げてください。
@@ -536,6 +656,7 @@ async def suggest_spots_generator(req: SuggestRequest):
     
     target_spots = []
     try:
+        # aclient側でリトライ設定済み
         ai_res = await aclient.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
@@ -546,7 +667,6 @@ async def suggest_spots_generator(req: SuggestRequest):
         json_data = json.loads(content)
         raw_spots = json_data.get("spots", [])
         
-        # 重複排除
         seen_names = set()
         for s in raw_spots:
             if s["name"] not in seen_names:
@@ -554,7 +674,6 @@ async def suggest_spots_generator(req: SuggestRequest):
                 seen_names.add(s["name"])
         target_spots = target_spots[:10]
 
-        # 候補名リストを先にクライアントへ送る
         yield json.dumps({
             "type": "candidates", 
             "names": [s["name"] for s in target_spots],
@@ -568,11 +687,9 @@ async def suggest_spots_generator(req: SuggestRequest):
     found_count = 0
     seen_coords = []
     
-    # 非同期タスク作成（fetch_spot_coordinatesの結果に後からsummary/categoryを合成する）
     async def fetch_and_enrich(spot_info):
         res = await fetch_spot_coordinates(client, spot_info["name"], spot_info["search_query"])
         if res:
-            # ★ここでAI生成の要約とカテゴリを注入
             res["description"] = spot_info.get("summary", res["description"])
             res["category"] = spot_info.get("category", "観光スポット")
             return res
@@ -580,7 +697,6 @@ async def suggest_spots_generator(req: SuggestRequest):
 
     tasks = [fetch_and_enrich(s) for s in target_spots]
     
-    # as_completed で完了したものから順にループ処理
     for future in asyncio.as_completed(tasks):
         try:
             res = await future
@@ -595,7 +711,6 @@ async def suggest_spots_generator(req: SuggestRequest):
                 seen_coords.append(res["coordinates"])
                 found_count += 1
                 
-                # 見つかったスポットを即座に送信
                 yield json.dumps({"type": "spot_found", "spot": spot_data}) + "\n"
         except Exception as e:
             print(f"Error in task: {e}")
@@ -618,12 +733,24 @@ async def verify_spots(req: VerifyRequest):
 async def calculate_route_fallback(client, ordered_spots, start_min, limit_min):
     if not ordered_spots: return {"error": "スポットがありません"}
     
-    # 25個制限対策
+    coords_str = ";".join([f"{s.coordinates[0]:.5f},{s.coordinates[1]:.5f}" for s in ordered_spots[:25]])
+    cache_key = f"route:{coords_str}:{start_min}:{limit_min}"
+    
+    cached = get_cache(cache_key)
+    if cached: 
+        print("    🚗 [Route Cache Hit]")
+        return cached
+
     calc_spots = ordered_spots[:25]
     
-    coords = ";".join([f"{s.coordinates[0]},{s.coordinates[1]}" for s in calc_spots])
-    url = f"https://api.mapbox.com/directions/v5/mapbox/driving/{coords}"
-    res = await client.get(url, params={"access_token": MAPBOX_ACCESS_TOKEN, "geometries": "geojson"})
+    request_coords = ";".join([f"{s.coordinates[0]},{s.coordinates[1]}" for s in calc_spots])
+    url = f"https://api.mapbox.com/directions/v5/mapbox/driving/{request_coords}"
+    
+    # ★リトライ適用
+    res = await fetch_with_retry(client, url, params={"access_token": MAPBOX_ACCESS_TOKEN, "geometries": "geojson"}, initial_timeout=10.0, retries=5)
+    
+    if not res: return {"error": "ルート計算APIへの接続失敗"}
+    
     data = res.json()
     
     if "routes" not in data or not data['routes']: return {"error": "ルート計算失敗"}
@@ -636,7 +763,6 @@ async def calculate_route_fallback(client, ordered_spots, start_min, limit_min):
         stay = spot.stay_time or 60
         arr = current
         dep = arr + stay
-        # if dep > limit_min: break
         
         timeline.append({
             "type": "spot", "spot": {**spot.model_dump(), "stay_time": stay},
@@ -655,7 +781,10 @@ async def calculate_route_fallback(client, ordered_spots, start_min, limit_min):
             current = dep + dur
             
     used = set(t['spot']['name'] for t in timeline if t['type']=='spot')
-    return {"timeline": timeline, "unused_spots": [s for s in ordered_spots if s.name not in used], "route_geometry": route['geometry']}
+    result = {"timeline": timeline, "unused_spots": [s for s in ordered_spots if s.name not in used], "route_geometry": route['geometry']}
+    
+    set_cache(cache_key, result)
+    return result
 
 @app.post("/api/optimize_route")
 @app.post("/api/calculate_route")
@@ -677,4 +806,4 @@ async def calculate_route_endpoint(req: OptimizeRequest):
 
 @app.get("/")
 async def root():
-    return {"status": "active", "message": "Render is awake!"}
+    return {"status": "active", "message": "Render is awake with Robust Retry!"}

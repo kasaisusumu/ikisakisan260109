@@ -8,7 +8,8 @@ import {
   Edit3, Train, Plane, Ship, Footprints, Zap, 
   Image as ImageIcon, Link as LinkIcon, Camera, Upload, 
   Save, BookOpen, Trash2, PlusCircle, MapPinned, GripVertical, ArrowRight,
-  ChevronDown, ChevronUp, Layers, Check, Map as MapIcon, ArrowUp, Download, ArrowLeft
+  ChevronDown, ChevronUp, Layers, Check, Map as MapIcon, ArrowUp, Download, ArrowLeft,
+  Banknote, ExternalLink, StickyNote
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
@@ -97,16 +98,11 @@ const TRANSPORT_MODES = [
   { id: 'ship', icon: <Ship size={16}/>, label: '船', googleMode: 'transit' },
 ];
 
-const getSpotId = (spot: any) => {
-    if (!spot) return "";
-    return String(spot.id || spot.name);
-};
-
 export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, travelDays = 1, autoShowScreenshot, onScreenshotClosed }: Props) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
   const captureRef = useRef<HTMLDivElement>(null); 
-  const scrollContainerRef = useRef<HTMLDivElement>(null); // スクショ用コンテナの参照
+  const scrollContainerRef = useRef<HTMLDivElement>(null); 
   
   const [isProcessing, setIsProcessing] = useState(false);
   const [timeline, setTimeline] = useState<any[]>([]);
@@ -132,6 +128,8 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
   const [selectedDay, setSelectedDay] = useState<number>(1);
 
   const displayDays = Math.max(travelDays, 1);
+  // ★追加: どの移動アイテムのメニューが開いているかを管理
+  const [activeTransportMenuIndex, setActiveTransportMenuIndex] = useState<number | null>(null);
 
   useEffect(() => {
       if (autoShowScreenshot) setShowScreenshotMode(true);
@@ -156,14 +154,38 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
       }));
   }, [spots]);
 
-  const activeDaySpots = useMemo(() => {
-      return spots.filter(s => 
+ // ★追加 1: 前の日の宿を特定する
+  const prevDayHotel = useMemo(() => {
+      // 1日目なら前の日はないので無視
+      if (selectedDay <= 1) return null;
+      
+      // 1つ前のDayに登録されている、確定済みの宿を探す
+      // (カテゴリーや名前で判定)
+      return spots.find(s => 
           s.status === 'confirmed' && 
-          (s.day === selectedDay || s.day === 0)
+          s.day === selectedDay - 1 && 
+          (s.is_hotel || s.category === 'hotel' || /ホテル|旅館|宿/.test(s.name))
       );
   }, [spots, selectedDay]);
 
-  // ★ 修正箇所: 待機中スポットの判定を厳密化（IDまたは名前で重複チェック）
+  // ★追加 2: activeDaySpots に前の日の宿を自動的に含める
+  const activeDaySpots = useMemo(() => {
+      // 本来の「その日のスポット」
+      const current = spots.filter(s => 
+          s.status === 'confirmed' && 
+          (s.day === selectedDay || s.day === 0)
+      );
+
+      // 前の日の宿が見つかった場合
+      if (prevDayHotel) {
+          // すでにリストに含まれていなければ、強制的に「先頭」に追加する
+          if (!current.find(s => (s.id && String(s.id) === String(prevDayHotel.id)) || s.name === prevDayHotel.name)) {
+              return [prevDayHotel, ...current];
+          }
+      }
+      return current;
+  }, [spots, selectedDay, prevDayHotel]);
+
   const unusedSpots = useMemo(() => {
       const usedSpotIds = new Set<string>();
       const usedSpotNames = new Set<string>();
@@ -178,7 +200,6 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
       return activeDaySpots.filter(spot => {
           const id = spot.id ? String(spot.id) : null;
           const name = spot.name;
-          // IDが一致 または 名前が一致 すれば除外
           if (id && usedSpotIds.has(id)) return false;
           if (name && usedSpotNames.has(name)) return false;
           return true;
@@ -218,6 +239,11 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
           const [hours, minutes] = prevDepartureTime.split(':').map(Number);
           const date = new Date();
           date.setHours(hours, minutes, 0, 0);
+
+          if (date.getTime() < Date.now()) {
+              date.setDate(date.getDate() + 1);
+          }
+
           const timestamp = Math.floor(date.getTime() / 1000);
           return `http://googleusercontent.com/maps.google.com/?saddr=${encodeURIComponent(prevSpot)}&daddr=${encodeURIComponent(nextSpot)}&travelmode=${mode}&departure_time=${timestamp}`;
       }
@@ -234,22 +260,31 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
       reader.readAsDataURL(file);
   };
 
+  // ★修正: calculateSchedule で 0 を有効な値として扱う
   const calculateSchedule = (currentTimeline: any[]) => {
       let currentTime = new Date(`2000-01-01T${startTime}:00`);
       const newTimeline = currentTimeline.map((item) => {
           const newItem = { ...item };
           if (item.type === 'travel') {
-              const duration = item.duration_min || 0;
+              // null/undefined の場合のみ 0 にする (0はそのまま維持)
+              const duration = item.duration_min !== undefined ? item.duration_min : 0;
               currentTime = new Date(currentTime.getTime() + duration * 60000);
           } else if (item.type === 'spot') {
               newItem.arrival = currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-              let stayTime = item.stay_min || item.spot.stay_time || 60;
+              
+              // 滞在時間が undefined/null の場合はデフォルト値を使うが、0 は許容する
+              let stayTime = item.stay_min;
+              if (stayTime === undefined || stayTime === null) {
+                  stayTime = item.spot.stay_time || 60;
+              }
+
               if (item.spot.is_hotel) {
                   const nextMorning = new Date(currentTime);
                   nextMorning.setDate(nextMorning.getDate() + 1);
                   const [nextH, nextM] = startTime.split(':').map(Number);
                   nextMorning.setHours(nextH, nextM, 0, 0);
                   const diffMin = (nextMorning.getTime() - currentTime.getTime()) / 60000;
+                  // ホテルの場合は最低滞在時間を確保しつつ翌朝まで
                   stayTime = Math.max(diffMin, 60);
                   newItem.is_overnight = true;
               }
@@ -346,10 +381,34 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
       if (!isPlanGenerated) return;
       const title = prompt("プラン名を入力して保存:", `Day ${selectedDay} のプラン`);
       if (!title) return;
+
+      const { data: existingPlans } = await supabase
+          .from('pinned_plans')
+          .select('id')
+          .eq('room_id', roomId)
+          .eq('title', title);
+      
       const planData = { timeline, unusedSpots, routeGeoJSON, day: selectedDay };
-      const { error } = await supabase.from('pinned_plans').insert([{ room_id: roomId, title: title, plan_data: planData }]);
-      if (!error) alert("プランを保存しました！");
-      else alert("保存に失敗しました");
+
+      if (existingPlans && existingPlans.length > 0) {
+          if (!confirm(`プラン「${title}」は既に存在します。\n上書き保存しますか？`)) {
+              return; 
+          }
+          const targetId = existingPlans[0].id;
+          const { error } = await supabase
+              .from('pinned_plans')
+              .update({ plan_data: planData })
+              .eq('id', targetId);
+          if (!error) alert("プランを上書き保存しました！");
+          else alert("保存に失敗しました");
+      } else {
+          const { error } = await supabase
+              .from('pinned_plans')
+              .insert([{ room_id: roomId, title: title, plan_data: planData }]);
+          if (!error) alert("プランを保存しました！");
+          else alert("保存に失敗しました");
+      }
+      if (isPinListOpen) fetchPinnedPlans();
   };
 
   const handleLoadPin = (plan: any) => {
@@ -369,9 +428,30 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
 
   const handleAutoGenerate = async () => {
     if (activeDaySpots.length < 2) return alert("この日のスポットが2つ以上必要です");
+    
+    if (isPlanGenerated && !confirm("現在のルート表示は失われます。\n最適化を実行してもよろしいですか？")) {
+        return;
+    }
+
     setIsProcessing(true);
     try {
-      const targetSpots = [...activeDaySpots].sort((a, b) => (b.votes || 0) - (a.votes || 0));
+      let targetSpots = [...activeDaySpots];
+
+      // ★追加 3: 前の日の宿がある場合、並び替えロジックを変更
+      if (prevDayHotel) {
+          // 宿以外のスポットを取り出して、投票数順に並べる
+          const others = targetSpots.filter(s => 
+              !(s.id && String(s.id) === String(prevDayHotel.id)) && s.name !== prevDayHotel.name
+          );
+          others.sort((a, b) => (b.votes || 0) - (a.votes || 0));
+          
+          // [宿, ...その他] の順で結合し、宿を確実にスタート地点にする
+          targetSpots = [prevDayHotel, ...others];
+      } else {
+          // 宿がない場合は通常通り（投票数順など）
+          targetSpots.sort((a, b) => (b.votes || 0) - (a.votes || 0));
+      }
+
       const res = await fetch(`${API_BASE_URL}/api/optimize_route`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -453,9 +533,24 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
       setEditItem(null);
   };
 
+  // ★修正: 入力値を処理する関数
   const handleTimeChange = (index: number, value: string) => {
+      // 空文字の場合は 0 として扱う
+      if (value === '') {
+          const newTimeline = [...timeline];
+          if (newTimeline[index].type === 'travel') {
+              newTimeline[index].duration_min = 0;
+          } else {
+              newTimeline[index].stay_min = 0;
+              if(newTimeline[index].spot) newTimeline[index].spot.stay_time = 0;
+          }
+          setTimeline(calculateSchedule(newTimeline));
+          return;
+      }
+
       const val = parseInt(value, 10);
       if (isNaN(val)) return;
+      
       const newTimeline = [...timeline];
       if (newTimeline[index].type === 'travel') newTimeline[index].duration_min = val;
       else {
@@ -465,7 +560,6 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
       setTimeline(calculateSchedule(newTimeline));
   };
 
-  // ★ 追加: 出発時間の変更処理
   const handleDepartureChange = (index: number, newDeparture: string) => {
       const item = timeline[index];
       if (!item.arrival) return;
@@ -578,15 +672,11 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
     }
   }, [timeline, unusedSpots, routeGeoJSON]);
 
-  // ★ 画像保存処理
   const handleDownloadImage = async () => {
       if (!captureRef.current) return;
       setIsSavingImage(true);
-      
       try {
-          // html2canvasの読み込み
           let html2canvasFunc = window.html2canvas;
-          
           if (!html2canvasFunc) {
               try {
                   const module = await import('html2canvas');
@@ -605,102 +695,53 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
                   html2canvasFunc = window.html2canvas;
               }
           }
-
           if (!html2canvasFunc) throw new Error("画像生成ライブラリの読み込みに失敗しました");
-
           const element = captureRef.current;
-          
           const originalScroll = window.scrollY;
           window.scrollTo(0, 0);
-
-          const canvas = await html2canvasFunc(element, {
-              scale: 2, 
-              useCORS: true, 
-              backgroundColor: '#ffffff',
-              logging: false,
-          });
-          
+          const canvas = await html2canvasFunc(element, { scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false });
           window.scrollTo(0, originalScroll);
-
           const link = document.createElement('a');
           link.href = canvas.toDataURL('image/png');
           link.download = `plan_day${selectedDay}_${Date.now()}.png`;
           link.click();
-
-      } catch (error) {
-          console.error("Screenshot failed", error);
-          alert("画像の保存に失敗しました。もう一度お試しください。");
-      } finally {
-          setIsSavingImage(false);
-      }
+      } catch (error) { console.error("Screenshot failed", error); alert("画像の保存に失敗しました。もう一度お試しください。"); } finally { setIsSavingImage(false); }
   };
 
   if (showScreenshotMode) {
       let spotCounter = 0;
       return (
           <div ref={scrollContainerRef} className="fixed inset-0 z-[100] bg-white text-gray-900 overflow-y-auto">
-              
               <div className="sticky top-0 left-0 right-0 pt-20 pb-4 px-6 z-50 flex items-center justify-between bg-white/95 backdrop-blur-sm border-b border-gray-100 shadow-sm">
-                   <button 
-                       onClick={handleCloseScreenshot} 
-                       className="flex items-center gap-2 text-sm font-bold text-gray-600 hover:text-gray-900 transition bg-gray-100 px-4 py-3 rounded-full shadow-sm"
-                   >
+                   <button onClick={handleCloseScreenshot} className="flex items-center gap-2 text-sm font-bold text-gray-600 hover:text-gray-900 transition bg-gray-100 px-4 py-3 rounded-full shadow-sm">
                        <ArrowLeft size={18}/> 戻る
                    </button>
-                   
-                   <button 
-                       onClick={handleDownloadImage}
-                       disabled={isSavingImage || timeline.length === 0}
-                       className="flex items-center gap-2 text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 transition px-5 py-3 rounded-full shadow-md disabled:opacity-50"
-                   >
-                       {isSavingImage ? <Loader2 size={18} className="animate-spin"/> : <Camera size={18}/>}
-                       <span>画像保存</span>
+                   <button onClick={handleDownloadImage} disabled={isSavingImage || timeline.length === 0} className="flex items-center gap-2 text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 transition px-5 py-3 rounded-full shadow-md disabled:opacity-50">
+                       {isSavingImage ? <Loader2 size={18} className="animate-spin"/> : <Camera size={18}/>} <span>画像保存</span>
                    </button>
               </div>
-
               <div ref={captureRef} className="p-8 max-w-lg mx-auto min-h-screen bg-white pb-32">
                   <div className="flex justify-between items-center mb-6 pb-4 border-b border-gray-200">
-                      <div>
-                          <p className="text-xs font-bold text-gray-400 tracking-wider">TRAVEL LOG</p>
-                          <h1 className="text-3xl font-black tracking-tight text-gray-800">Day {selectedDay}</h1>
-                      </div>
-                      
+                      <div><p className="text-xs font-bold text-gray-400 tracking-wider">TRAVEL LOG</p><h1 className="text-3xl font-black tracking-tight text-gray-800">Day {selectedDay}</h1></div>
                       <div className="flex gap-1" data-html2canvas-ignore="true">
                          {Array.from({ length: displayDays }).map((_, i) => (
-                              <button 
-                                  key={i} 
-                                  onClick={() => { setSelectedDay(i + 1); setIsPlanGenerated(false); setRouteGeoJSON(null); }}
-                                  className={`w-8 h-8 rounded-full text-xs font-bold transition-all border flex items-center justify-center ${selectedDay === i + 1 ? 'bg-black text-white border-black' : 'bg-gray-100 text-gray-500 border-gray-200 hover:bg-gray-200'}`}
-                              >
+                              <button key={i} onClick={() => { setSelectedDay(i + 1); setIsPlanGenerated(false); setRouteGeoJSON(null); }} className={`w-8 h-8 rounded-full text-xs font-bold transition-all border flex items-center justify-center ${selectedDay === i + 1 ? 'bg-black text-white border-black' : 'bg-gray-100 text-gray-500 border-gray-200 hover:bg-gray-200'}`}>
                                   {i + 1}
                               </button>
                           ))}
                       </div>
                   </div>
-
                   <div className="space-y-0 relative pl-4">
                       <div className="absolute left-[19px] top-2 bottom-2 w-[2px] bg-gray-200 z-0"></div>
-                      
-                      {timeline.length === 0 && (
-                          <div className="text-center py-20 text-gray-400 text-sm font-bold">
-                              ルートが生成されていません
-                          </div>
-                      )}
-
+                      {timeline.length === 0 && <div className="text-center py-20 text-gray-400 text-sm font-bold">ルートが生成されていません</div>}
                       {timeline.map((item, i) => {
                           if (item.type === 'spot') {
-                              const displaySpot = spots.find(s => 
-                                  (s.id && String(s.id) === String(item.spot.id)) || 
-                                  s.name === item.spot.name
-                              ) || item.spot;
+                              const displaySpot = spots.find(s => (s.id && String(s.id) === String(item.spot.id)) || s.name === item.spot.name) || item.spot;
                               const displayImage = displaySpot.image_url || item.image || item.spot.image_url;
-
                               spotCounter++;
                               return (
                                   <div key={i} className="relative z-10 mb-8 pl-10 break-inside-avoid">
-                                      <div className="absolute left-0 top-1 w-10 h-10 bg-indigo-600 rounded-full flex items-center justify-center font-bold text-lg text-white border-4 border-white shadow-sm">
-                                          {spotCounter}
-                                      </div>
+                                      <div className="absolute left-0 top-1 w-10 h-10 bg-indigo-600 rounded-full flex items-center justify-center font-bold text-lg text-white border-4 border-white shadow-sm">{spotCounter}</div>
                                       <div>
                                           <div className="flex items-center gap-2 mb-1">
                                               <span className="text-xl font-bold tracking-tight text-indigo-600">{item.arrival}</span>
@@ -708,14 +749,9 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
                                               <span className="text-sm font-medium text-gray-500">{item.departure}</span>
                                           </div>
                                           <h3 className="text-lg font-bold leading-snug mb-1 text-gray-800">{item.spot.name}</h3>
-                                          {displayImage ? (
-                                              <div className="w-full h-40 mb-2 rounded-lg overflow-hidden bg-gray-100 mt-2 border border-gray-200 shadow-sm">
-                                                  <img src={displayImage} alt={item.spot.name} className="w-full h-full object-cover" crossOrigin="anonymous"/>
-                                              </div>
-                                          ) : null}
-                                          {item.spot.comment && (
-                                              <p className="text-xs text-gray-600 bg-gray-50 p-2 rounded border border-gray-100 mt-1 whitespace-pre-wrap">{item.spot.comment}</p>
-                                          )}
+                                          {item.spot.cost && <div className="text-xs font-bold text-gray-500 mb-1 flex items-center gap-1"><Banknote size={12}/> ¥{Number(item.spot.cost).toLocaleString()}</div>}
+                                          {displayImage ? (<div className="w-full h-40 mb-2 rounded-lg overflow-hidden bg-gray-100 mt-2 border border-gray-200 shadow-sm"><img src={displayImage} alt={item.spot.name} className="w-full h-full object-cover" crossOrigin="anonymous"/></div>) : null}
+                                          {item.spot.comment && <p className="text-xs text-gray-600 bg-gray-50 p-2 rounded border border-gray-100 mt-1 whitespace-pre-wrap">{item.spot.comment}</p>}
                                           <div className="text-xs text-gray-500 flex items-center gap-1 mt-1"><Clock size={12}/> 滞在: {item.stay_min}分</div>
                                       </div>
                                   </div>
@@ -723,8 +759,24 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
                           } else if (item.type === 'travel') {
                               const mode = TRANSPORT_MODES.find(m => m.id === (item.transport_mode || 'car')) || TRANSPORT_MODES[0];
                               return (
-                                  <div key={i} className="relative z-10 mb-8 pl-12 flex items-center gap-2 text-gray-400 text-xs font-bold">
-                                      {mode.icon} <span>{item.duration_min}分 移動</span>
+                                  <div key={i} className="relative z-10 mb-8 pl-12 flex flex-col gap-1">
+                                      <div className="flex items-center gap-2 text-gray-400 text-xs font-bold">{mode.icon} <span>{item.duration_min}分 移動</span></div>
+                                      
+                                      <div className="flex flex-wrap gap-2">
+                                          {(item.transport_departure || item.transport_arrival) && (
+                                              <div className="text-xs font-bold text-gray-600 flex items-center gap-1 bg-gray-100 px-2 py-1 rounded w-max">
+                                                  {item.transport_departure && <span>{item.transport_departure}発</span>}
+                                                  {item.transport_departure && item.transport_arrival && <ArrowRight size={10} className="text-gray-400"/>}
+                                                  {item.transport_arrival && <span>{item.transport_arrival}着</span>}
+                                              </div>
+                                          )}
+                                          {item.cost && (
+                                              <div className="text-xs font-bold text-gray-500 flex items-center gap-1 bg-gray-50 px-2 py-1 rounded w-max border border-gray-200">
+                                                  <Banknote size={10}/> ¥{Number(item.cost).toLocaleString()}
+                                              </div>
+                                          )}
+                                      </div>
+                                      {item.note && <div className="text-[10px] text-gray-500 bg-gray-50 p-1.5 rounded border border-gray-100 max-w-[200px] flex items-start gap-1"><StickyNote size={10} className="shrink-0 mt-0.5"/> {item.note}</div>}
                                   </div>
                               );
                           }
@@ -742,39 +794,125 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
       
       {editItem && (
           <div className="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
-              <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl space-y-5 animate-in zoom-in-95 duration-200">
-                  <div className="flex justify-between items-center border-b border-gray-100 pb-3">
-                      <h3 className="font-bold text-gray-800 flex items-center gap-2"><Edit3 size={16}/> 詳細を編集</h3>
+              <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl animate-in zoom-in-95 duration-200 flex flex-col max-h-[70vh] mb-16">
+                  
+                  {/* ヘッダー (固定) */}
+                  <div className="flex justify-between items-center border-b border-gray-100 p-4 shrink-0">
+                      <h3 className="font-bold text-gray-800 flex items-center gap-2">
+                          <Edit3 size={16}/> {editItem.type === 'spot' ? 'スポット詳細を編集' : '移動詳細を編集'}
+                      </h3>
                       <button onClick={() => setEditItem(null)} className="p-2 bg-gray-100 rounded-full hover:bg-gray-200 text-gray-500"><X size={16}/></button>
                   </div>
-                  <div className="space-y-4">
-                    <div>
-                        <label className="text-xs font-bold text-gray-500 mb-1 block">参考URL</label>
-                        <input type="text" value={editItem.data.url || ''} onChange={(e) => setEditItem({...editItem, data: {...editItem.data, url: e.target.value}})} className="w-full bg-gray-50 border border-gray-200 rounded-lg p-3 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none text-gray-800 transition"/>
-                    </div>
-                    <div>
-                        <label className="text-xs font-bold text-gray-500 mb-1 block">メモ</label>
-                        <textarea value={editItem.data.note || ''} onChange={(e) => setEditItem({...editItem, data: {...editItem.data, note: e.target.value}})} className="w-full bg-gray-50 border border-gray-200 rounded-lg p-3 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none text-gray-800 h-20 resize-none transition"/>
-                    </div>
-                    <div>
-                        <label className="text-xs font-bold text-gray-500 mb-2 block">写真</label>
-                        <div className="relative h-40 w-full rounded-lg overflow-hidden border border-gray-200 bg-gray-50">
-                            {editItem.data.image ? (
-                                <>
-                                    <SpotImage src={editItem.data.image} alt="preview" className="w-full h-full"/>
-                                    <button onClick={() => setEditItem({...editItem, data: {...editItem.data, image: null}})} className="absolute top-2 right-2 bg-white/80 text-gray-700 p-2 rounded-full hover:bg-red-50 hover:text-red-500 shadow-sm"><Trash2 size={16}/></button>
-                                </>
-                            ) : (
-                                <label className="flex flex-col items-center justify-center h-full w-full cursor-pointer hover:bg-gray-100 transition text-gray-400 hover:text-indigo-500">
-                                    <Upload size={20} className="mb-1"/>
-                                    <span className="text-xs">画像をアップロード</span>
-                                    <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden"/>
-                                </label>
-                            )}
-                        </div>
-                    </div>
+                  
+                  {/* コンテンツ (スクロール可能) */}
+                  <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                    {/* --- スポット編集モード --- */}
+                    {editItem.type === 'spot' && (
+                        <>
+                            <div>
+                                <label className="text-xs font-bold text-gray-500 mb-1 block">予算・費用</label>
+                                <div className="relative">
+                                    <Banknote className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16}/>
+                                    <input 
+                                        type="number" 
+                                        placeholder="例: 1500"
+                                        value={editItem.data.spot?.cost || ''} 
+                                        onChange={(e) => setEditItem({...editItem, data: {...editItem.data, spot: {...editItem.data.spot, cost: e.target.value}}})} 
+                                        className="w-full bg-gray-50 border border-gray-200 rounded-lg p-3 pl-10 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none text-gray-800 transition"
+                                    />
+                                </div>
+                            </div>
+                            <div>
+                                <label className="text-xs font-bold text-gray-500 mb-1 block">参考URL</label>
+                                <input type="text" value={editItem.data.url || ''} onChange={(e) => setEditItem({...editItem, data: {...editItem.data, url: e.target.value}})} className="w-full bg-gray-50 border border-gray-200 rounded-lg p-3 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none text-gray-800 transition"/>
+                            </div>
+                            <div>
+                                <label className="text-xs font-bold text-gray-500 mb-1 block">メモ</label>
+                                <textarea value={editItem.data.spot?.comment || ''} onChange={(e) => setEditItem({...editItem, data: {...editItem.data, spot: {...editItem.data.spot, comment: e.target.value}}})} className="w-full bg-gray-50 border border-gray-200 rounded-lg p-3 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none text-gray-800 h-20 resize-none transition"/>
+                            </div>
+                            <div>
+                                <label className="text-xs font-bold text-gray-500 mb-2 block">写真</label>
+                                <div className="relative h-40 w-full rounded-lg overflow-hidden border border-gray-200 bg-gray-50">
+                                    {editItem.data.image ? (
+                                        <>
+                                            <SpotImage src={editItem.data.image} alt="preview" className="w-full h-full"/>
+                                            <button onClick={() => setEditItem({...editItem, data: {...editItem.data, image: null}})} className="absolute top-2 right-2 bg-white/80 text-gray-700 p-2 rounded-full hover:bg-red-50 hover:text-red-500 shadow-sm"><Trash2 size={16}/></button>
+                                        </>
+                                    ) : (
+                                        <label className="flex flex-col items-center justify-center h-full w-full cursor-pointer hover:bg-gray-100 transition text-gray-400 hover:text-indigo-500">
+                                            <Upload size={20} className="mb-1"/>
+                                            <span className="text-xs">画像をアップロード</span>
+                                            <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden"/>
+                                        </label>
+                                    )}
+                                </div>
+                            </div>
+                        </>
+                    )}
+
+                    {/* --- 移動編集モード --- */}
+                    {editItem.type === 'travel' && (
+                        <>
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className="text-xs font-bold text-gray-500 mb-1 block">出発時間</label>
+                                    <input 
+                                        type="time" 
+                                        value={editItem.data.transport_departure || ''} 
+                                        onChange={(e) => setEditItem({...editItem, data: {...editItem.data, transport_departure: e.target.value}})} 
+                                        className="w-full bg-gray-50 border border-gray-200 rounded-lg p-3 text-sm font-bold focus:border-indigo-500 outline-none"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="text-xs font-bold text-gray-500 mb-1 block">到着時間</label>
+                                    <input 
+                                        type="time" 
+                                        value={editItem.data.transport_arrival || ''} 
+                                        onChange={(e) => setEditItem({...editItem, data: {...editItem.data, transport_arrival: e.target.value}})} 
+                                        className="w-full bg-gray-50 border border-gray-200 rounded-lg p-3 text-sm font-bold focus:border-indigo-500 outline-none"
+                                    />
+                                </div>
+                            </div>
+                            
+                            <div>
+                                <label className="text-xs font-bold text-gray-500 mb-1 block">交通費</label>
+                                <div className="relative">
+                                    <Banknote className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16}/>
+                                    <input 
+                                        type="number" 
+                                        placeholder="例: 500"
+                                        value={editItem.data.cost || ''} 
+                                        onChange={(e) => setEditItem({...editItem, data: {...editItem.data, cost: e.target.value}})} 
+                                        className="w-full bg-gray-50 border border-gray-200 rounded-lg p-3 pl-10 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none text-gray-800 transition"
+                                    />
+                                </div>
+                            </div>
+
+                            <div>
+                                <label className="text-xs font-bold text-gray-500 mb-1 block">移動メモ (乗り場・便名など)</label>
+                                <textarea 
+                                    value={editItem.data.note || ''} 
+                                    onChange={(e) => setEditItem({...editItem, data: {...editItem.data, note: e.target.value}})} 
+                                    className="w-full bg-gray-50 border border-gray-200 rounded-lg p-3 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none text-gray-800 h-20 resize-none transition"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-xs font-bold text-gray-500 mb-1 block">参考URL (時刻表など)</label>
+                                <input 
+                                    type="text" 
+                                    value={editItem.data.url || ''} 
+                                    onChange={(e) => setEditItem({...editItem, data: {...editItem.data, url: e.target.value}})} 
+                                    className="w-full bg-gray-50 border border-gray-200 rounded-lg p-3 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none text-gray-800 transition"
+                                />
+                            </div>
+                        </>
+                    )}
                   </div>
-                  <button onClick={handleEditSave} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition shadow-lg shadow-indigo-200">変更を保存</button>
+
+                  {/* フッター (固定) */}
+                  <div className="p-4 border-t border-gray-100 shrink-0">
+                      <button onClick={handleEditSave} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition shadow-lg shadow-indigo-200">変更を保存</button>
+                  </div>
               </div>
           </div>
       )}
@@ -944,7 +1082,6 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
                                                 <h3 className="font-bold text-gray-800 text-sm line-clamp-1">{item.spot.name}</h3>
                                                 <button onClick={(e) => { e.stopPropagation(); toggleSpotInclusion(item.spot, false); }} className="text-gray-400 hover:text-red-500 p-1"><MinusCircle size={16}/></button>
                                             </div>
-                                            {/* ★ 修正: 到着/出発時間を編集可能に */}
                                             <div className="flex items-center gap-2 text-xs font-bold text-indigo-500 font-mono bg-indigo-50 w-max px-2 py-0.5 rounded" onClick={(e) => e.stopPropagation()}>
                                                 {i === 0 ? (
                                                     <input 
@@ -970,10 +1107,20 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
 
                                         <div className="flex justify-between items-end mt-1">
                                             {!item.is_overnight && (
-                                                <div className="flex items-center gap-1 bg-gray-50 px-2 py-1 rounded border border-gray-200" onClick={(e) => e.stopPropagation()}>
-                                                    <Clock size={10} className="text-gray-500"/>
-                                                    <input type="number" value={item.stay_min || item.spot.stay_time} onChange={(e) => handleTimeChange(i, e.target.value)} className="w-6 bg-transparent text-center text-xs font-bold outline-none text-gray-700 p-0"/>
-                                                    <span className="text-[9px] text-gray-500">分</span>
+                                                <div className="flex items-center gap-2">
+                                                    <div className="flex items-center gap-1 bg-gray-50 px-2 py-1 rounded border border-gray-200" onClick={(e) => e.stopPropagation()}>
+                                                        <Clock size={10} className="text-gray-500"/>
+                                                        {/* ★修正: 値のバインディングで0を表示できるようにする (?? を使用) */}
+                                                        <input type="number" value={item.stay_min ?? item.spot.stay_time} onChange={(e) => handleTimeChange(i, e.target.value)} className="w-6 bg-transparent text-center text-xs font-bold outline-none text-gray-700 p-0"/>
+                                                        <span className="text-[9px] text-gray-500">分</span>
+                                                    </div>
+                                                    {/* 金額表示 */}
+                                                    {item.spot.cost && (
+                                                        <div className="flex items-center gap-1 bg-yellow-50 px-2 py-1 rounded border border-yellow-100 text-[10px] font-bold text-yellow-700">
+                                                            <Banknote size={10}/>
+                                                            ¥{Number(item.spot.cost).toLocaleString()}
+                                                        </div>
+                                                    )}
                                                 </div>
                                             )}
                                             {item.spot.is_hotel && (
@@ -981,9 +1128,8 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
                                             )}
                                         </div>
                                     </div>
-                                    <div className="w-8 flex items-center justify-center text-gray-300 hover:text-indigo-500 hover:bg-gray-50 transition border-l border-gray-100 bg-gray-50/50 cursor-grab">
-                                        <GripVertical size={16}/>
-                                    </div>
+                                    
+                                    {/* ★変更: 右端のグリップ(GripVertical)を削除して全体をドラッグ可能にする */}
                                 </div>
                               </div>
                             </div>
@@ -999,24 +1145,104 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
                                 onDragOver={onDragOver}
                                 onDrop={(e) => onDrop(e, i)}
                             >
-                                <div className="flex items-center gap-3">
-                                    <div className="h-full absolute left-[24px] top-0 bottom-0 flex flex-col items-center justify-center z-0"></div>
-                                    <div className="bg-white border border-gray-200 rounded-full px-4 py-2 flex items-center gap-3 text-xs shadow-sm hover:border-gray-300 transition w-full sm:w-auto">
-                                        <div className="text-gray-500 cursor-pointer hover:text-indigo-600 flex items-center gap-1 transition" onClick={() => {
-                                            const nextModeIdx = (TRANSPORT_MODES.findIndex(m => m.id === mode.id) + 1) % TRANSPORT_MODES.length;
-                                            handleTransportChange(i, TRANSPORT_MODES[nextModeIdx].id);
-                                        }}>
-                                            {mode.icon}
+                                <div className="flex flex-col gap-1 w-full sm:w-auto">
+                                    <div className="flex items-center gap-3">
+                                        <div className="h-full absolute left-[24px] top-0 bottom-0 flex flex-col items-center justify-center z-0"></div>
+                                        
+                                        {/* ★修正: relative を追加してメニューの基準位置にする */}
+                                        <div className="bg-white border border-gray-200 rounded-full px-4 py-2 flex items-center gap-3 text-xs shadow-sm hover:border-gray-300 transition w-full sm:w-auto relative">
+                                            
+                                            {/* ★修正: アイコンクリックでメニュー開閉 */}
+                                            <div 
+                                                className="text-gray-500 cursor-pointer hover:text-indigo-600 flex items-center gap-1 transition relative" 
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    // 同じものを押したら閉じる、違うなら開く
+                                                    setActiveTransportMenuIndex(activeTransportMenuIndex === i ? null : i);
+                                                }}
+                                            >
+                                                {mode.icon}
+                                                <ChevronDown size={10} className="opacity-50"/>
+                                            </div>
+
+                                            {/* ★追加: 移動手段選択メニュー */}
+                                            {activeTransportMenuIndex === i && (
+                                                <>
+                                                    {/* 背景クリックで閉じるための透明カバー */}
+                                                    <div className="fixed inset-0 z-40" onClick={(e) => { e.stopPropagation(); setActiveTransportMenuIndex(null); }} />
+                                                    
+                                                    {/* メニュー本体 */}
+                                                    <div className="absolute top-full left-0 mt-2 bg-white shadow-xl rounded-xl border border-gray-100 p-2 z-50 flex flex-wrap gap-1 w-[180px] animate-in fade-in zoom-in-95">
+                                                        {TRANSPORT_MODES.map((m) => (
+                                                            <button
+                                                                key={m.id}
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    handleTransportChange(i, m.id);
+                                                                    setActiveTransportMenuIndex(null);
+                                                                }}
+                                                                className={`p-2 rounded-lg flex flex-col items-center justify-center gap-1 w-[50px] h-[50px] transition ${
+                                                                    m.id === mode.id 
+                                                                    ? 'bg-indigo-50 text-indigo-600 border border-indigo-100' 
+                                                                    : 'hover:bg-gray-50 text-gray-500 border border-transparent'
+                                                                }`}
+                                                            >
+                                                                {m.icon}
+                                                                <span className="text-[9px] font-bold leading-none">{m.label}</span>
+                                                            </button>
+                                                        ))}
+                                                    </div>
+                                                </>
+                                            )}
+
+                                            <div className="h-4 w-px bg-gray-200"></div>
+                                            <div className="flex items-center gap-1">
+                                                {/* ここから下は変更なし（時間入力など） */}
+                                                <input type="number" value={item.duration_min} onChange={(e) => handleTimeChange(i, e.target.value)} className="w-8 bg-transparent text-center font-bold text-gray-600 focus:text-indigo-600 outline-none"/>
+                                                <span className="text-[10px] text-gray-400">分</span>
+                                            </div>
+                                            {mapLink && (
+                                                <a href={mapLink} target="_blank" className="text-gray-400 hover:text-green-600 ml-1 transition"><MapPinned size={14}/></a>
+                                            )}
+                                            
+                                            <button 
+                                                onClick={() => setEditItem({index: i, type: 'travel', data: item})}
+                                                className="ml-2 text-gray-400 hover:text-indigo-600 p-1 rounded-full hover:bg-gray-100 transition"
+                                            >
+                                                <Edit3 size={12}/>
+                                            </button>
                                         </div>
-                                        <div className="h-4 w-px bg-gray-200"></div>
-                                        <div className="flex items-center gap-1">
-                                            <input type="number" value={item.duration_min} onChange={(e) => handleTimeChange(i, e.target.value)} className="w-8 bg-transparent text-center font-bold text-gray-600 focus:text-indigo-600 outline-none"/>
-                                            <span className="text-[10px] text-gray-400">分</span>
-                                        </div>
-                                        {mapLink && (
-                                            <a href={mapLink} target="_blank" className="text-gray-400 hover:text-green-600 ml-1 transition"><MapPinned size={14}/></a>
-                                        )}
                                     </div>
+
+                                    {/* 移動詳細情報の表示（変更なし） */}
+                                    {(item.transport_departure || item.transport_arrival || item.note || item.url || item.cost) && (
+                                        // ... (中身は元のまま)
+                                        <div className="flex flex-wrap gap-2 mt-1 ml-2">
+                                            {(item.transport_departure || item.transport_arrival) && (
+                                                <div className="bg-indigo-50 border border-indigo-100 text-indigo-700 px-2 py-0.5 rounded text-[10px] font-bold flex items-center gap-1">
+                                                    <Clock size={10}/>
+                                                    {item.transport_departure && <span>{item.transport_departure}発</span>}
+                                                    {item.transport_departure && item.transport_arrival && <span className="mx-0.5 text-indigo-300">→</span>}
+                                                    {item.transport_arrival && <span>{item.transport_arrival}着</span>}
+                                                </div>
+                                            )}
+                                            {item.cost && (
+                                                <div className="bg-yellow-50 border border-yellow-100 text-yellow-700 px-2 py-0.5 rounded text-[10px] font-bold flex items-center gap-1">
+                                                    <Banknote size={10}/> ¥{Number(item.cost).toLocaleString()}
+                                                </div>
+                                            )}
+                                            {item.note && (
+                                                <div className="bg-gray-100 border border-gray-200 text-gray-600 px-2 py-0.5 rounded text-[10px] flex items-center gap-1 max-w-[200px] truncate">
+                                                    <StickyNote size={10}/> {item.note}
+                                                </div>
+                                            )}
+                                            {item.url && (
+                                                <a href={item.url} target="_blank" className="bg-blue-50 border border-blue-100 text-blue-600 px-2 py-0.5 rounded text-[10px] flex items-center gap-1 hover:bg-blue-100">
+                                                    <LinkIcon size={10}/> リンク
+                                                </a>
+                                            )}
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                           );

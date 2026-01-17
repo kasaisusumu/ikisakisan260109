@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { 
   Copy, Check, FileText, Shield, Mail, HelpCircle, 
-  ExternalLink, User, Clock, Trash2, Plus 
+  ExternalLink, User, Clock, Trash2, Plus, MessageCircle 
 } from 'lucide-react';
 
 interface Props {
@@ -68,9 +68,16 @@ export default function MenuView({ spots }: Props) {
 
   // ルームを開く（別タブ）
   const handleOpenRoom = (roomId: string) => {
-    // 現在のルームと同じなら何もしない、あるいはリロード等の挙動はお好みで
+    // 現在のルームと同じなら何もしない
     if (roomId === currentRoomId) return; 
     window.open(`/?room=${roomId}`, '_blank');
+  };
+
+  // LINEでシェアする機能
+  const handleShareLine = () => {
+    if (typeof window === 'undefined') return;
+    const url = encodeURIComponent(window.location.href);
+    window.open(`https://social-plugins.line.me/lineit/share?url=${url}`, '_blank');
   };
 
   // 安全なコピー機能 (HTTP環境対応)
@@ -137,11 +144,22 @@ export default function MenuView({ spots }: Props) {
             value={typeof window !== 'undefined' ? window.location.href : ''} 
             className="flex-1 bg-gray-100 text-xs p-3 rounded-lg text-gray-500 outline-none"
           />
+          {/* コピーボタン */}
           <button 
             onClick={handleCopyLink}
             className={`px-4 rounded-lg font-bold text-white transition flex items-center gap-2 ${copied ? 'bg-green-500' : 'bg-blue-600 hover:bg-blue-700'}`}
+            title="リンクをコピー"
           >
             {copied ? <Check size={16}/> : <Copy size={16}/>}
+          </button>
+          
+          {/* LINE共有ボタン */}
+          <button 
+            onClick={handleShareLine}
+            className="px-4 rounded-lg font-bold text-white transition flex items-center gap-2 bg-[#06C755] hover:bg-[#05b34c]"
+            title="LINEで送る"
+          >
+            <MessageCircle size={16}/>
           </button>
         </div>
         <p className="text-[10px] text-gray-400 mt-2">このURLをLINEなどで送って、友達を招待しましょう。</p>

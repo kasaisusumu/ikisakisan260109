@@ -9,13 +9,14 @@ import { supabase } from '@/lib/supabase';
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 const LOADING_TIPS = [
-    "💡 気になるスポットは右スワイプで保存しましょう",
+    "💡 気になるスポットは→スワイプで保存しましょう",
     "💡 興味のないスポットは←スワイプで却下しましょう",
     "⚠️ AIは指定エリア外の場所を提案することがあります",
     "🕒 施設の営業時間は季節により変更される場合があります",
     "📅 正確な情報は必ず公式サイトをご確認ください",
     "🚗 交通状況により移動時間が変わることがあります",
-    "💡 気になるスポットは右スワイプで保存しましょう"
+    "💡 気になるスポットは右スワイプで保存しましょう",
+    "💡 メーターはイメージです。実際の処理を反映していません"
 ];
 
 interface Props {
@@ -31,27 +32,25 @@ interface Props {
   onPreview?: (spot: any) => void;
   isLoadingMore?: boolean;
   onSearchOnMap?: (keyword: string) => void;
+  allParticipants?: string[]; // ★親から受け取る参加者リスト（色の同期用）
 }
 
-const UD_COLORS = ['#E69F00', '#56B4E9', '#009E73', '#F0E442', '#0072B2', '#D55E00', '#CC79A7', '#000000'];
-const getUDColor = (name: string) => {
-  if (!name) return '#9CA3AF';
-  let hash = 0;
-  for (let i = 0; i < name.length; i++) { hash = name.charCodeAt(i) + ((hash << 5) - hash); }
-  const index = Math.abs(hash) % UD_COLORS.length;
-  return UD_COLORS[index];
-};
+// 20色のカラーパレット
+const UD_COLORS = [
+    '#F59E0B', '#3B82F6', '#10B981', '#EF4444', '#8B5CF6', '#EC4899', '#6366F1', '#14B8A6',
+    '#F97316', '#06B6D4', '#84CC16', '#EAB308', '#D946EF', '#64748B', '#A855F7', '#FB7185',
+    '#22C55E', '#0EA5E9', '#F43F5E', '#78716C'
+];
 
 export default function SwipeView({ 
   spots, spotVotes = [], currentUser = "", roomId = "",
   candidates = [], onLike, onNope, onReceiveCandidates,
-  onPreview, isLoadingMore, onSearchOnMap 
+  onPreview, isLoadingMore, onSearchOnMap,
+  allParticipants = [] // ★デフォルト値設定
 }: Props) {
   
   const [lastDirection, setLastDirection] = useState<string>();
   const [votedSpotIds, setVotedSpotIds] = useState<Set<string>>(new Set());
-  const [isHistoryMode, setIsHistoryMode] = useState(false);
-  const [voteHistory, setVoteHistory] = useState<any[]>([]);
   const [images, setImages] = useState<{[key: string]: string | null}>({}); 
   const [isClient, setIsClient] = useState(false);
   const [areImagesReady, setAreImagesReady] = useState(false);
@@ -73,12 +72,17 @@ export default function SwipeView({
 
   const isSuggestionMode = candidates && candidates.length > 0;
 
+  // ★色決定関数（親から受け取ったallParticipantsの順序に基づく）
+  const getUserColor = (name: string) => {
+      const index = allParticipants.indexOf(name);
+      if (index === -1) return '#9CA3AF';
+      return UD_COLORS[index % UD_COLORS.length];
+  };
+
   // --- ★同期ロジック: 親コンポーネント(page.tsx)の投票データと同期 ---
   useEffect(() => {
     if (spotVotes && currentUser) {
-        // 変更前: const myVotedIds = new Set(spotVotes.filter(v => v.user_name === currentUser && v.vote_type === 'like').map(v => String(v.spot_id)));
-        
-        // ★変更後: vote_typeによる絞り込みを削除 (NOPEも済みIDに含める)
+        // ★修正: vote_typeによる絞り込みを削除 (NOPEも済みIDに含めることで復活を防ぐ)
         const myVotedIds = new Set(
             spotVotes
                 .filter(v => v.user_name === currentUser)
@@ -216,7 +220,6 @@ export default function SwipeView({
   };
 
   const getRakutenUrl = (query: string) => `https://search.travel.rakuten.co.jp/ds/hotel/search?f_teikei=&f_query=${encodeURIComponent(query)}`;
-  const getGoogleMapUrl = (query: string) => `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
   const getInstagramTag = (query: string) => encodeURIComponent(query.replace(/[\s\(\)（）「」、。]/g, ''));
   const openInstagramApp = (query: string) => window.location.href = `instagram://explore/tags/${getInstagramTag(query)}`;
   const openWebSearch = (query: string) => window.open(`https://www.google.com/search?q=${encodeURIComponent(query)}`, '_blank');
@@ -225,7 +228,7 @@ export default function SwipeView({
     if (isSuggestionMode && candidates) {
         return candidates.map((spot, index) => ({ ...spot, originalIndex: index }));
     }
-    // 通常モード: 自分が追加したスポット以外、かつまだ投票していないスポットを表示
+    // 通常モード: 自分が追加したスポット以外、かつまだ投票していない(NOPE含む)スポットを表示
     return spots
       .map((spot, index) => ({ ...spot, originalIndex: index }))
       .filter(s => s.added_by !== currentUser) 
@@ -277,10 +280,6 @@ export default function SwipeView({
     
     // Likeの場合はカウントアップRPC
     if (direction === 'right') await supabase.rpc('increment_votes', { spot_id: spot.id });
-  };
-
-  const handleRewind = async () => {
-    alert("一度投票したスポットは戻せません（リスト画面から変更可能です）");
   };
 
   const handleConfirmAddSpots = async () => {
@@ -506,19 +505,19 @@ export default function SwipeView({
                             <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/20 pointer-events-none"></div>
                         </div>
                         
-                        {/* ★ 変更箇所: ボタンエリア */}
+                        {/* ボタンエリア */}
                         <div className="absolute top-16 right-4 z-20 flex flex-col gap-3 items-center">
-                            {/* Google Map */}
+                            {/* ★変更: 詳細(Pageで表示)ボタン */}
                             <button 
                                 onTouchEnd={(e) => { e.stopPropagation(); if (onPreview) onPreview(spot); }} 
                                 onClick={(e) => { e.stopPropagation(); if (onPreview) onPreview(spot); }} 
                                 className="w-10 h-10 bg-white/20 backdrop-blur-md rounded-full flex items-center justify-center text-white border border-white/30 shadow-lg hover:bg-white/40 transition active:scale-95"
                             >
-                            <Info size={20}/>
+                                <Info size={20}/>
                             </button>
                             {/* Instagram */}
                             <button onTouchEnd={(e) => { e.stopPropagation(); openInstagramApp(spot.name); }} onClick={(e) => { e.stopPropagation(); openInstagramApp(spot.name); }} className="w-10 h-10 bg-gradient-to-tr from-yellow-500 via-pink-500 to-purple-600 rounded-full flex items-center justify-center text-white border border-white/30 shadow-lg hover:scale-110 transition active:scale-95"><Instagram size={20}/></button>
-                            {/* Google Search (Updated) */}
+                            {/* Google Search */}
                             <button 
                                 onTouchEnd={(e) => { e.stopPropagation(); openWebSearch(spot.name); }} 
                                 onClick={(e) => { e.stopPropagation(); openWebSearch(spot.name); }} 
@@ -551,7 +550,8 @@ export default function SwipeView({
                                 </div>
                             </div>
                             
-                            {!isSuggestionMode && uniqueVoters.length > 0 && (<div className="flex -space-x-2 overflow-hidden py-1">{uniqueVoters.slice(0, 5).map((voter: any, i: number) => (<div key={i} className="w-8 h-8 rounded-full border-2 border-white/50 flex items-center justify-center text-[10px] font-bold text-white shadow-sm" style={{ backgroundColor: getUDColor(voter) }}>{voter.slice(0,1)}</div>))}</div>)}
+                            {/* ユーザーアイコン (色の同期が適用されます) */}
+                            {!isSuggestionMode && uniqueVoters.length > 0 && (<div className="flex -space-x-2 overflow-hidden py-1">{uniqueVoters.slice(0, 5).map((voter: any, i: number) => (<div key={i} className="w-8 h-8 rounded-full border-2 border-white/50 flex items-center justify-center text-[10px] font-bold text-white shadow-sm" style={{ backgroundColor: getUserColor(voter) }}>{voter.slice(0,1)}</div>))}</div>)}
                             
                             <div className="flex justify-between items-end pt-2 border-t border-white/20 mt-1 pointer-events-auto">
                                 <div className="flex-1"/>

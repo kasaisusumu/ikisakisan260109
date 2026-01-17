@@ -13,6 +13,7 @@ export default function Ticker() {
     "「確定」リストの旅程は、「旅程」ページから編集出来ます！",
     "画面右上の「万年筆ボタン」で、宿の囲って検索が出来ます！",
     "囲って検索は「金額×レビュー」の散布図で宿を比較出来ます！",
+    "宿の追加は、楽天トラベルのURLのペーストでも可能です！",
   ];
 
   const [currentIndex, setCurrentIndex] = useState(0);
