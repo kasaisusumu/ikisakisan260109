@@ -240,12 +240,17 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
           const date = new Date();
           date.setHours(hours, minutes, 0, 0);
 
+          // ★追加: もし時間が現在より過去なら、明日の日付として検索リンクを作る
+          // (過去の時間だと「すぐに出発」になってしまい、意図した検索結果が出ないため)
           if (date.getTime() < Date.now()) {
               date.setDate(date.getDate() + 1);
           }
 
+          // 秒単位のUnix Timestampに変換
           const timestamp = Math.floor(date.getTime() / 1000);
-          return `http://googleusercontent.com/maps.google.com/?saddr=${encodeURIComponent(prevSpot)}&daddr=${encodeURIComponent(nextSpot)}&travelmode=${mode}&departure_time=${timestamp}`;
+          
+          // ★修正: 正しいGoogle MapsのURL形式に変更
+          return `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(prevSpot)}&destination=${encodeURIComponent(nextSpot)}&travelmode=${mode}&departure_time=${timestamp}`;
       }
       return null;
   };
