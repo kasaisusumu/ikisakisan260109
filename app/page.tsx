@@ -693,57 +693,8 @@ function HomeContent() {
     setIsAuthLoading(false);
   }, [roomId]);
 
-  useEffect(() => {
-   // ▼▼▼ この useEffect ブロック全体を、以下のように書き換えてください ▼▼▼
-  useEffect(() => {
-    if (roomId && isJoined) {
-      loadRoomData(roomId);
-
-      const channel = supabase.channel('room_updates')
-        // 1. スポットの変更監視
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'spots', filter: `room_id=eq.${roomId}` }, (payload) => {
-            if (payload.eventType === 'INSERT') {
-                const newSpot = payload.new;
-                setPlanSpots(prev => {
-                    if (prev.some(s => s.id === newSpot.id)) return prev; 
-                    return [...prev, newSpot].sort((a, b) => (a.order || 0) - (b.order || 0));
-                });
-            } else if (payload.eventType === 'UPDATE') {
-                const updatedSpot = payload.new;
-                setPlanSpots(prev => prev.map(s => s.id === updatedSpot.id ? updatedSpot : s));
-            } else if (payload.eventType === 'DELETE') {
-                const deletedSpotId = payload.old.id;
-                setPlanSpots(prev => prev.filter(s => s.id !== deletedSpotId));
-            }
-        })
-        // 2. 投票の変更監視
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'votes', filter: `room_id=eq.${roomId}` }, (payload) => {
-            if (payload.eventType === 'INSERT') {
-                setSpotVotes(prev => [...prev, payload.new]);
-            } else if (payload.eventType === 'UPDATE') {
-                setSpotVotes(prev => prev.map(v => v.id === payload.new.id ? payload.new : v));
-            } else if (payload.eventType === 'DELETE') {
-                setSpotVotes(prev => prev.filter(v => v.id !== payload.old.id));
-            }
-        })
-        // ★★★ 追加: 旅行設定（日付・人数）のリアルタイム同期 ★★★
-        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'rooms', filter: `id=eq.${roomId}` }, (payload) => {
-            const newData = payload.new;
-            // 変更があった場合、即座にStateに反映
-            if (newData.start_date) setStartDate(newData.start_date);
-            if (newData.end_date) setEndDate(newData.end_date);
-            if (newData.adult_num) setAdultNum(newData.adult_num);
-            
-            // 通知を出す
-            setNotification({ text: "旅行設定が更新されました", color: "bg-blue-600" });
-            setTimeout(() => setNotification(null), 3000);
-        })
-        .subscribe();
-
-      return () => { supabase.removeChannel(channel); };
-    }
-  }, [roomId, isJoined]);
-  }, [roomId, isJoined]);
+ 
+   
 
   useEffect(() => {
     const delayDebounceFn = setTimeout(() => { if (query.trim()) { handleSearch(); } else { setSearchResults([]); } }, 300);
@@ -792,15 +743,18 @@ function HomeContent() {
     } catch (e) { console.error("Failed to save room history", e); }
   };
 
+  // ---------------------------------------------------------
+  // ▼▼▼ 修正対象：loadRoomData と useEffect を正しい形に直す ▼▼▼
+  // ---------------------------------------------------------
+
   const loadRoomData = async (id: string) => {
-    // ▼▼▼ 変更点1: select('name') を select('*') に変更して、日付や人数も取得できるようにする
+    // 1. ルーム情報の取得
     const { data: roomData } = await supabase.from('rooms').select('*').eq('id', id).single();
     
-    // ▼▼▼ 変更点2: 取得したデータをStateに反映させる処理を追加
+    // 2. 取得したデータをStateに反映
     if (roomData) { 
         saveToRoomHistory(id, roomData.name); 
 
-        // DBに保存されている値があれば、それを現在の設定としてセットする
         if (roomData.start_date) setStartDate(roomData.start_date);
         if (roomData.end_date) setEndDate(roomData.end_date);
         if (roomData.adult_num) setAdultNum(roomData.adult_num);
@@ -808,16 +762,73 @@ function HomeContent() {
         saveToRoomHistory(id, 'Unknown Trip'); 
     }
 
-    // --- 以下は既存のまま ---
+    // 3. スポット一覧の取得
     const { data: spots } = await supabase.from('spots').select('*').eq('room_id', id).order('order', { ascending: true });
+    
+    // 4. 投票データの取得
     const { data: allVotes } = await supabase.from('votes').select('*').eq('room_id', id);
 
     if (spots) {
       setPlanSpots(spots);
+      // マップの範囲調整
       if (currentTab === 'explore' && !isSearching && !selectedResult) { fitBoundsToSpots(spots); }
     }
     if (allVotes) setSpotVotes(allVotes);
   };
+  // ★重要：ここで loadRoomData 関数を閉じる
+
+  // ▼▼▼ ここから useEffect (関数の外に配置) ▼▼▼
+  useEffect(() => {
+    if (roomId && isJoined) {
+      // 初回データ読み込み実行
+      loadRoomData(roomId);
+
+      const channel = supabase.channel('room_updates')
+        // 1. スポットの変更監視
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'spots', filter: `room_id=eq.${roomId}` }, (payload) => {
+            if (payload.eventType === 'INSERT') {
+                const newSpot = payload.new;
+                setPlanSpots(prev => {
+                    if (prev.some(s => s.id === newSpot.id)) return prev; 
+                    return [...prev, newSpot].sort((a, b) => (a.order || 0) - (b.order || 0));
+                });
+            } else if (payload.eventType === 'UPDATE') {
+                const updatedSpot = payload.new;
+                setPlanSpots(prev => prev.map(s => s.id === updatedSpot.id ? updatedSpot : s));
+            } else if (payload.eventType === 'DELETE') {
+                const deletedSpotId = payload.old.id;
+                setPlanSpots(prev => prev.filter(s => s.id !== deletedSpotId));
+            }
+        })
+        // 2. 投票の変更監視
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'votes', filter: `room_id=eq.${roomId}` }, (payload) => {
+            if (payload.eventType === 'INSERT') {
+                setSpotVotes(prev => [...prev, payload.new]);
+            } else if (payload.eventType === 'UPDATE') {
+                setSpotVotes(prev => prev.map(v => v.id === payload.new.id ? payload.new : v));
+            } else if (payload.eventType === 'DELETE') {
+                setSpotVotes(prev => prev.filter(v => v.id !== payload.old.id));
+            }
+        })
+        // 3. 旅行設定（日付・人数）のリアルタイム同期
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'rooms', filter: `id=eq.${roomId}` }, (payload) => {
+            const newData = payload.new;
+            if (newData.start_date) setStartDate(newData.start_date);
+            if (newData.end_date) setEndDate(newData.end_date);
+            if (newData.adult_num) setAdultNum(newData.adult_num);
+            
+            setNotification({ text: "旅行設定が更新されました", color: "bg-blue-600" });
+            setTimeout(() => setNotification(null), 3000);
+        })
+        .subscribe();
+
+      return () => { supabase.removeChannel(channel); };
+    }
+  }, [roomId, isJoined]);
+
+  // ---------------------------------------------------------
+  // ▲▲▲ 修正完了 ▲▲▲
+  // ---------------------------------------------------------
 
   const fitBoundsToSpots = (spots: any[]) => {
       if (!map.current || spots.length === 0) return;
