@@ -3,7 +3,8 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Map as MapIcon, Calendar, Users, ArrowRight, Check, Copy, 
-  Plane, Sparkles, Share2, ShieldCheck, Loader2, Send 
+  Plane, Sparkles, Share2, ShieldCheck, Loader2, Send, 
+  XCircle, AlertTriangle 
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useRouter } from 'next/navigation';
@@ -32,34 +33,55 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
   // ステート管理
   const [step, setStep] = useState<Step>(inviteRoomId ? 'terms' : 'intro');
   const [isLoading, setIsLoading] = useState(false);
-  const [roomName, setRoomName] = useState(''); // 旅行名
-  const [userName, setUserName] = useState(''); // 自分の名前
+  const [roomName, setRoomName] = useState(''); 
+  const [userName, setUserName] = useState(''); 
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   
-  // 空文字も許容するため <number | string>
   const [adultNum, setAdultNum] = useState<number | string>(2);
   
   const [generatedRoomId, setGeneratedRoomId] = useState<string | null>(inviteRoomId || null);
   const [shareUrl, setShareUrl] = useState('');
   const [isCopied, setIsCopied] = useState(false);
   const [inviteRoomName, setInviteRoomName] = useState<string>('');
+  
+  // ★追加: 既存メンバー名のリスト
+  const [existingMembers, setExistingMembers] = useState<string[]>([]);
+
+  // シークレットモード警告用（初期値trueで全員に表示）
+  const [showIncognitoWarning, setShowIncognitoWarning] = useState(true);
 
   // 招待された場合のデータ取得
   useEffect(() => {
     if (inviteRoomId) {
-      const fetchRoom = async () => {
+      const fetchRoomAndMembers = async () => {
         try {
-            const { data, error } = await supabase.from('rooms').select('name').eq('id', inviteRoomId).single();
-            if (data) {
-              setInviteRoomName(data.name);
+            // 1. ルーム情報の取得
+            const { data: roomData, error } = await supabase.from('rooms').select('name, created_by').eq('id', inviteRoomId).single();
+            
+            if (roomData) {
+              setInviteRoomName(roomData.name);
               setStep('terms'); 
+
+              // 2. 既存メンバーの収集 (作成者 + 投票者 + スポット追加者)
+              const members = new Set<string>();
+              if (roomData.created_by) members.add(roomData.created_by);
+
+              // 投票テーブルから名前を取得
+              const { data: votes } = await supabase.from('votes').select('user_name').eq('room_id', inviteRoomId);
+              votes?.forEach(v => v.user_name && members.add(v.user_name));
+
+              // スポットテーブルから名前を取得
+              const { data: spots } = await supabase.from('spots').select('added_by').eq('room_id', inviteRoomId);
+              spots?.forEach(s => s.added_by && members.add(s.added_by));
+
+              setExistingMembers(Array.from(members));
             }
         } catch(e) {
-            console.error("Invalid Room ID", e);
+            console.error("Fetch error", e);
         }
       };
-      fetchRoom();
+      fetchRoomAndMembers();
     }
   }, [inviteRoomId]);
 
@@ -69,7 +91,6 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
     
     setIsLoading(true);
     
-    // 互換性のある関数を使ってUUIDを生成
     const newRoomId = generateUUID();
     
     // 1. Supabaseにルーム作成
@@ -90,16 +111,13 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
     localStorage.setItem(`rh_settings_${newRoomId}`, JSON.stringify({
       start: startDate,
       end: endDate,
-      // 保存時は必ず数値に戻す
       adultNum: Number(adultNum) || 1
     }));
     
-    // ユーザー名を保存
     localStorage.setItem(`route_hacker_user_${newRoomId}`, userName);
 
     setGeneratedRoomId(newRoomId);
     
-    // シェア用URLの生成
     if (typeof window !== 'undefined') {
       const url = `${window.location.origin}?room=${newRoomId}`;
       setShareUrl(url);
@@ -109,15 +127,12 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
     setStep('share');
   };
 
-  // シェア用メッセージの生成
   const getShareMessage = () => {
     return `「${roomName}」のしおりを作りました！\nここから参加して一緒に計画しよう✈️\n${shareUrl}`;
   };
 
-  // リンクをコピー (説明文付き)
   const copyLink = async () => {
     const textToCopy = getShareMessage();
-    
     try {
       if (navigator.clipboard && window.isSecureContext) {
         await navigator.clipboard.writeText(textToCopy);
@@ -130,33 +145,19 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
         document.body.appendChild(textArea);
         textArea.focus();
         textArea.select();
-        
-        try {
-          document.execCommand('copy');
-        } catch (err) {
-          console.error('Fallback copy failed', err);
-          alert('コピーできませんでした。');
-          return;
-        }
+        try { document.execCommand('copy'); } catch (err) { alert('コピーできませんでした。'); return; }
         document.body.removeChild(textArea);
       }
-      
       setIsCopied(true);
       setTimeout(() => setIsCopied(false), 2000);
-    } catch (err) {
-      console.error('Copy failed', err);
-      alert('コピーできませんでした。');
-    }
+    } catch (err) { alert('コピーできませんでした。'); }
   };
 
-  // LINEで送る
   const shareToLine = () => {
     const text = getShareMessage();
-    // LINEのURLスキームを使ってメッセージ画面を開く
     window.open(`https://line.me/R/msg/text/?${encodeURIComponent(text)}`, '_blank');
   };
 
-  // 参加処理（招待・作成共通）
   const handleJoin = () => {
     if (!userName && inviteRoomId) return alert('名前を入力してください');
     
@@ -168,10 +169,34 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
     }
   };
 
+  // 警告モーダル（無条件表示）
+  const warningModal = showIncognitoWarning ? (
+    <div className="fixed inset-0 z-[9999] bg-black/80 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-300">
+        <div className="bg-white w-full max-w-sm rounded-[2rem] p-8 shadow-2xl relative text-center border-4 border-red-100 animate-in zoom-in-95 duration-300">
+            <div className="w-20 h-20 bg-red-100 text-red-500 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner">
+                <XCircle size={40} />
+            </div>
+            <h3 className="text-xl font-black text-gray-900 mb-4">シークレットモードではうまく動作しません！<br/>注意！</h3>
+            <p className="text-sm text-gray-600 mb-6 leading-relaxed font-bold">
+                このアプリはブラウザにデータを保存します。<br/><br/>
+                <span className="text-red-500 bg-red-50 px-2 py-1 rounded">ブラウザを閉じるとデータが消えます</span><br/><br/>
+                必ずURLをコピーして控えておくか、<br/>通常モードでご利用ください。
+            </p>
+            <button 
+                onClick={() => setShowIncognitoWarning(false)} 
+                className="w-full py-4 bg-gray-200 text-gray-600 rounded-2xl font-bold text-sm hover:bg-gray-300 transition"
+            >
+                理解してはじめる
+            </button>
+        </div>
+    </div>
+  ) : null;
+
   // --- Step 1: イントロダクション ---
   if (step === 'intro') {
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 text-center relative overflow-hidden">
+        {warningModal}
         <div className="absolute top-[-10%] right-[-10%] w-96 h-96 bg-blue-200 rounded-full blur-3xl opacity-30"></div>
         <div className="absolute bottom-[-10%] left-[-10%] w-96 h-96 bg-purple-200 rounded-full blur-3xl opacity-30"></div>
 
@@ -212,6 +237,7 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
   if (step === 'create') {
     return (
       <div className="min-h-screen bg-white flex flex-col items-center p-6 relative">
+         {warningModal}
          <div className="w-full max-w-md mt-10 animate-in slide-in-from-right-8 fade-in duration-500">
             <button onClick={() => setStep('intro')} className="text-slate-400 font-bold text-sm mb-6 hover:text-slate-600 transition">← 戻る</button>
             
@@ -299,6 +325,7 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
   if (step === 'share') {
     return (
       <div className="min-h-screen bg-blue-600 flex flex-col items-center justify-center p-6 relative">
+         {warningModal}
          <div className="w-full max-w-md bg-white rounded-[2rem] p-8 shadow-2xl animate-in zoom-in-95 duration-300">
             <div className="flex flex-col items-center text-center mb-8">
                <div className="w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mb-4">
@@ -308,7 +335,6 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                <p className="text-slate-500 mt-2 font-medium">友達にリンクを送って<br/>一緒に編集しましょう。</p>
             </div>
 
-            {/* LINEで送るボタン (メイン) */}
             <button 
               onClick={shareToLine}
               className="w-full bg-[#06C755] text-white py-4 rounded-2xl font-bold text-lg shadow-lg hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2 mb-4"
@@ -346,6 +372,7 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
   // --- Step 4 (Invite/Terms): 規約と開始 ---
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 relative">
+       {warningModal}
        <div className="w-full max-w-md bg-white rounded-[2rem] p-8 shadow-xl animate-in slide-in-from-bottom-4 duration-500">
           <div className="text-center mb-8">
              <h2 className="text-xl font-black text-slate-800 mb-2">
@@ -363,8 +390,15 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                    placeholder="ニックネームを入力" 
                    value={userName}
                    onChange={(e) => setUserName(e.target.value)}
-                   className="w-full bg-slate-50 p-4 rounded-2xl font-bold text-lg text-slate-800 border-2 border-transparent focus:border-blue-500 focus:bg-white transition outline-none"
+                   className={`w-full bg-slate-50 p-4 rounded-2xl font-bold text-lg text-slate-800 border-2 transition outline-none
+                     ${existingMembers.includes(userName) ? 'border-red-500 focus:border-red-500 bg-red-50' : 'border-transparent focus:border-blue-500 focus:bg-white'}
+                   `}
                  />
+                 {existingMembers.includes(userName) && (
+                    <p className="text-xs font-bold text-red-500 flex items-center gap-1 animate-in slide-in-from-top-1 fade-in">
+                        <AlertTriangle size={12} /> この名前は既に使用されています
+                    </p>
+                 )}
              </div>
           )}
 
@@ -389,7 +423,6 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
   );
 }
 
-// サブコンポーネント: 特徴リストアイテム
 function FeatureItem({ icon, title, desc }: { icon: React.ReactNode, title: string, desc: string }) {
   return (
     <div className="flex items-center gap-4 bg-white p-4 rounded-2xl shadow-sm border border-slate-100">

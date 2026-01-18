@@ -140,19 +140,52 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
       if (onScreenshotClosed) onScreenshotClosed();
   };
 
+  // 親(Page.tsx)からのデータ更新をリアルタイムに反映させる処理
+  // 【修正】Page(親)からのデータ更新をリアルタイムかつ、タブ切り替え時にも確実に反映させる
   useEffect(() => {
+      // タイムラインが空の場合は同期しても意味がないのでスキップ
+      if (timeline.length === 0) return;
+
       setTimeline(prev => prev.map(item => {
           if (item.type !== 'spot') return item;
+          
+          // 最新のスポット情報を探す
           const freshSpot = spots.find(s => 
               (s.id && String(s.id) === String(item.spot.id)) || 
               s.name === item.spot.name
           );
+
           if (freshSpot) {
-              return { ...item, spot: freshSpot, image: freshSpot.image_url || item.image };
+              // 変更があるか簡易チェック（無駄な再レンダリング防止のため）
+              const needsUpdate = 
+                  item.spot.comment !== freshSpot.comment ||
+                  item.spot.link !== freshSpot.link ||
+                  item.spot.cost !== freshSpot.price ||
+                  item.image !== (freshSpot.image_url || item.image);
+
+              if (needsUpdate) {
+                  return { 
+                      ...item, 
+                      spot: {
+                          ...item.spot,    // 現在のプロパティを保持
+                          ...freshSpot,    // 新しいデータで上書き
+                          
+                          // DBのカラム名と画面用変数名を同期
+                          cost: freshSpot.price,      
+                          comment: freshSpot.comment, 
+                          link: freshSpot.link,       
+                          url: freshSpot.link, // PlanView内部互換用
+                          image_url: freshSpot.image_url
+                      },
+                      image: freshSpot.image_url || item.image 
+                  };
+              }
           }
           return item;
       }));
-  }, [spots]);
+      // ★重要: timeline.length を依存配列に追加。
+      // これにより「localStorageからロードされて件数が増えた瞬間」に同期が走り、最新データに書き換わります。
+  }, [spots, timeline.length]);
 
  // ★追加 1: 前の日の宿を特定する
   const prevDayHotel = useMemo(() => {
@@ -530,14 +563,50 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
     setDraggedItemIndex(null);
   };
 
-  const handleEditSave = () => {
+const handleEditSave = async () => {
       if (!editItem) return;
+      
+      // 1. PlanView(自分自身)の表示を即座に更新
       const newTimeline = [...timeline];
       newTimeline[editItem.index] = editItem.data;
       setTimeline(calculateSchedule(newTimeline));
+
+      // 2. 親コンポーネントとデータベースを更新
+      if (editItem.type === 'spot' && roomId) {
+          const spotId = editItem.data.spot.id;
+          
+          // 更新するデータの内容
+          const updates = {
+              comment: editItem.data.spot.comment,
+              link: editItem.data.url,
+              price: editItem.data.spot.cost ? parseInt(editItem.data.spot.cost) : null
+          };
+
+          // ★追加: 親コンポーネント(page.tsx)のデータを即座に書き換える (Optimistic Update)
+          // これにより、DB更新を待たずにリスト側の表示が同期されます
+          const newSpots = spots.map(s => {
+              if ((s.id && String(s.id) === String(spotId)) || s.name === editItem.data.spot.name) {
+                  return { ...s, ...updates };
+              }
+              return s;
+          });
+          onUpdateSpots(newSpots);
+
+          // 3. データベース(Supabase)を更新
+          if (spotId && !String(spotId).startsWith('spot-') && !String(spotId).startsWith('ai-')) {
+              try {
+                  await supabase
+                      .from('spots')
+                      .update(updates)
+                      .eq('id', spotId);
+              } catch (e) {
+                  console.error("Failed to update spot details", e);
+              }
+          }
+      }
+
       setEditItem(null);
   };
-
   // ★修正: 入力値を処理する関数
  // 修正後：単一の項目のみを更新し、全体再計算をしない
 const handleTimeChange = (index: number, value: string) => {
@@ -1097,26 +1166,53 @@ const handleArrivalChange = (index: number, newArrival: string) => {
 </div>
                                         </div>
 
-                                        <div className="flex justify-between items-end mt-1">
-                                            {!item.is_overnight && (
-                                                <div className="flex items-center gap-2">
+                                       {/* --- PlanView.tsx の type==='spot' 内の下部エリア --- */}
+                                        <div className="flex flex-col gap-1.5 mt-2">
+                                            {/* タグエリア (時間、金額、リンク) */}
+                                            <div className="flex flex-wrap gap-1.5 items-center">
+                                                {!item.is_overnight && (
                                                     <div className="flex items-center gap-1 bg-gray-50 px-2 py-1 rounded border border-gray-200" onClick={(e) => e.stopPropagation()}>
                                                         <Clock size={10} className="text-gray-500"/>
-                                                        {/* ★修正: 値のバインディングで0を表示できるようにする (?? を使用) */}
                                                         <input type="number" value={item.stay_min ?? item.spot.stay_time} onChange={(e) => handleTimeChange(i, e.target.value)} className="w-6 bg-transparent text-center text-xs font-bold outline-none text-gray-700 p-0"/>
                                                         <span className="text-[9px] text-gray-500">分</span>
                                                     </div>
-                                                    {/* 金額表示 */}
-                                                    {item.spot.cost && (
-                                                        <div className="flex items-center gap-1 bg-yellow-50 px-2 py-1 rounded border border-yellow-100 text-[10px] font-bold text-yellow-700">
-                                                            <Banknote size={10}/>
-                                                            ¥{Number(item.spot.cost).toLocaleString()}
-                                                        </div>
-                                                    )}
+                                                )}
+
+                                                {/* 金額タグ */}
+                                                {item.spot.cost && (
+                                                    <div className="flex items-center gap-1 bg-yellow-50 px-2 py-1 rounded border border-yellow-100 text-[10px] font-bold text-yellow-700">
+                                                        <Banknote size={10}/>
+                                                        ¥{Number(item.spot.cost).toLocaleString()}
+                                                    </div>
+                                                )}
+
+                                                {/* リンクタグ (ユーザー追加リンク) */}
+                                                {item.spot.link && (
+                                                    <a 
+                                                        href={item.spot.link} 
+                                                        target="_blank" 
+                                                        rel="noopener noreferrer"
+                                                        onClick={(e) => e.stopPropagation()}
+                                                        className="flex items-center gap-1 bg-blue-50 px-2 py-1 rounded border border-blue-100 text-[10px] font-bold text-blue-600 hover:bg-blue-100 transition"
+                                                    >
+                                                        <LinkIcon size={10}/> リンク
+                                                    </a>
+                                                )}
+
+                                                {/* 楽天アフィリエイトリンク (宿の場合) */}
+                                                {item.spot.is_hotel && (
+                                                    <a href={getAffiliateUrl(item.spot)} target="_blank" onClick={(e)=>e.stopPropagation()} className="bg-orange-50 text-orange-600 px-2 py-1 rounded text-[10px] font-bold border border-orange-200 hover:bg-orange-100 transition shadow-sm flex items-center gap-1">
+                                                        <ExternalLink size={10}/> 空室確認
+                                                    </a>
+                                                )}
+                                            </div>
+
+                                            {/* メモ表示エリア (あれば表示) */}
+                                            {item.spot.comment && (
+                                                <div className="text-[10px] text-gray-600 bg-gray-50 p-2 rounded border border-gray-100 w-full whitespace-pre-wrap flex items-start gap-1">
+                                                    <StickyNote size={10} className="shrink-0 mt-0.5 text-gray-400"/>
+                                                    {item.spot.comment}
                                                 </div>
-                                            )}
-                                            {item.spot.is_hotel && (
-                                                <a href={getAffiliateUrl(item.spot)} target="_blank" onClick={(e)=>e.stopPropagation()} className="bg-orange-50 text-orange-600 px-2 py-1 rounded text-[10px] font-bold border border-orange-200 hover:bg-orange-100 transition shadow-sm">空室確認</a>
                                             )}
                                         </div>
                                     </div>

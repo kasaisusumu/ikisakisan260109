@@ -6,7 +6,7 @@ import 'mapbox-gl/dist/mapbox-gl.css';
 import { 
   Search, ExternalLink, MapPin, 
   X, TrendingUp, DollarSign,
-  Star, Loader2, PenTool, Trash2, Plus, Calendar, Users, SlidersHorizontal, Link as LinkIcon, Download, ChevronUp, ChevronDown, Check, AlertTriangle,BedDouble
+  Star, Loader2, PenTool, Trash2, Plus, Calendar, Users, SlidersHorizontal, Link as LinkIcon, Download, ChevronUp, ChevronDown, Check, AlertTriangle, BedDouble
 } from 'lucide-react';
 
 // ==========================================
@@ -59,10 +59,11 @@ interface Props {
   roomId: string; 
   onAutoSearch: (keyword: string) => void;
   onPreviewSpot?: (spot: any) => void;
-  initialSearchArea?: AreaSearchParams | null; 
+  initialSearchArea?: AreaSearchParams | null;
+  travelDays: number; // ★追加: 旅行日数を受け取る
 }
 
-export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot, roomId, initialSearchArea }: Props) {
+export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot, roomId, initialSearchArea, travelDays }: Props) {
   const [hotels, setHotels] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false); 
@@ -70,6 +71,9 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
   const [isDrawing, setIsDrawing] = useState(false);
   const [importUrl, setImportUrl] = useState("");
   const [isImporting, setIsImporting] = useState(false);
+  
+  // ★追加: 追加前の確認用State (どの日程に追加するか選ぶため)
+  const [pendingHotel, setPendingHotel] = useState<any>(null);
   
   // インポート完了ポップアップ用のstate
   const [importedHotel, setImportedHotel] = useState<any>(null);
@@ -136,14 +140,30 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
       if (isExpanded) setIsExpanded(false);
   };
 
+  // ★修正: 即追加せず、Stateに保存してモーダルを出す
   const handleAddCandidate = (hotel: any) => {
-      if (onAddSpot) {
-          onAddSpot({ ...hotel, is_hotel: true, votes: 0, stay_time: 0, status: 'hotel_candidate' });
-      }
+      setPendingHotel(hotel);
   };
 
-  // 修正前
-const getAffiliateUrl = (hotel: any) => {
+  // ★追加: 日程を決めて追加を実行する関数
+  const confirmAddHotel = (day: number) => {
+      if (onAddSpot && pendingHotel) {
+          onAddSpot({ 
+              ...pendingHotel, 
+              is_hotel: true, 
+              votes: 0, 
+              stay_time: 0, 
+              status: 'hotel_candidate',
+              day: day // 選択したDayをセット
+          });
+      }
+      setPendingHotel(null);
+      // インポート完了表示が必要な場合はここで調整可能ですが、
+      // 手動追加のUXとしてはモーダルが閉じればOKです。
+      // 必要であれば setImportedHotel(pendingHotel) などを呼びます。
+  };
+
+  const getAffiliateUrl = (hotel: any) => {
     let targetUrl = "";
 
     if (hotel.url && hotel.url.includes('rakuten.co.jp')) {
@@ -159,10 +179,9 @@ const getAffiliateUrl = (hotel: any) => {
         return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodedUrl}&m=${encodedUrl}`;
     }
     return targetUrl;
-};
+  };
 
-  // ★追加: 楽天トラベルの検索URL（日程・人数反映）を作成
- const rakutenHomeUrl = `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent("https://travel.rakuten.co.jp/")}&m=${encodeURIComponent("https://travel.rakuten.co.jp/")}`; // conditionsへの依存は残しておきます（副作用はないため）
+  const rakutenHomeUrl = `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent("https://travel.rakuten.co.jp/")}&m=${encodeURIComponent("https://travel.rakuten.co.jp/")}`;
 
   const updateHotelMarkers = (hotelList: any[]) => {
       if (!map.current) return;
@@ -288,6 +307,7 @@ const getAffiliateUrl = (hotel: any) => {
           });
           const data = await res.json();
           if (data.spot) { 
+              // ★修正: handleAddCandidateを呼ぶことでモーダルを表示
               handleAddCandidate(data.spot); 
               setImportUrl(""); 
               setImportedHotel(data.spot);
@@ -325,8 +345,6 @@ const getAffiliateUrl = (hotel: any) => {
     };
   }, [isDrawing]);
 
-  const priceDisplay = conditions.budgetMax >= 30000 ? "上限なし" : `¥${conditions.budgetMax.toLocaleString()}`;
-
   return (
     <div className="relative w-full h-full bg-slate-50 flex flex-col font-sans overflow-hidden">
       
@@ -345,68 +363,68 @@ const getAffiliateUrl = (hotel: any) => {
           <div className="w-12 h-1.5 bg-gray-100 rounded-full mx-auto mt-4 mb-2 shrink-0" />
           <div className="flex-1 overflow-y-auto px-8 pb-32">
              {hotels.length === 0 ? (
-    <div className="flex flex-col gap-6 pt-4 animate-in fade-in slide-in-from-bottom-4">
-        {/* ヘッダーセクション */}
-        <div className="text-center space-y-2">
-            <div className="inline-block p-3 bg-blue-50 rounded-2xl text-blue-600 mb-2">
-                <BedDouble size={32} />
-            </div>
-            <h2 className="text-2xl font-black text-gray-800 tracking-tight">宿泊先を検討する</h2>
-            <p className="text-sm text-gray-500 font-medium leading-relaxed">
-                あなたの旅にぴったりの宿を見つけて、<br />候補リストに追加しましょう。
-            </p>
-        </div>
+                <div className="flex flex-col gap-6 pt-4 animate-in fade-in slide-in-from-bottom-4">
+                    {/* ヘッダーセクション */}
+                    <div className="text-center space-y-2">
+                        <div className="inline-block p-3 bg-blue-50 rounded-2xl text-blue-600 mb-2">
+                            <BedDouble size={32} />
+                        </div>
+                        <h2 className="text-2xl font-black text-gray-800 tracking-tight">宿泊先を検討する</h2>
+                        <p className="text-sm text-gray-500 font-medium leading-relaxed">
+                            あなたの旅にぴったりの宿を見つけて、<br />候補リストに追加しましょう。
+                        </p>
+                    </div>
 
-        {/* ガイドセクション：ここをわかりやすく追加 */}
-        <div className="grid grid-cols-1 gap-3">
-            <div className="bg-white border border-gray-100 p-4 rounded-2xl shadow-sm flex items-start gap-3">
-                <div className="w-8 h-8 bg-black text-white rounded-full flex items-center justify-center font-bold text-sm shrink-0">1</div>
-                <div>
-                    <p className="text-sm font-bold text-gray-800">範囲を囲って探す</p>
-                    <p className="text-[11px] text-gray-500 leading-normal">右上のペンツールでマップ上のエリアを囲むと、その付近の空室状況を検索できます。</p>
-                </div>
-            </div>
+                    {/* ガイドセクション */}
+                    <div className="grid grid-cols-1 gap-3">
+                        <div className="bg-white border border-gray-100 p-4 rounded-2xl shadow-sm flex items-start gap-3">
+                            <div className="w-8 h-8 bg-black text-white rounded-full flex items-center justify-center font-bold text-sm shrink-0">1</div>
+                            <div>
+                                <p className="text-sm font-bold text-gray-800">範囲を囲って探す</p>
+                                <p className="text-[11px] text-gray-500 leading-normal">右上のペンツールでマップ上のエリアを囲むと、その付近の空室状況を検索できます。</p>
+                            </div>
+                        </div>
 
-            <div className="bg-blue-50/50 border border-blue-100 p-4 rounded-2xl shadow-sm flex items-start gap-3">
-                <div className="w-8 h-8 bg-blue-600 text-white rounded-full flex items-center justify-center font-bold text-sm shrink-0">2</div>
-                <div className="flex-1">
-                    <p className="text-sm font-bold text-blue-900">楽天トラベルから直接取り込む</p>
-                    <p className="text-[11px] text-blue-700/70 leading-normal mb-3">お気に入りの宿のURLを貼り付けるだけで、写真や詳細を自動でリストに追加できます。</p>
-                    
-                    <div className="flex gap-2">
-                        <input 
-                            type="text" 
-                            value={importUrl} 
-                            onChange={(e) => setImportUrl(e.target.value)} 
-                            placeholder="https://hotel.travel.rakuten.co.jp/..." 
-                            className="flex-1 bg-white border border-blue-200 rounded-xl px-3 py-2.5 text-xs outline-none focus:ring-2 focus:ring-blue-300 transition shadow-inner"
-                        />
-                        <button 
-                            onClick={executeImport} 
-                            disabled={isImporting || !importUrl} 
-                            className="bg-blue-600 text-white px-4 rounded-xl font-bold text-xs disabled:opacity-50 shadow-md active:scale-95 transition"
+                        <div className="bg-blue-50/50 border border-blue-100 p-4 rounded-2xl shadow-sm flex items-start gap-3">
+                            <div className="w-8 h-8 bg-blue-600 text-white rounded-full flex items-center justify-center font-bold text-sm shrink-0">2</div>
+                            <div className="flex-1">
+                                <p className="text-sm font-bold text-blue-900">楽天トラベルから直接取り込む</p>
+                                <p className="text-[11px] text-blue-700/70 leading-normal mb-3">お気に入りの宿のURLを貼り付けるだけで、写真や詳細を自動でリストに追加できます。</p>
+                                
+                                <div className="flex gap-2">
+                                    <input 
+                                        type="text" 
+                                        value={importUrl} 
+                                        onChange={(e) => setImportUrl(e.target.value)} 
+                                        placeholder="https://hotel.travel.rakuten.co.jp/..." 
+                                        className="flex-1 bg-white border border-blue-200 rounded-xl px-3 py-2.5 text-xs outline-none focus:ring-2 focus:ring-blue-300 transition shadow-inner"
+                                    />
+                                    <button 
+                                        onClick={executeImport} 
+                                        disabled={isImporting || !importUrl} 
+                                        className="bg-blue-600 text-white px-4 rounded-xl font-bold text-xs disabled:opacity-50 shadow-md active:scale-95 transition"
+                                    >
+                                        {isImporting ? <Loader2 size={16} className="animate-spin"/> : "追加"}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* 外部検索ボタン */}
+                    <div className="space-y-3">
+                        <p className="text-[10px] font-black text-gray-400 text-center uppercase tracking-widest">Or Search on Web</p>
+                        <a 
+                            href={rakutenHomeUrl} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className="w-full bg-[#BF0000] text-white py-4 rounded-2xl font-black text-center flex items-center justify-center gap-3 shadow-lg active:scale-95 transition-transform"
                         >
-                            {isImporting ? <Loader2 size={16} className="animate-spin"/> : "追加"}
-                        </button>
+                            楽天トラベルで探す <ExternalLink size={18}/>
+                        </a>
                     </div>
                 </div>
-            </div>
-        </div>
-
-        {/* 外部検索ボタン */}
-        <div className="space-y-3">
-            <p className="text-[10px] font-black text-gray-400 text-center uppercase tracking-widest">Or Search on Web</p>
-            <a 
-                href={rakutenHomeUrl} 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="w-full bg-[#BF0000] text-white py-4 rounded-2xl font-black text-center flex items-center justify-center gap-3 shadow-lg active:scale-95 transition-transform"
-            >
-                楽天トラベルで探す <ExternalLink size={18}/>
-            </a>
-        </div>
-    </div>
-) : (
+            ) : (
                   <div className="flex flex-col gap-6 pt-2 animate-in fade-in">
                       <div className="flex justify-between items-center">
                           <h3 className="text-xl font-black text-gray-800 flex items-center gap-2"><TrendingUp size={22} className="text-blue-500"/> 分析結果</h3>
@@ -532,7 +550,45 @@ const getAffiliateUrl = (hotel: any) => {
           </div>
       )}
       
-      {importedHotel && (
+      {/* ★追加: 宿泊日選択モーダル */}
+      {pendingHotel && (
+          <div className="absolute inset-0 z-[110] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-200">
+              <div className="bg-white w-full max-w-sm rounded-[2rem] p-8 shadow-2xl relative flex flex-col gap-4">
+                  <div className="text-center">
+                      <h3 className="text-lg font-black text-gray-900 mb-1">いつ泊まりますか？</h3>
+                      <p className="text-xs text-gray-500 font-bold truncate px-4">{pendingHotel.name}</p>
+                  </div>
+                  
+                  <div className="grid grid-cols-1 gap-2 max-h-60 overflow-y-auto pr-1">
+                      <button 
+                          onClick={() => confirmAddHotel(0)} 
+                          className="w-full py-3 bg-gray-100 rounded-xl font-bold text-gray-500 hover:bg-gray-200 text-xs transition"
+                      >
+                          未定 (リストにとりあえず追加)
+                      </button>
+                      {Array.from({ length: travelDays }).map((_, i) => (
+                          <button 
+                              key={i} 
+                              onClick={() => confirmAddHotel(i + 1)} 
+                              className="w-full py-3 bg-orange-50 text-orange-600 border border-orange-100 rounded-xl font-bold text-sm hover:bg-orange-100 transition flex items-center justify-center gap-2"
+                          >
+                              <BedDouble size={16}/> 
+                              Day {i + 1} - {i + 2} <span className="text-[10px] opacity-70">({i+1}泊目)</span>
+                          </button>
+                      ))}
+                  </div>
+
+                  <button 
+                      onClick={() => setPendingHotel(null)} 
+                      className="w-full py-3 text-gray-400 font-bold text-xs hover:text-gray-600 transition mt-2"
+                  >
+                      キャンセル
+                  </button>
+              </div>
+          </div>
+      )}
+
+      {importedHotel && !pendingHotel && (
           <div className="absolute inset-0 z-[100] bg-black/60 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-300">
               <div className="bg-white w-full max-w-sm rounded-[2.5rem] p-6 shadow-2xl relative flex flex-col items-center text-center animate-in zoom-in-95 duration-300">
                   <div className="w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mb-4 shadow-sm">

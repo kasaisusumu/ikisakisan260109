@@ -8,6 +8,9 @@ import { supabase } from '@/lib/supabase';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+// page.tsxと同じIDを使用
+const RAKUTEN_AFFILIATE_ID = "4fcc24e4.174bb117.4fcc24e5.5b178353";
+
 const LOADING_TIPS = [
     "💡 気になるスポットは→スワイプで保存しましょう",
     "💡 興味のないスポットは←スワイプで却下しましょう",
@@ -174,11 +177,16 @@ export default function SwipeView({
       setProgress(0);
       
       try {
-          const existing = [...spots.map(s => s.name), ...(candidates || []).map(s => s.name)];
+          // ▼▼▼ 修正: 名前だけでなく座標も含めたオブジェクト配列を作成する ▼▼▼
+          const existing = [...spots, ...(candidates || [])].map(s => ({
+              name: s.name,
+              coordinates: s.coordinates
+          }));
+          
           const response = await fetch(`${API_BASE_URL}/api/suggest_spots`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ theme: inputTheme, existing_spots: existing }),
+              body: JSON.stringify({ theme: inputTheme, existing_spots: existing }), // オブジェクト配列を送信
           });
 
           if (!response.body) throw new Error("No response body");
@@ -238,19 +246,42 @@ export default function SwipeView({
       }
   };
 
-  // ★修正: 人数・日付指定なしのシンプルな検索URL
-  // ★修正箇所: アフィリエイトIDを組み込み、詳細ページに誘導するリンク形式
-// ★修正箇所: アフィリエイトIDを組み込み、詳細ページに誘導するリンク形式
-const getRakutenUrl = (query: string) => {
-    // PlanView.tsx で使用されているアフィリエイトIDを設定
-    const AFFILIATE_ID = "4fcc24e4.174bb117.4fcc24e5.5b178353"; 
-    
-    // 目的地・宿名で直接検索し、該当があれば宿ページを優先表示するURL
-    const baseUrl = `https://search.travel.rakuten.co.jp/ds/hotel/search?f_query=${encodeURIComponent(query)}`;
-    
-    // アフィリエイトリンクとして機能させるためのラップURL
-    return `https://hb.afl.rakuten.co.jp/hgc/${AFFILIATE_ID}/?pc=${encodeURIComponent(baseUrl)}`;
-};
+  // page.tsx の getAffiliateUrl と同じロジックを実装
+  const getAffiliateUrl = (spot: any) => {
+    const adultNum = 2; // デフォルト値 (SwipeViewではstateを持たないため)
+    let targetUrl = "";
+
+    if (spot.url && spot.url.includes('rakuten.co.jp')) { 
+        targetUrl = spot.url; 
+    }
+    else if (spot.id && /^\d+$/.test(String(spot.id))) {
+        // 日付ロジック (Today + 30days)
+        const today = new Date();
+        const nextMonth = new Date(today);
+        nextMonth.setDate(today.getDate() + 30);
+        const y1 = nextMonth.getFullYear();
+        const m1 = nextMonth.getMonth() + 1;
+        const d1 = nextMonth.getDate();
+        const nextDay = new Date(nextMonth);
+        nextDay.setDate(nextMonth.getDate() + 1);
+        const y2 = nextDay.getFullYear();
+        const m2 = nextDay.getMonth() + 1;
+        const d2 = nextDay.getDate();
+
+        targetUrl = `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${spot.id}?f_teikei=&f_heya_su=1&f_otona_su=${adultNum}&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_sort=min_charge`;
+    }
+    else {
+        const queryName = spot.name || "";
+        targetUrl = spot.url || `https://search.travel.rakuten.co.jp/ds/hotel/search?f_teikei=&f_query=${encodeURIComponent(queryName)}&f_sort=min_charge`;
+    }
+
+    if (RAKUTEN_AFFILIATE_ID) {
+        const encodedUrl = encodeURIComponent(targetUrl);
+        return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodedUrl}`;
+    }
+
+    return targetUrl;
+  };
   
   const getInstagramTag = (query: string) => encodeURIComponent(query.replace(/[\s\(\)（）「」、。]/g, ''));
   const openInstagramApp = (query: string) => window.location.href = `instagram://explore/tags/${getInstagramTag(query)}`;
@@ -591,8 +622,8 @@ const getRakutenUrl = (query: string) => {
                                 <div className="flex-1"/>
                                 {spot.is_hotel && (
                                     <button 
-                                        onTouchEnd={(e) => { e.stopPropagation(); window.open(getRakutenUrl(spot.query || spot.name), '_blank'); }} 
-                                        onClick={(e) => { e.stopPropagation(); window.open(getRakutenUrl(spot.query || spot.name), '_blank'); }} 
+                                        onTouchEnd={(e) => { e.stopPropagation(); window.open(getAffiliateUrl(spot), '_blank'); }} 
+                                        onClick={(e) => { e.stopPropagation(); window.open(getAffiliateUrl(spot), '_blank'); }} 
                                         className="bg-gradient-to-r from-yellow-400 to-orange-500 text-black hover:scale-105 text-xs font-bold py-2 px-4 rounded-full flex items-center gap-1 shadow-lg backdrop-blur-sm transition active:scale-95"
                                     >
                                         <Search size={14}/> 楽天で詳細を見る
