@@ -958,23 +958,22 @@ const allParticipants = useMemo(() => {
 
  // page.tsx の 752行目付近にある filteredSpots を以下に書き換え
 
+// page.tsx 750行目付近
+
 const filteredSpots = useMemo(() => {
     if (filterStatus === 'all') return planSpots;
     
     let spots = planSpots;
     
     if (filterStatus === 'confirmed') {
-        // 現在選択されている日の確定スポットを取得
+        // ...（確定リストのロジックはそのまま）...
         const currentDaySpots = planSpots.filter(s => s.status === 'confirmed' && (s.day || 0) === selectedConfirmDay);
-        
-        // 2日目以降の場合、前日の宿を探して先頭に追加する
-       if (selectedConfirmDay > 1) {
+        if (selectedConfirmDay > 1) {
             const prevDayHotel = planSpots.find(s => 
                 s.status === 'confirmed' && 
                 s.day === selectedConfirmDay - 1 && 
-                (s.is_hotel || isHotel(s.name)) // ★ここを共通関数 isHotel(s.name) に変更
+                (s.is_hotel || isHotel(s.name))
             );
-            
             if (prevDayHotel && !currentDaySpots.some(s => s.id === prevDayHotel.id)) {
                 return [prevDayHotel, ...currentDaySpots];
             }
@@ -985,11 +984,18 @@ const filteredSpots = useMemo(() => {
         spots = planSpots.filter(s => (s.status || 'candidate') === 'candidate');
         spots = spots.filter(s => (s.day || 0) === selectedCandidateDay);
     } 
+    // ▼▼▼ 追加修正: 宿リストの場合も日付で絞り込む ▼▼▼
+    else if (filterStatus === 'hotel_candidate') {
+        spots = planSpots.filter(s => s.status === 'hotel_candidate');
+        spots = spots.filter(s => (s.day || 0) === selectedHotelDay);
+    }
+    // ▲▲▲ 追加ここまで ▲▲▲
     else {
         spots = planSpots.filter(s => (s.status || 'candidate') === filterStatus);
     }
     return spots;
-}, [planSpots, filterStatus, selectedConfirmDay, selectedCandidateDay]);
+    // ▼▼▼ 修正: 依存配列に selectedHotelDay を追加 ▼▼▼
+}, [planSpots, filterStatus, selectedConfirmDay, selectedCandidateDay, selectedHotelDay]);
 
   useEffect(() => {
       if (currentTab === 'explore' && !isSearching && !selectedResult && map.current) {
@@ -998,10 +1004,23 @@ const filteredSpots = useMemo(() => {
   }, [filteredSpots, currentTab]);
 
   const handleStatusChangeClick = (spot: any, newStatus: string) => {
+      // ▼▼▼ 修正: 宿リストへの移動なら日付を維持、それ以外（通常の候補）なら0（未定）にする
+      const targetDay = newStatus === 'hotel_candidate' ? spot.day : 0;
+      
       if (newStatus !== 'confirmed' && newStatus !== spot.status) {
-          if (!confirm("候補リストに戻しますか？\n設定された日付はリセットされます。")) return;
+          // メッセージも少し親切に変更
+          const msg = newStatus === 'hotel_candidate' 
+            ? "宿リストに戻しますか？" 
+            : "候補リストに戻しますか？\n設定された日付はリセットされます。";
+          if (!confirm(msg)) return;
       }
-      if (newStatus === 'confirmed') { setSpotToAssignDay(spot); } else { updateSpotStatus(spot, newStatus, 0); }
+
+      if (newStatus === 'confirmed') { 
+          setSpotToAssignDay(spot); 
+      } else { 
+          // ▼▼▼ 修正: 第3引数に targetDay を渡す
+          updateSpotStatus(spot, newStatus, targetDay); 
+      }
   };
 
   const confirmSpotDay = async (day: number) => {
@@ -2282,12 +2301,20 @@ const handleSaveSettings = async () => {
                           </button>
                       )}
                       
-                      {selectedResult.is_saved && selectedResult.status === 'confirmed' && (
+                     {selectedResult.is_saved && selectedResult.status === 'confirmed' && (
                           <button 
-                              onClick={(e) => { e.stopPropagation(); handleStatusChangeClick(selectedResult, 'candidate'); }} 
+                              // ▼▼▼ 修正: 宿判定を追加し、引数を変える
+                              onClick={(e) => { 
+                                  e.stopPropagation(); 
+                                  const isSpotHotel = isHotel(selectedResult.text) || selectedResult.is_hotel;
+                                  const nextStatus = isSpotHotel ? 'hotel_candidate' : 'candidate';
+                                  handleStatusChangeClick(selectedResult, nextStatus); 
+                              }} 
                               className="flex items-center gap-1 bg-gray-100 text-gray-600 px-3 py-2 rounded-lg text-[10px] font-bold hover:bg-gray-200 transition whitespace-nowrap shrink-0 border border-gray-200"
                           >
-                              <ArrowLeftCircle size={12}/> 候補に戻す
+                              <ArrowLeftCircle size={12}/> 
+                              {/* 表示文言も少し調整（任意） */}
+                              {(isHotel(selectedResult.text) || selectedResult.is_hotel) ? '宿リストに戻す' : '候補に戻す'}
                           </button>
                       )}
 
@@ -2542,9 +2569,9 @@ const handleSaveSettings = async () => {
                               // スポットをフィルタリング (Dayで絞り込み)
                               let displaySpots = filteredSpots;
                               // filteredSpotsはfilterStatusで絞り込まれているが、Dayまでは考慮していない場合があるためここで再確認
-                              if (targetDay !== -1) {
-                                  displaySpots = planSpots.filter(s => s.status === filterStatus && (s.day || 0) === targetDay);
-                              }
+                              //if (targetDay !== -1) {
+                              //    displaySpots = planSpots.filter(s => s.status === filterStatus && (s.day || 0) === targetDay);
+                              //}
 
                               if (targetDay !== -1 && displaySpots.length === 0) {
                                   return <div className="text-center text-gray-400 py-10 text-xs font-medium">この日のスポットはまだありません</div>;
@@ -2763,10 +2790,15 @@ const handleSaveSettings = async () => {
                                                             )}
                                                             {filterStatus === 'confirmed' && (
                                                                 <button 
-                                                                    onClick={(e) => { e.stopPropagation(); handleStatusChangeClick(spot, 'candidate'); }} 
+                                                                    // ▼▼▼ 修正: 宿判定を行い、適切なステータスを渡す
+                                                                    onClick={(e) => { 
+                                                                        e.stopPropagation(); 
+                                                                        const nextStatus = isSpotHotel ? 'hotel_candidate' : 'candidate';
+                                                                        handleStatusChangeClick(spot, nextStatus); 
+                                                                    }} 
                                                                     className="bg-gray-100 border border-gray-200 text-gray-600 text-[9px] px-2 py-0.5 rounded font-bold hover:bg-gray-200 transition whitespace-nowrap"
                                                                 >
-                                                                    候補に戻す
+                                                                    {isSpotHotel ? '宿リストに戻す' : '候補に戻す'}
                                                                 </button>
                                                             )}
                                                         </div>
