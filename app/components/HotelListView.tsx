@@ -566,16 +566,22 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                       >
                           未定 (リストにとりあえず追加)
                       </button>
-                      {Array.from({ length: travelDays }).map((_, i) => (
-                          <button 
-                              key={i} 
-                              onClick={() => confirmAddHotel(i + 1)} 
-                              className="w-full py-3 bg-orange-50 text-orange-600 border border-orange-100 rounded-xl font-bold text-sm hover:bg-orange-100 transition flex items-center justify-center gap-2"
-                          >
-                              <BedDouble size={16}/> 
-                              Day {i + 1} - {i + 2} <span className="text-[10px] opacity-70">({i+1}泊目)</span>
-                          </button>
-                      ))}
+                      {Array.from({ length: travelDays }).map((_, i) => {
+                          const dayNum = i + 1;
+                          // ★修正: 最終日（帰宅日）は宿泊しないため除外
+                          if (dayNum === travelDays) return null;
+
+                          return (
+                              <button 
+                                  key={i} 
+                                  onClick={() => confirmAddHotel(dayNum)} 
+                                  className="w-full py-3 bg-orange-50 text-orange-600 border border-orange-100 rounded-xl font-bold text-sm hover:bg-orange-100 transition flex items-center justify-center gap-2"
+                              >
+                                  <BedDouble size={16}/> 
+                                  Day {dayNum} - {dayNum + 1} <span className="text-[10px] opacity-70">({dayNum}泊目)</span>
+                              </button>
+                          );
+                      })}
                   </div>
 
                   <button 

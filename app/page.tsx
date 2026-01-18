@@ -456,80 +456,6 @@ const onTimelineDrop = async (e: React.DragEvent, targetIndex: number) => {
       }
   };
 
-  // ★追加: 楽天トラベルAPIから宿IDを取得する関数
-const fetchRakutenHotelId = async (hotelName: string) => {
-    // 環境変数からApp IDを取得（名前は NEXT_PUBLIC_RAKUTEN_APP_ID と仮定しています）
-    const APP_ID = process.env.NEXT_PUBLIC_RAKUTEN_APP_ID;
-    if (!APP_ID) {
-        console.warn("Rakuten App ID is missing");
-        return null;
-    }
-
-    try {
-        // 楽天トラベル キーワード検索API
-        const url = `https://app.rakuten.co.jp/services/api/Travel/KeywordHotelSearch/20170426?format=json&keyword=${encodeURIComponent(hotelName)}&applicationId=${APP_ID}&hits=1`;
-        
-        const res = await fetch(url);
-        if (!res.ok) return null;
-        
-        const data = await res.json();
-        
-        // 最もマッチした施設のIDを返す
-        if (data.hotels && data.hotels.length > 0 && data.hotels[0].hotel) {
-            return data.hotels[0].hotel[0].hotelBasicInfo.hotelNo;
-        }
-    } catch (e) {
-        console.error("Rakuten API Error", e);
-    }
-    return null;
-};
-
-// ★追加: 楽天ボタンクリック時のハンドラ（API経由で遷移）
-  const handleOpenRakuten = async (spot: any, e?: React.MouseEvent) => {
-      if (e) e.stopPropagation();
-
-      // 1. ポップアップブロック対策のため、先に空のウィンドウを開く
-      const newWin = window.open('', '_blank');
-      
-      // ウィンドウが開けなかった場合（ブロックされた場合）
-      if (!newWin) {
-          alert("ポップアップがブロックされました。設定を確認してください。");
-          return;
-      }
-
-      // 読み込み中表示
-      newWin.document.write(`
-        <html>
-            <head><title>Loading...</title></head>
-            <body style="display:flex;justify-content:center;align-items:center;height:100vh;margin:0;font-family:sans-serif;background:#f5f5f5;">
-                <div style="text-align:center;">
-                    <div style="margin-bottom:10px;font-weight:bold;color:#BF0000;">Rakuten Travel</div>
-                    <div style="font-size:14px;color:#666;">ページを準備中...</div>
-                </div>
-            </body>
-        </html>
-      `);
-
-      let targetSpot = { ...spot };
-
-      // 2. IDがない、または数値でない（名前だけの）場合、APIでID取得を試みる
-      if (!targetSpot.id || !/^\d+$/.test(String(targetSpot.id))) {
-          const fetchedId = await fetchRakutenHotelId(targetSpot.name);
-          if (fetchedId) {
-              targetSpot = { ...targetSpot, id: fetchedId }; // IDをセットした新しいオブジェクト
-              
-              // (任意) 取得したIDをDBに保存しておくと次回から早くなります
-              // if (roomId && spot.id) supabase.from('spots').update({ id: fetchedId /* 注意:IDのカラム仕様による */ }).eq('uid', spot.uid);
-          }
-      }
-
-      // 3. アフィリエイトURLを生成（IDがあればプランページ、なければ検索ページのURLになります）
-      const url = getAffiliateUrl(targetSpot);
-
-      // 4. 生成したURLへリダイレクト
-      newWin.location.href = url;
-  };
-
   const handleDragEnd = () => { setIsDragging(false); };
 
   const handleHeaderClick = (e: React.MouseEvent) => {
@@ -903,28 +829,49 @@ useEffect(() => {
     }
   }, [planSpots, roomId]);
 
- // ... existing code ...
+  // ... (前略)
 
-// ... existing code ...
+  // ... (前略)
 
-  // ... existing code ...
+ // ... (前略)
 
   const getAffiliateUrl = (spot: any) => {
-      // 1. 日付の計算ロジック（変更なし）
-      let targetDate = new Date();
-      targetDate.setDate(targetDate.getDate() + 30); // デフォルト
+      // ★追加: 日付文字列(YYYY-MM-DD)を、ズレなくローカル時間(00:00:00)として解釈する関数
+      // new Date(string) だとUTC扱いになり、時差で日付がずれるのを防ぎます
+      const parseLocalYMD = (ymd: string) => {
+          if (!ymd) return null;
+          const parts = ymd.split('-').map(Number);
+          if (parts.length !== 3) return null;
+          // 年, 月(0始まり), 日 を指定してDateを作る
+          return new Date(parts[0], parts[1] - 1, parts[2]);
+      };
 
-      if (startDate && spot.day && spot.day > 0) {
-          const start = new Date(startDate);
-          if (!isNaN(start.getTime())) {
-              targetDate = new Date(start);
-              targetDate.setDate(targetDate.getDate() + (spot.day - 1));
+      // 1. 基準日（Base Date）の決定
+      // まずはデフォルト（今日から30日後）を設定
+      let targetDate = new Date();
+      targetDate.setDate(targetDate.getDate() + 30);
+
+      // 旅行開始日(startDate)が設定されていれば、それを基準日に上書き
+      if (startDate) {
+          const parsedStart = parseLocalYMD(startDate);
+          if (parsedStart) {
+              targetDate = parsedStart;
           }
       }
 
+      // 2. 日程（Day）による日数の加算
+      // spot.day が 1なら加算なし(Day1)、2なら+1日(Day2) ... と計算
+      const dayNum = Number(spot.day);
+      if (!isNaN(dayNum) && dayNum > 0) {
+          const dayOffset = dayNum - 1;
+          targetDate.setDate(targetDate.getDate() + dayOffset);
+      }
+
+      // 3. チェックアウト日の計算（1泊後）
       const checkOutDate = new Date(targetDate);
       checkOutDate.setDate(targetDate.getDate() + 1);
 
+      // 4. URLパラメータ用に年月日に分解
       const y1 = targetDate.getFullYear();
       const m1 = targetDate.getMonth() + 1;
       const d1 = targetDate.getDate();
@@ -932,53 +879,30 @@ useEffect(() => {
       const m2 = checkOutDate.getMonth() + 1;
       const d2 = checkOutDate.getDate();
 
-      // 日付のパディング（一桁の月日を0埋めするかどうかの制御）
-      // 参考リンクに合わせて、あえてパディングなし（数値のまま）でも動作しますが、
-      // 安全のためヘルパー自体は残しつつ、検索URL生成時に調整します。
+      // ゼロ埋めヘルパー (例: 1月 -> 01)
       const pad = (n: number) => n.toString().padStart(2, '0');
 
       let targetUrl = "";
-      const spotIdStr = String(spot.id || "").trim();
+      const spotIdStr = String(spot.id || "");
 
-      // --------------------------------------------------------------------------
-      // パターンA: 宿ID（数字のみ）を持っている場合 → 参考リンクと同じ「プラン一覧」へ
-      // --------------------------------------------------------------------------
-      if (spotIdStr && /^\d+$/.test(spotIdStr)) {
-          // ユーザー提示の参考リンクに近いパラメータ構成
-          targetUrl = `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${spotIdStr}?f_teikei=&f_heya_su=1&f_otona_su=${adultNum}&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_sort=min_charge`;
-      }
+      // ---------------------------------------------------------
+      // 5. URL生成
+      // ---------------------------------------------------------
       
-      // --------------------------------------------------------------------------
-      // パターンB: 名前しかわからない場合 → 「キーワード検索」へ
-      // ※ここが「ダウンロード」バグの発生源なので、名前を徹底的に浄化します
-      // --------------------------------------------------------------------------
-      else {
-          let queryName = spot.name || "";
-
-          // 【重要】検索エラー回避のためのクリーニング処理
-          // 1. 「天然温泉」などの枕詞は検索ノイズ＆エラー原因になるので削除
-          queryName = queryName.replace(/天然温泉/g, '');
-
-          // 2. カッコ書きとその中身を削除（例: "（ドーミーイングループ）"）
-          queryName = queryName.replace(/[（\(].*?[）\)]/g, '');
-
-          // 3. 全角スペース(重要)、中黒、読点を「半角スペース」に置換
-          queryName = queryName.replace(/[　・、。]/g, ' ');
-
-          // 4. 連続するスペースを1つに統合し、前後の空白を削除
-          queryName = queryName.replace(/\s+/g, ' ').trim();
-
-          // エンコード
-          const encodedName = encodeURIComponent(queryName);
-
-          // 検索URLの構築
-          // 参考リンクのパラメータ（f_dai=japanなど）は検索では不要なため、検索専用のパラメータ構成にします
-          targetUrl = `https://search.travel.rakuten.co.jp/ds/hotel/search?f_query=${encodedName}&f_teikei=&f_heya_su=1&f_otona_su=${adultNum}&f_nen1=${y1}&f_tuki1=${pad(m1)}&f_hi1=${pad(d1)}&f_nen2=${y2}&f_tuki2=${pad(m2)}&f_hi2=${pad(d2)}&f_sort=min_charge`;
+      // パターンA: 宿ID（数字）を持っている場合 -> 条件付きプラン一覧ページへ
+      if (spotIdStr && /^\d+$/.test(spotIdStr)) {
+          targetUrl = `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${spotIdStr}?f_teikei=&f_heya_su=1&f_otona_su=${adultNum}&f_nen1=${y1}&f_tuki1=${pad(m1)}&f_hi1=${pad(d1)}&f_nen2=${y2}&f_tuki2=${pad(m2)}&f_hi2=${pad(d2)}&f_sort=min_charge`;
       }
+      // パターンB: 既に楽天のURLを持っている場合
+      else if (spot.url && spot.url.includes('rakuten.co.jp')) {
+          targetUrl = spot.url; 
+      }
+      // パターンC: IDもURLもない場合 -> キーワード検索 (404対策のためシンプルに)
+      
 
-      // --------------------------------------------------------------------------
-      // アフィリエイトリンク化
-      // --------------------------------------------------------------------------
+      // ---------------------------------------------------------
+      // 6. アフィリエイトリンク化
+      // ---------------------------------------------------------
       if (RAKUTEN_AFFILIATE_ID) {
           return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent(targetUrl)}`;
       }
@@ -986,7 +910,7 @@ useEffect(() => {
       return targetUrl;
   };
 
-// ... existing code ...
+ // page.tsx 690行目付近の allParticipants を以下に書き換え
 
 // page.tsx 750行目付近
 
@@ -2022,13 +1946,18 @@ const handleSaveSettings = async () => {
                   未定にする
                </button>
                
-               {Array.from({ length: travelDays }).map((_, i) => {
+              {Array.from({ length: travelDays }).map((_, i) => {
                    const dayNum = i + 1;
                    const isSelected = spotToAssignDay.day === dayNum;
                    
                    // 宿の場合は「Day 1-2」のように表記する
                    const isTargetHotel = spotToAssignDay.is_hotel || (spotToAssignDay.name && (spotToAssignDay.name.includes('ホテル') || spotToAssignDay.name.includes('旅館')));
+                   
+                   // 宿の場合、最終日（帰る日）は宿泊しないため除外
+                   if (isTargetHotel && dayNum === travelDays) return null;
+                   
                    const dayLabel = isTargetHotel ? `Day ${dayNum} - ${dayNum+1}` : `Day ${dayNum}`;
+                   
                    
                    return (
                        <button 
@@ -2364,10 +2293,9 @@ const handleSaveSettings = async () => {
 
                       {(isHotel(selectedResult.text) || selectedResult.is_hotel) && (
                         <button 
-                           onClick={(e) => handleOpenRakuten(selectedResult, e)} 
-    className="flex items-center gap-1 bg-[#BF0000] text-white px-3 py-2 rounded-lg text-[10px] font-bold hover:bg-[#900000] transition whitespace-nowrap shrink-0 shadow-sm"
+                            onClick={() => window.open(getAffiliateUrl(selectedResult), '_blank')} 
+                            className="flex items-center gap-1 bg-[#BF0000] text-white px-3 py-2 rounded-lg text-[10px] font-bold hover:bg-[#900000] transition whitespace-nowrap shrink-0 shadow-sm"
                         >
-                            
                             <span className="opacity-75 text-[9px] border border-white/50 px-0.5 rounded-[2px] mr-0.5">PR</span>
                             楽天で見る <ExternalLink size={12}/>
                         </button>
@@ -2474,7 +2402,7 @@ const handleSaveSettings = async () => {
                                       )}
                                   </button>
 
-                                 {Array.from({ length: travelDays }).map((_, i) => {
+                                {Array.from({ length: travelDays }).map((_, i) => {
                                       const dayNum = i + 1;
                                       
                                       // アクティブ判定
@@ -2483,11 +2411,12 @@ const handleSaveSettings = async () => {
                                       else if (filterStatus === 'candidate') isActive = selectedCandidateDay === dayNum;
                                       else isActive = selectedHotelDay === dayNum;
 
+                                      // 宿リストの場合、最終日（帰る日）のタブは表示しない
+                                      if (filterStatus === 'hotel_candidate' && dayNum === travelDays) return null;
+
                                       // 色設定
                                       let activeClass = 'bg-blue-600 text-white border-blue-600';
                                       if (filterStatus === 'candidate') activeClass = 'bg-yellow-500 text-white border-yellow-500';
-                                      if (filterStatus === 'hotel_candidate') activeClass = 'bg-orange-500 text-white border-orange-500';
-
                                       // ラベル設定 (宿の場合は "Day 1-2" 表記)
                                       const label = filterStatus === 'hotel_candidate' ? `Day ${dayNum}-${dayNum+1}` : `Day ${dayNum}`;
 
@@ -2719,8 +2648,7 @@ const handleSaveSettings = async () => {
                                                                     <div className="flex gap-1 items-center shrink-0 mb-0.5">
                                                                         {isSpotHotel && (
                                                                             <button 
-                                                                                //onClick={(e) => { e.stopPropagation(); window.open(getAffiliateUrl(spot), '_blank'); }}
-                                                                                onClick={(e) => handleOpenRakuten(spot, e)}
+                                                                                onClick={(e) => { e.stopPropagation(); window.open(getAffiliateUrl(spot), '_blank'); }}
                                                                                 className="flex items-center gap-1 bg-[#BF0000] text-white px-2 py-0.5 rounded text-[9px] font-bold hover:bg-[#900000] transition shrink-0 shadow-sm"
                                                                             >
                                                                                 <span className="opacity-75 text-[8px] border border-white/50 px-0.5 rounded-[2px]">PR</span>
@@ -2851,11 +2779,10 @@ const handleSaveSettings = async () => {
                                                         )}
                                                         {isSpotHotel && (
                                                             <button 
-                                                               // onClick={(e) => { 
-                                                                 //   e.stopPropagation(); 
-                                                                   // window.open(getAffiliateUrl(spot), '_blank'); 
-                                                                //}}
-                                                                onClick={(e) => handleOpenRakuten(spot, e)}
+                                                                onClick={(e) => { 
+                                                                    e.stopPropagation(); 
+                                                                    window.open(getAffiliateUrl(spot), '_blank'); 
+                                                                }}
                                                                 className="flex items-center gap-1 bg-[#BF0000] text-white px-2 py-0.5 rounded text-[9px] font-bold hover:bg-[#900000] transition shrink-0 shadow-sm"
                                                             >
                                                                 <span className="opacity-75 text-[8px] border border-white/50 px-0.5 rounded-[2px]">PR</span>

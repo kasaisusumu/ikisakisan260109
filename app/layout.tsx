@@ -31,13 +31,13 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="ja"> {/* 日本語サイトの場合は ja に変更を推奨 */}
+    // REMOVE the comment from this line below
+    <html lang="ja"> 
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         {children}
 
-        {/* 2. Google Analytics (gtag.js) の挿入 */}
         <Script
           src="https://www.googletagmanager.com/gtag/js?id=G-0NYVC3YQSZ"
           strategy="afterInteractive"

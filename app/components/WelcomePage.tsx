@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   Map as MapIcon, Calendar, Users, ArrowRight, Check, Copy, 
   Plane, Sparkles, Share2, ShieldCheck, Loader2, Send, 
-  XCircle, AlertTriangle 
+  XCircle, AlertTriangle, MapPinned, PenTool, ThumbsUp 
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useRouter } from 'next/navigation';
@@ -45,7 +45,6 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
   const [isCopied, setIsCopied] = useState(false);
   const [inviteRoomName, setInviteRoomName] = useState<string>('');
   
-  // ★追加: 既存メンバー名のリスト
   const [existingMembers, setExistingMembers] = useState<string[]>([]);
 
   // シークレットモード警告用（初期値trueで全員に表示）
@@ -63,15 +62,13 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
               setInviteRoomName(roomData.name);
               setStep('terms'); 
 
-              // 2. 既存メンバーの収集 (作成者 + 投票者 + スポット追加者)
+              // 2. 既存メンバーの収集
               const members = new Set<string>();
               if (roomData.created_by) members.add(roomData.created_by);
 
-              // 投票テーブルから名前を取得
               const { data: votes } = await supabase.from('votes').select('user_name').eq('room_id', inviteRoomId);
               votes?.forEach(v => v.user_name && members.add(v.user_name));
 
-              // スポットテーブルから名前を取得
               const { data: spots } = await supabase.from('spots').select('added_by').eq('room_id', inviteRoomId);
               spots?.forEach(s => s.added_by && members.add(s.added_by));
 
@@ -169,7 +166,7 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
     }
   };
 
-  // 警告モーダル（無条件表示）
+  // 警告モーダル
   const warningModal = showIncognitoWarning ? (
     <div className="fixed inset-0 z-[9999] bg-black/80 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-300">
         <div className="bg-white w-full max-w-sm rounded-[2rem] p-8 shadow-2xl relative text-center border-4 border-red-100 animate-in zoom-in-95 duration-300">
@@ -192,42 +189,134 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
     </div>
   ) : null;
 
-  // --- Step 1: イントロダクション ---
+  // --- 機能紹介のコンテンツ定義 ---
+  const onboardingSteps = [
+    {
+        title: "みんなで地図を作ろう",
+        desc: "リアルタイムで地図にピンを立てて、\n旅行の行き先をみんなで決めよう🗺️",
+        visual: (
+            <div className="relative w-40 h-40 mx-auto flex items-center justify-center">
+                <div className="absolute inset-0 bg-blue-100 rounded-full animate-pulse opacity-50"></div>
+                <div className="w-32 h-32 bg-white rounded-full shadow-lg flex items-center justify-center relative border-4 border-blue-50">
+                    <MapIcon size={64} className="text-blue-500" />
+                    <div className="absolute -bottom-2 -right-2 bg-green-500 text-white p-3 rounded-full border-4 border-white shadow-md">
+                        <Users size={24} />
+                    </div>
+                    <div className="absolute -top-2 -left-2 bg-indigo-500 text-white p-2 rounded-full border-4 border-white shadow-md">
+                        <MapPinned size={20} />
+                    </div>
+                </div>
+            </div>
+        )
+    },
+    {
+        title: "便利な機能がいっぱい",
+        desc: "AIによるスポット提案、指で囲って宿検索、\nみんなで投票機能などが使えます✨",
+        visual: (
+            <div className="relative w-40 h-40 mx-auto flex items-center justify-center">
+                <div className="w-32 h-32 bg-gradient-to-tr from-yellow-100 to-orange-100 rounded-full shadow-lg flex items-center justify-center relative border-4 border-white">
+                    <div className="grid grid-cols-2 gap-3 p-4">
+                        <div className="flex flex-col items-center gap-1">
+                            <div className="bg-purple-500 text-white p-2 rounded-xl shadow-sm"><Sparkles size={20}/></div>
+                            <span className="text-[8px] font-bold text-purple-600">AI提案</span>
+                        </div>
+                        <div className="flex flex-col items-center gap-1">
+                            <div className="bg-red-500 text-white p-2 rounded-xl shadow-sm"><PenTool size={20}/></div>
+                            <span className="text-[8px] font-bold text-red-600">囲って検索</span>
+                        </div>
+                        <div className="flex flex-col items-center gap-1 col-span-2">
+                            <div className="bg-blue-500 text-white p-2 rounded-xl shadow-sm"><ThumbsUp size={20}/></div>
+                            <span className="text-[8px] font-bold text-blue-600">投票</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        )
+    },
+    {
+        title: "準備はOK？",
+        desc: "さあ、最高の旅行プラン作りを\nはじめましょう！✈️",
+        visual: (
+            <div className="relative w-40 h-40 mx-auto flex items-center justify-center">
+                <div className="absolute inset-0 bg-blue-500/10 rounded-full animate-[spin_10s_linear_infinite]"></div>
+                <div className="w-32 h-32 bg-blue-600 rounded-full shadow-xl flex items-center justify-center relative border-4 border-blue-100 overflow-hidden group">
+                    <Plane size={64} className="text-white relative z-10" />
+                    <div className="absolute inset-0 bg-gradient-to-tr from-blue-600 to-cyan-400 opacity-80"></div>
+                    {/* Clouds */}
+                    <div className="absolute top-6 left-4 w-8 h-8 bg-white/20 rounded-full blur-md"></div>
+                    <div className="absolute bottom-8 right-6 w-10 h-10 bg-white/20 rounded-full blur-md"></div>
+                </div>
+            </div>
+        )
+    }
+  ];
+
+  // --- Step 1: イントロダクション (スクロール対応・固定ボタン) ---
   if (step === 'intro') {
     return (
-      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 text-center relative overflow-hidden">
+      <div className="min-h-screen bg-slate-50 relative overflow-hidden flex flex-col">
         {warningModal}
-        <div className="absolute top-[-10%] right-[-10%] w-96 h-96 bg-blue-200 rounded-full blur-3xl opacity-30"></div>
-        <div className="absolute bottom-[-10%] left-[-10%] w-96 h-96 bg-purple-200 rounded-full blur-3xl opacity-30"></div>
+        {/* 背景装飾 (固定) */}
+        <div className="fixed top-[-10%] right-[-10%] w-96 h-96 bg-blue-200 rounded-full blur-3xl opacity-30 pointer-events-none"></div>
+        <div className="fixed bottom-[-10%] left-[-10%] w-96 h-96 bg-purple-200 rounded-full blur-3xl opacity-30 pointer-events-none"></div>
 
-        <div className="max-w-md w-full relative z-10 animate-in fade-in slide-in-from-bottom-8 duration-700">
-          <div className="mb-8 flex justify-center">
-             <div className="w-20 h-20 bg-white rounded-3xl shadow-xl flex items-center justify-center transform -rotate-6">
-                <Plane className="text-blue-600" size={40} />
-             </div>
+        {/* スクロール領域 */}
+        <div className="flex-1 overflow-y-auto w-full custom-scrollbar pb-32">
+            <div className="max-w-md w-full mx-auto p-6 text-center relative z-10 animate-in fade-in slide-in-from-bottom-8 duration-700">
+                
+                {/* ヒーローセクション */}
+                <div className="mb-12 pt-10">
+                    <div className="mb-8 flex justify-center">
+                        <div className="w-20 h-20 bg-white rounded-3xl shadow-xl flex items-center justify-center transform -rotate-6">
+                            <Plane className="text-blue-600" size={40} />
+                        </div>
+                    </div>
+                    
+                    <h1 className="text-4xl font-black text-slate-800 mb-4 tracking-tight">
+                        旅のしおりを<br/><span className="text-blue-600">みんなで作ろう</span>
+                    </h1>
+                    <p className="text-slate-500 leading-relaxed font-medium">
+                        行きたい場所をマップに追加して、<br/>
+                        AIと一緒に最適なルートを見つけましょう。<br/>
+                        URLを共有すれば、友達と同時編集できます。
+                    </p>
+                </div>
+
+                {/* 機能紹介リスト */}
+                <div className="space-y-4 text-left mb-16">
+                    <FeatureItem icon={<MapIcon size={20}/>} title="マップで直感的に" desc="気になる場所をポチッと追加" />
+                    <FeatureItem icon={<Sparkles size={20}/>} title="AIがルート提案" desc="効率的な巡り方を自動計算" />
+                    <FeatureItem icon={<Share2 size={20}/>} title="リアルタイム共有" desc="URLを送るだけで共同編集" />
+                </div>
+
+                {/* 詳細な機能紹介 (Onboarding Steps) */}
+                <div className="space-y-20 pb-10 border-t border-slate-200 pt-16">
+                    {onboardingSteps.map((s, i) => (
+                        <div key={i} className="flex flex-col items-center text-center space-y-4">
+                            <div className="mb-2">
+                                {s.visual}
+                            </div>
+                            <h3 className="text-2xl font-black text-slate-800">{s.title}</h3>
+                            <p className="text-sm text-slate-500 font-bold leading-relaxed whitespace-pre-wrap">
+                                {s.desc}
+                            </p>
+                        </div>
+                    ))}
+                </div>
+
+            </div>
+        </div>
+
+        {/* 固定ボタンエリア */}
+        <div className="fixed bottom-0 left-0 w-full p-6 bg-gradient-to-t from-slate-50 via-slate-50/95 to-transparent z-50">
+          <div className="max-w-md mx-auto">
+             <button 
+                onClick={() => setStep('create')}
+                className="w-full bg-slate-900 text-white py-4 rounded-2xl font-bold text-lg shadow-xl hover:bg-slate-800 hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2"
+              >
+                しおりを作る <ArrowRight size={20}/>
+              </button>
           </div>
-          
-          <h1 className="text-4xl font-black text-slate-800 mb-4 tracking-tight">
-            旅のしおりを<br/><span className="text-blue-600">みんなで作ろう</span>
-          </h1>
-          <p className="text-slate-500 mb-10 leading-relaxed font-medium">
-            行きたい場所をマップに追加して、<br/>
-            AIと一緒に最適なルートを見つけましょう。<br/>
-            URLを共有すれば、友達と同時編集できます。
-          </p>
-
-          <div className="grid grid-cols-1 gap-4 mb-10 text-left">
-            <FeatureItem icon={<MapIcon size={20}/>} title="マップで直感的に" desc="気になる場所をポチッと追加" />
-            <FeatureItem icon={<Sparkles size={20}/>} title="AIがルート提案" desc="効率的な巡り方を自動計算" />
-            <FeatureItem icon={<Share2 size={20}/>} title="リアルタイム共有" desc="URLを送るだけで共同編集" />
-          </div>
-
-          <button 
-            onClick={() => setStep('create')}
-            className="w-full bg-slate-900 text-white py-4 rounded-2xl font-bold text-lg shadow-lg hover:bg-slate-800 hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2"
-          >
-            しおりを作る <ArrowRight size={20}/>
-          </button>
         </div>
       </div>
     );
@@ -305,7 +394,7 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
               </div>
             </div>
 
-            <div className="mt-10">
+            <div className="mt-10 mb-10">
               <button 
                 onClick={handleCreateTrip}
                 disabled={!roomName || !userName || isLoading}
