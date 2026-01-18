@@ -93,10 +93,14 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
     
     const newRoomId = generateUUID();
     
+    // ★修正: ここで start_date, end_date, adult_num を保存するように変更
     const { error } = await supabase.from('rooms').insert({
       id: newRoomId,
       name: roomName,
-      created_by: userName
+      created_by: userName,
+      start_date: startDate || null, // 日付を追加
+      end_date: endDate || null,     // 日付を追加
+      adult_num: Number(adultNum) || 1 // 人数を追加
     });
 
     if (error) {
@@ -106,6 +110,7 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
       return;
     }
 
+    // ローカルストレージにも保存（念のため）
     localStorage.setItem(`rh_settings_${newRoomId}`, JSON.stringify({
       start: startDate,
       end: endDate,
@@ -318,27 +323,27 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
     }
   ];
 
-  // 使い方ステップの定義 (指定された内容 + 修正)
+  // 使い方ステップの定義
   const usageSteps = [
     {
       step: 1,
       title: "ルーム作成",
-      desc: "旅行のタイトルや日程を決めて、\nあなただけのしおりを作成。", // 文言修正 (内容に合わせました)
-      icon: <Plus size={24} className="text-white"/>, // Plusアイコン
+      desc: "旅行のタイトルや日程を決めて、\nあなただけのしおりを作成。",
+      icon: <Plus size={24} className="text-white"/>,
       color: "bg-blue-500"
     },
     {
       step: 2,
       title: "URLをシェア！",
       desc: "作成した旅行ページのURLを\nLINEなどで友達に送ります。",
-      icon: <Share2 size={24} className="text-white"/>, // Shareアイコン
+      icon: <Share2 size={24} className="text-white"/>,
       color: "bg-indigo-500"
     },
     {
       step: 3,
       title: "スポットを追加→みんなで計画！",
       desc: "マップ検索やAI提案から、\n行きたい場所をどんどん追加。",
-      icon: <MapPinned size={24} className="text-white"/>, // MapPinnedアイコン
+      icon: <MapPinned size={24} className="text-white"/>,
       color: "bg-teal-500"
     }
   ];

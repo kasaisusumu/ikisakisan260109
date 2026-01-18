@@ -1226,7 +1226,7 @@ const filteredSpots = useMemo(() => {
   // ▼▼▼ 修正対象：loadRoomData と useEffect を正しい形に直す ▼▼▼
   // ---------------------------------------------------------
 
-  const loadRoomData = async (id: string) => {
+ const loadRoomData = async (id: string) => {
     // 1. ルーム情報の取得
     const { data: roomData } = await supabase.from('rooms').select('*').eq('id', id).single();
     
@@ -1234,6 +1234,7 @@ const filteredSpots = useMemo(() => {
     if (roomData) { 
         saveToRoomHistory(id, roomData.name); 
 
+        // ★追加: DBにある日付・人数をStateにセット
         if (roomData.start_date) setStartDate(roomData.start_date);
         if (roomData.end_date) setEndDate(roomData.end_date);
         if (roomData.adult_num) setAdultNum(roomData.adult_num);
@@ -1506,27 +1507,27 @@ const filteredSpots = useMemo(() => {
   };
   // 旅行設定モーダルの「保存して閉じる」ボタンのonClick処理を修正
 
-const handleSaveSettings = async () => {
-    if (!roomId) {
-        setShowDateModal(false);
-        return;
-    }
+// 旅行設定モーダルの「保存して閉じる」ボタンの処理
+  const handleSaveSettings = async () => {
+      if (!roomId) {
+          setShowDateModal(false);
+          return;
+      }
 
-    // DBを更新
-    const { error } = await supabase.from('rooms').update({
-        start_date: startDate,
-        end_date: endDate,
-        adult_num: adultNum
-    }).eq('id', roomId);
+      // ★修正: Supabaseのデータを更新
+      const { error } = await supabase.from('rooms').update({
+          start_date: startDate,
+          end_date: endDate,
+          adult_num: adultNum
+      }).eq('id', roomId);
 
-    if (error) {
-        console.error("Settings update failed", error);
-        alert("設定の保存に失敗しました");
-    } else {
-        // 設定完了
-        setShowDateModal(false);
-    }
-};
+      if (error) {
+          console.error("Settings update failed", error);
+          alert("設定の保存に失敗しました");
+      } else {
+          setShowDateModal(false);
+      }
+  };
 
   const getIconForSuggestion = (item: any) => {
     if (item.is_room_cache) return <Database size={16} className="text-blue-500 mt-0.5 shrink-0" />;
@@ -2864,6 +2865,10 @@ const handleSaveSettings = async () => {
                            travelDays={travelDays} 
                            autoShowScreenshot={autoShowScreenshot}
                            onScreenshotClosed={() => setAutoShowScreenshot(false)}
+                           
+                           // ★追加: ここで親の状態(startDate, adultNum)を渡す
+                           startDate={startDate}
+                           adultNum={adultNum}
                         />
                    </div>
                )}

@@ -24,6 +24,18 @@ const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const RAKUTEN_AFFILIATE_ID = "4fcc24e4.174bb117.4fcc24e5.5b178353"; 
 
+// ★追加: ホテル名クリーニング関数 (page.tsxと同じもの)
+const cleanHotelName = (name: string) => {
+    if (!name) return "";
+    return name
+        .replace(/天然温泉/g, '')
+        .replace(/[（\(].*?[）\)]/g, '')
+        .replace(/[　・、。]/g, ' ')
+        .replace(/Ｐ/g, 'P').replace(/Ｒ/g, 'R').replace(/Ｅ/g, 'E').replace(/Ｍ/g, 'M').replace(/Ｉ/g, 'I').replace(/Ｕ/g, 'U')
+        .replace(/\s+/g, ' ')
+        .trim();
+};
+
 // --- 画像表示用コンポーネント ---
 const SpotImage = ({ src, alt, className }: { src?: string | null, alt: string, className?: string }) => {
     const [isLoading, setIsLoading] = useState(true);
@@ -87,6 +99,9 @@ interface Props {
   travelDays?: number;
   autoShowScreenshot?: boolean;
   onScreenshotClosed?: () => void;
+  // ★追加: 日付と人数を受け取るようにする
+  startDate?: string;
+  adultNum?: number;
 }
 
 const TRANSPORT_MODES = [
@@ -98,8 +113,12 @@ const TRANSPORT_MODES = [
   { id: 'ship', icon: <Ship size={16}/>, label: '船', googleMode: 'transit' },
 ];
 
-export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, travelDays = 1, autoShowScreenshot, onScreenshotClosed }: Props) {
-  const mapContainer = useRef<HTMLDivElement>(null);
+export default function PlanView({ 
+    spots, onRemove, onUpdateSpots, roomId, travelDays = 1, 
+    autoShowScreenshot, onScreenshotClosed,
+    startDate, adultNum = 2  // ★追加: デフォルト値も設定
+}: Props) {  
+    const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
   const captureRef = useRef<HTMLDivElement>(null); 
   const scrollContainerRef = useRef<HTMLDivElement>(null); 
@@ -239,28 +258,36 @@ export default function PlanView({ spots, onRemove, onUpdateSpots, roomId, trave
       });
   }, [activeDaySpots, timeline]);
 
-  const getAffiliateUrl = (spot: any) => {
-      if (spot.id && /^\d+$/.test(spot.id)) {
-          const today = new Date();
-          const nextMonth = new Date(today);
-          nextMonth.setDate(today.getDate() + 30);
-          const y1 = nextMonth.getFullYear();
-          const m1 = nextMonth.getMonth() + 1;
-          const d1 = nextMonth.getDate();
-          
-          const nextDay = new Date(nextMonth);
-          nextDay.setDate(nextMonth.getDate() + 1);
-          const y2 = nextDay.getFullYear();
-          const m2 = nextDay.getMonth() + 1;
-          const d2 = nextDay.getDate();
-          const targetUrl = `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${spot.id}?f_teikei=&f_heya_su=1&f_otona_su=2&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_sort=min_charge`;
-          if (RAKUTEN_AFFILIATE_ID) {
-              return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent(targetUrl)}`;
-          }
-          return targetUrl;
-      }
-      return spot.url || `https://search.travel.rakuten.co.jp/ds/hotel/search?f_teikei=&f_query=${encodeURIComponent(spot.name)}`;
+  // ... (前略)
+
+  
+  const getAffiliateUrl = (hotel: any) => {
+    let targetUrl = "";
+
+    // パターンA: IDがある場合（HotelListViewの宿は基本的にIDを持っています）
+    if (hotel.id) {
+        // 日付・人数指定を外してシンプルに
+        targetUrl = `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotel.id}?f_teikei=&f_heya_su=1&f_sort=min_charge`;
+    }
+    // パターンB: 既存URL
+    else if (hotel.url && hotel.url.includes('rakuten.co.jp')) {
+        targetUrl = hotel.url;
+    }
+    // フォールバック
+    else {
+        targetUrl = `https://search.travel.rakuten.co.jp/ds/hotel/search?f_query=${encodeURIComponent(hotel.name)}`;
+    }
+
+    // アフィリエイトリンク化
+    if (RAKUTEN_AFFILIATE_ID) {
+        const encodedUrl = encodeURIComponent(targetUrl);
+        // PC/Mobile両対応の形式
+        return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodedUrl}&m=${encodedUrl}`;
+    }
+    return targetUrl;
   };
+
+  // ... (後略)
 
   const getDirectionsUrl = (index: number) => {
       const prevSpot = timeline[index - 1]?.spot?.name;
@@ -1122,8 +1149,11 @@ const handleArrivalChange = (index: number, newArrival: string) => {
                                 <span className="text-lg leading-none">{String(spotCounter).padStart(2, '0')}</span>
                               </div>
                               
+                              
+
                               <div className="bg-white border border-gray-200 rounded-xl overflow-hidden hover:border-indigo-400 hover:shadow-md transition-all cursor-grab active:cursor-grabbing" onClick={() => setEditItem({index: i, type: 'spot', data: item})}>
-                                <div className="flex h-24">
+                                {/* ★修正: h-24 (固定) を min-h-[6rem] (可変) に変更 */}
+                                <div className="flex min-h-[6rem]">
                                     <div className="w-24 bg-gray-100 shrink-0 relative border-r border-gray-100">
                                         {(() => {
                                             const displaySpot = spots.find(s => 
@@ -1139,6 +1169,7 @@ const handleArrivalChange = (index: number, newArrival: string) => {
                                     </div>
 
                                     <div className="flex-1 p-3 flex flex-col justify-between">
+
                                         <div>
                                             <div className="flex justify-between items-start mb-1">
                                                 <h3 className="font-bold text-gray-800 text-sm line-clamp-1">{item.spot.name}</h3>
@@ -1202,7 +1233,7 @@ const handleArrivalChange = (index: number, newArrival: string) => {
                                                 {/* 楽天アフィリエイトリンク (宿の場合) */}
                                                 {item.spot.is_hotel && (
                                                     <a href={getAffiliateUrl(item.spot)} target="_blank" onClick={(e)=>e.stopPropagation()} className="bg-orange-50 text-orange-600 px-2 py-1 rounded text-[10px] font-bold border border-orange-200 hover:bg-orange-100 transition shadow-sm flex items-center gap-1">
-                                                        <ExternalLink size={10}/> 空室確認
+                                                        <ExternalLink size={10}/> 空室確認(無効)
                                                     </a>
                                                 )}
                                             </div>
