@@ -60,7 +60,7 @@ interface Props {
   onAutoSearch: (keyword: string) => void;
   onPreviewSpot?: (spot: any) => void;
   initialSearchArea?: AreaSearchParams | null;
-  travelDays: number; // ★追加: 旅行日数を受け取る
+  travelDays: number;
 }
 
 export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot, roomId, initialSearchArea, travelDays }: Props) {
@@ -72,27 +72,47 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
   const [importUrl, setImportUrl] = useState("");
   const [isImporting, setIsImporting] = useState(false);
   
-  // ★追加: 追加前の確認用State (どの日程に追加するか選ぶため)
   const [pendingHotel, setPendingHotel] = useState<any>(null);
-  
-  // インポート完了ポップアップ用のstate
   const [importedHotel, setImportedHotel] = useState<any>(null);
 
-  // 検索条件
-  const today = new Date();
-  const nextMonth = new Date(today);
-  nextMonth.setDate(today.getDate() + 30);
-  const nextMonthStr = nextMonth.toISOString().split('T')[0];
-  const nextMonthNextDay = new Date(nextMonth);
-  nextMonthNextDay.setDate(nextMonth.getDate() + 1);
-  const nextMonthNextDayStr = nextMonthNextDay.toISOString().split('T')[0];
+  // ▼▼▼ 修正: 検索条件の初期化（localStorageから復元） ▼▼▼
+  const [conditions, setConditions] = useState<SearchConditions>(() => {
+      // デフォルト値の計算
+      const today = new Date();
+      const nextMonth = new Date(today);
+      nextMonth.setDate(today.getDate() + 30);
+      const nextMonthStr = nextMonth.toISOString().split('T')[0];
+      const nextMonthNextDay = new Date(nextMonth);
+      nextMonthNextDay.setDate(nextMonth.getDate() + 1);
+      const nextMonthNextDayStr = nextMonthNextDay.toISOString().split('T')[0];
+      
+      const defaultConditions = {
+          checkin: nextMonthStr,
+          checkout: nextMonthNextDayStr,
+          adults: 2,
+          budgetMax: 30000,
+      };
 
-  const [conditions, setConditions] = useState<SearchConditions>({
-      checkin: nextMonthStr,
-      checkout: nextMonthNextDayStr,
-      adults: 2,
-      budgetMax: 30000,
+      // localStorageから読み込み
+      if (typeof window !== 'undefined' && roomId) {
+          try {
+              const saved = localStorage.getItem(`rh_hotel_conditions_${roomId}`);
+              if (saved) {
+                  return { ...defaultConditions, ...JSON.parse(saved) };
+              }
+          } catch (e) {
+              console.error("Failed to load saved conditions", e);
+          }
+      }
+      return defaultConditions;
   });
+
+  // ▼▼▼ 追加: 検索条件が変更されたら保存する ▼▼▼
+  useEffect(() => {
+      if (roomId) {
+          localStorage.setItem(`rh_hotel_conditions_${roomId}`, JSON.stringify(conditions));
+      }
+  }, [conditions, roomId]);
 
   const [showSettings, setShowSettings] = useState(false);
   const [searchArea, setSearchArea] = useState<AreaSearchParams | null>(null);
@@ -100,7 +120,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
   const hotelMarkersRef = useRef<mapboxgl.Marker[]>([]);
-  const spotMarkersRef = useRef<mapboxgl.Marker[]>([]);
   const tempDrawCoords = useRef<number[][]>([]);
 
   const centerOfGravity = useMemo(() => {
@@ -118,6 +137,7 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
     return { lng: totalLng / totalWeight, lat: totalLat / totalWeight, valid: true };
   }, [spots, spotVotes]);
 
+  // マップからの「囲って検索」連携
   useEffect(() => {
       if (initialSearchArea) {
           setSearchArea(initialSearchArea);
@@ -140,12 +160,10 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
       if (isExpanded) setIsExpanded(false);
   };
 
-  // ★修正: 即追加せず、Stateに保存してモーダルを出す
   const handleAddCandidate = (hotel: any) => {
       setPendingHotel(hotel);
   };
 
-  // ★追加: 日程を決めて追加を実行する関数
   const confirmAddHotel = (day: number) => {
       if (onAddSpot && pendingHotel) {
           onAddSpot({ 
@@ -154,13 +172,10 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
               votes: 0, 
               stay_time: 0, 
               status: 'hotel_candidate',
-              day: day // 選択したDayをセット
+              day: day
           });
       }
       setPendingHotel(null);
-      // インポート完了表示が必要な場合はここで調整可能ですが、
-      // 手動追加のUXとしてはモーダルが閉じればOKです。
-      // 必要であれば setImportedHotel(pendingHotel) などを呼びます。
   };
 
   const getAffiliateUrl = (hotel: any) => {
@@ -169,11 +184,9 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
     if (hotel.url && hotel.url.includes('rakuten.co.jp')) {
         targetUrl = hotel.url;
     } else {
-        // 日付と人数(f_otona_su)を削除
         targetUrl = `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotel.id}?f_teikei=&f_heya_su=1&f_sort=min_charge`;
     }
 
-    // PCとモバイル(&m=)の両方に同じエンコード済みURLを設定
     if (RAKUTEN_AFFILIATE_ID) {
         const encodedUrl = encodeURIComponent(targetUrl);
         return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodedUrl}&m=${encodedUrl}`;
@@ -263,7 +276,8 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
 
   const executeSearch = async () => {
     if (!searchArea) return alert("範囲を囲んでください");
-    setIsLoading(true); setHotels([]); setSelectedHotel(null); setShowSettings(false); 
+    setIsLoading(true); setHotels([]); setSelectedHotel(null); 
+    setShowSettings(false); 
     try {
         const body = {
             latitude: searchArea.latitude, longitude: searchArea.longitude, radius: Number(searchArea.radius.toFixed(1)), 
@@ -307,7 +321,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
           });
           const data = await res.json();
           if (data.spot) { 
-              // ★修正: handleAddCandidateを呼ぶことでモーダルを表示
               handleAddCandidate(data.spot); 
               setImportUrl(""); 
               setImportedHotel(data.spot);
@@ -568,7 +581,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                       </button>
                       {Array.from({ length: travelDays }).map((_, i) => {
                           const dayNum = i + 1;
-                          // ★修正: 最終日（帰宅日）は宿泊しないため除外
                           if (dayNum === travelDays) return null;
 
                           return (
