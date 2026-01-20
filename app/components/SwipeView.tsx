@@ -247,15 +247,17 @@ export default function SwipeView({
   };
 
   // page.tsx の getAffiliateUrl と同じロジックを実装
+  // SwipeView.tsx 内の getAffiliateUrl 関数
+
   const getAffiliateUrl = (spot: any) => {
-    const adultNum = 2; // デフォルト値 (SwipeViewではstateを持たないため)
+    const adultNum = 2; // デフォルト値
     let targetUrl = "";
 
     if (spot.url && spot.url.includes('rakuten.co.jp')) { 
         targetUrl = spot.url; 
     }
     else if (spot.id && /^\d+$/.test(String(spot.id))) {
-        // 日付ロジック (Today + 30days)
+        // ▼▼▼ 日付計算ロジック (ここが必要でした) ▼▼▼
         const today = new Date();
         const nextMonth = new Date(today);
         nextMonth.setDate(today.getDate() + 30);
@@ -267,6 +269,7 @@ export default function SwipeView({
         const y2 = nextDay.getFullYear();
         const m2 = nextDay.getMonth() + 1;
         const d2 = nextDay.getDate();
+        // ▲▲▲ ここまで ▲▲▲
 
         targetUrl = `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${spot.id}?f_teikei=&f_heya_su=1&f_otona_su=${adultNum}&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_sort=min_charge`;
     }
@@ -275,11 +278,7 @@ export default function SwipeView({
         targetUrl = spot.url || `https://search.travel.rakuten.co.jp/ds/hotel/search?f_teikei=&f_query=${encodeURIComponent(queryName)}&f_sort=min_charge`;
     }
 
-    if (RAKUTEN_AFFILIATE_ID) {
-        const encodedUrl = encodeURIComponent(targetUrl);
-        return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodedUrl}`;
-    }
-
+    // アフィリエイトIDによる変換を行わず、そのまま返す
     return targetUrl;
   };
   

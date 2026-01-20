@@ -369,14 +369,52 @@ const onTimelineDragStart = (e: React.DragEvent, index: number) => {
     setDraggedTimelineIndex(index);
 };
 
+// ★追加: 自動スクロール関数
+const startTimelineAutoScroll = (direction: 'up' | 'down') => {
+    if (timelineScrollInterval.current) return;
+    const container = timelineListRef.current; // 後述のdivにrefを追加する必要あり
+    if (!container) return;
+
+    timelineScrollInterval.current = setInterval(() => {
+        const speed = 15;
+        if (direction === 'up') {
+            container.scrollTop -= speed;
+        } else {
+            container.scrollTop += speed;
+        }
+    }, 16);
+};
+
+const stopTimelineAutoScroll = () => {
+    if (timelineScrollInterval.current) {
+        clearInterval(timelineScrollInterval.current);
+        timelineScrollInterval.current = null;
+    }
+};
 const onTimelineDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
-};
 
+    // ★追加: オートスクロール判定
+    const container = timelineListRef.current;
+    if (container) {
+        const { top, bottom } = container.getBoundingClientRect();
+        const mouseY = e.clientY;
+        const threshold = 100;
+
+        if (mouseY < top + threshold) {
+            startTimelineAutoScroll('up');
+        } else if (mouseY > bottom - threshold) {
+            startTimelineAutoScroll('down');
+        } else {
+            stopTimelineAutoScroll();
+        }
+    }
+};
 // page.tsx 内の onTimelineDrop を以下に置き換え
 const onTimelineDrop = async (e: React.DragEvent, targetIndex: number) => {
     e.preventDefault();
+    stopTimelineAutoScroll(); // ★追加
     const sourceIndex = parseInt(e.dataTransfer.getData('text/plain'), 10);
     if (isNaN(sourceIndex) || sourceIndex === targetIndex) return;
 
@@ -486,6 +524,10 @@ const onTimelineDrop = async (e: React.DragEvent, targetIndex: number) => {
   const [expandedImage, setExpandedImage] = useState<string | null>(null);
   const attemptedImageFetch = useRef<Set<string>>(new Set());
   const [displayTimeline, setDisplayTimeline] = useState<any[]>([]);
+
+  // ★追加: タイムラインリストのDOM参照用と、スクロール制御用
+const timelineListRef = useRef<HTMLDivElement>(null);
+const timelineScrollInterval = useRef<NodeJS.Timeout | null>(null);
 
   // ...既存のuseState
   const [isSuggesting, setIsSuggesting] = useState(false);
@@ -903,9 +945,9 @@ useEffect(() => {
       // ---------------------------------------------------------
       // 6. アフィリエイトリンク化
       // ---------------------------------------------------------
-      if (RAKUTEN_AFFILIATE_ID) {
-          return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent(targetUrl)}`;
-      }
+    //  if (RAKUTEN_AFFILIATE_ID) {
+     //     return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent(targetUrl)}`;
+    //  }
 
       return targetUrl;
   };
@@ -1272,10 +1314,17 @@ const filteredSpots = useMemo(() => {
                     if (prev.some(s => s.id === newSpot.id)) return prev; 
                     return [...prev, newSpot].sort((a, b) => (a.order || 0) - (b.order || 0));
                 });
-            } else if (payload.eventType === 'UPDATE') {
-                const updatedSpot = payload.new;
-                setPlanSpots(prev => prev.map(s => s.id === updatedSpot.id ? updatedSpot : s));
-            } else if (payload.eventType === 'DELETE') {
+            // 1095行目付近
+} else if (payload.eventType === 'UPDATE') {
+    const updatedSpot = payload.new;
+    setPlanSpots(prev => {
+        // 更新対象を置き換え
+        const next = prev.map(s => s.id === updatedSpot.id ? updatedSpot : s);
+        // ★重要: order順に並び替え直す (これが抜けていると順番が変わりません)
+        return [...next].sort((a, b) => (a.order || 0) - (b.order || 0));
+    });
+}
+            else if (payload.eventType === 'DELETE') {
                 const deletedSpotId = payload.old.id;
                 setPlanSpots(prev => prev.filter(s => s.id !== deletedSpotId));
             }
@@ -2526,8 +2575,11 @@ const filteredSpots = useMemo(() => {
                   </div>
 
                   {/* List content */}
-                  <div className="flex-1 overflow-y-auto p-4 space-y-3 pb-32 bg-gray-50/50">
-                      
+                  
+                  <div 
+    ref={timelineListRef} // ★ここに追加
+    className="flex-1 overflow-y-auto p-4 space-y-3 pb-32 bg-gray-50/50"
+>    
                       {filterStatus === 'hotel_candidate' && (
                           <a 
                             href={rakutenHomeUrl}

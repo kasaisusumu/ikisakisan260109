@@ -1,15 +1,12 @@
 "use client";
 
 import { useState, useEffect, useRef, useMemo } from 'react';
-import mapboxgl from 'mapbox-gl';
-import 'mapbox-gl/dist/mapbox-gl.css';
 import { 
-  MapPin, Car, Clock, X, Settings, Loader2, Sparkles, MinusCircle, RefreshCw, BedDouble, 
+  MapPin, Car, Clock, X, Loader2, Sparkles, MinusCircle, 
   Edit3, Train, Plane, Ship, Footprints, Zap, 
   Image as ImageIcon, Link as LinkIcon, Camera, Upload, 
-  Save, BookOpen, Trash2, PlusCircle, MapPinned, GripVertical, ArrowRight,
-  ChevronDown, ChevronUp, Layers, Check, Map as MapIcon, ArrowUp, Download, ArrowLeft,
-  Banknote, ExternalLink, StickyNote
+  Trash2, PlusCircle, MapPinned, ArrowRight, ArrowLeft,
+  ChevronDown, ChevronUp, Layers, Banknote, ExternalLink, StickyNote
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
@@ -20,21 +17,8 @@ declare global {
     }
 }
 
-const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const RAKUTEN_AFFILIATE_ID = "4fcc24e4.174bb117.4fcc24e5.5b178353"; 
-
-// ★追加: ホテル名クリーニング関数 (page.tsxと同じもの)
-const cleanHotelName = (name: string) => {
-    if (!name) return "";
-    return name
-        .replace(/天然温泉/g, '')
-        .replace(/[（\(].*?[）\)]/g, '')
-        .replace(/[　・、。]/g, ' ')
-        .replace(/Ｐ/g, 'P').replace(/Ｒ/g, 'R').replace(/Ｅ/g, 'E').replace(/Ｍ/g, 'M').replace(/Ｉ/g, 'I').replace(/Ｕ/g, 'U')
-        .replace(/\s+/g, ' ')
-        .trim();
-};
 
 // --- 画像表示用コンポーネント ---
 const SpotImage = ({ src, alt, className }: { src?: string | null, alt: string, className?: string }) => {
@@ -99,7 +83,6 @@ interface Props {
   travelDays?: number;
   autoShowScreenshot?: boolean;
   onScreenshotClosed?: () => void;
-  // ★追加: 日付と人数を受け取るようにする
   startDate?: string;
   adultNum?: number;
 }
@@ -116,13 +99,16 @@ const TRANSPORT_MODES = [
 export default function PlanView({ 
     spots, onRemove, onUpdateSpots, roomId, travelDays = 1, 
     autoShowScreenshot, onScreenshotClosed,
-    startDate, adultNum = 2  // ★追加: デフォルト値も設定
+    startDate, adultNum = 2
 }: Props) {  
-    const mapContainer = useRef<HTMLDivElement>(null);
-  const map = useRef<mapboxgl.Map | null>(null);
+  
   const captureRef = useRef<HTMLDivElement>(null); 
   const scrollContainerRef = useRef<HTMLDivElement>(null); 
   
+  // ★追加: リストコンテナへの参照と、スクロール制御用のRef
+  const listRef = useRef<HTMLDivElement>(null);
+  const scrollInterval = useRef<NodeJS.Timeout | null>(null);
+
   const [isProcessing, setIsProcessing] = useState(false);
   const [timeline, setTimeline] = useState<any[]>([]);
   const [routeGeoJSON, setRouteGeoJSON] = useState<any>(null);
@@ -130,24 +116,20 @@ export default function PlanView({
   
   const [optimizeCount, setOptimizeCount] = useState(0);
   const [draggedItemIndex, setDraggedItemIndex] = useState<number | null>(null);
-  const [selectedMapSpot, setSelectedMapSpot] = useState<any>(null);
-  const [showSettings, setShowSettings] = useState(false);
+
   const [startTime, setStartTime] = useState("09:00");
   const [endTime, setEndTime] = useState("18:00");
   const [startSpotName, setStartSpotName] = useState<string>("");
   const [endSpotName, setEndSpotName] = useState<string>("");
-  const [isPinListOpen, setIsPinListOpen] = useState(false);
-  const [pinnedPlans, setPinnedPlans] = useState<any[]>([]);
+  
   const [editItem, setEditItem] = useState<{index: number, type: 'spot' | 'travel', data: any} | null>(null);
   const [showScreenshotMode, setShowScreenshotMode] = useState(false);
   const [showUnusedList, setShowUnusedList] = useState(true);
   const [isSavingImage, setIsSavingImage] = useState(false);
   const attemptedImageFetch = useRef<Set<string>>(new Set());
-  const [isMapVisible, setIsMapVisible] = useState(false);
   const [selectedDay, setSelectedDay] = useState<number>(1);
 
   const displayDays = Math.max(travelDays, 1);
-  // ★追加: どの移動アイテムのメニューが開いているかを管理
   const [activeTransportMenuIndex, setActiveTransportMenuIndex] = useState<number | null>(null);
 
   useEffect(() => {
@@ -159,23 +141,18 @@ export default function PlanView({
       if (onScreenshotClosed) onScreenshotClosed();
   };
 
-  // 親(Page.tsx)からのデータ更新をリアルタイムに反映させる処理
-  // 【修正】Page(親)からのデータ更新をリアルタイムかつ、タブ切り替え時にも確実に反映させる
   useEffect(() => {
-      // タイムラインが空の場合は同期しても意味がないのでスキップ
       if (timeline.length === 0) return;
 
       setTimeline(prev => prev.map(item => {
           if (item.type !== 'spot') return item;
           
-          // 最新のスポット情報を探す
           const freshSpot = spots.find(s => 
               (s.id && String(s.id) === String(item.spot.id)) || 
               s.name === item.spot.name
           );
 
           if (freshSpot) {
-              // 変更があるか簡易チェック（無駄な再レンダリング防止のため）
               const needsUpdate = 
                   item.spot.comment !== freshSpot.comment ||
                   item.spot.link !== freshSpot.link ||
@@ -186,14 +163,12 @@ export default function PlanView({
                   return { 
                       ...item, 
                       spot: {
-                          ...item.spot,    // 現在のプロパティを保持
-                          ...freshSpot,    // 新しいデータで上書き
-                          
-                          // DBのカラム名と画面用変数名を同期
+                          ...item.spot,    
+                          ...freshSpot,    
                           cost: freshSpot.price,      
                           comment: freshSpot.comment, 
                           link: freshSpot.link,       
-                          url: freshSpot.link, // PlanView内部互換用
+                          url: freshSpot.link, 
                           image_url: freshSpot.image_url
                       },
                       image: freshSpot.image_url || item.image 
@@ -202,17 +177,10 @@ export default function PlanView({
           }
           return item;
       }));
-      // ★重要: timeline.length を依存配列に追加。
-      // これにより「localStorageからロードされて件数が増えた瞬間」に同期が走り、最新データに書き換わります。
   }, [spots, timeline.length]);
 
- // ★追加 1: 前の日の宿を特定する
   const prevDayHotel = useMemo(() => {
-      // 1日目なら前の日はないので無視
       if (selectedDay <= 1) return null;
-      
-      // 1つ前のDayに登録されている、確定済みの宿を探す
-      // (カテゴリーや名前で判定)
       return spots.find(s => 
           s.status === 'confirmed' && 
           s.day === selectedDay - 1 && 
@@ -220,17 +188,13 @@ export default function PlanView({
       );
   }, [spots, selectedDay]);
 
-  // ★追加 2: activeDaySpots に前の日の宿を自動的に含める
   const activeDaySpots = useMemo(() => {
-      // 本来の「その日のスポット」
       const current = spots.filter(s => 
           s.status === 'confirmed' && 
           (s.day === selectedDay || s.day === 0)
       );
 
-      // 前の日の宿が見つかった場合
       if (prevDayHotel) {
-          // すでにリストに含まれていなければ、強制的に「先頭」に追加する
           if (!current.find(s => (s.id && String(s.id) === String(prevDayHotel.id)) || s.name === prevDayHotel.name)) {
               return [prevDayHotel, ...current];
           }
@@ -258,15 +222,13 @@ export default function PlanView({
       });
   }, [activeDaySpots, timeline]);
 
-  // ... (前略)
+  // PlanView.tsx (180行目付近)
 
-  
   const getAffiliateUrl = (hotel: any) => {
     let targetUrl = "";
 
-    // パターンA: IDがある場合（HotelListViewの宿は基本的にIDを持っています）
+    // パターンA: IDがある場合
     if (hotel.id) {
-        // 日付・人数指定を外してシンプルに
         targetUrl = `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotel.id}?f_teikei=&f_heya_su=1&f_sort=min_charge`;
     }
     // パターンB: 既存URL
@@ -278,16 +240,9 @@ export default function PlanView({
         targetUrl = `https://search.travel.rakuten.co.jp/ds/hotel/search?f_query=${encodeURIComponent(hotel.name)}`;
     }
 
-    // アフィリエイトリンク化
-    if (RAKUTEN_AFFILIATE_ID) {
-        const encodedUrl = encodeURIComponent(targetUrl);
-        // PC/Mobile両対応の形式
-        return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodedUrl}&m=${encodedUrl}`;
-    }
+    // ★変更箇所: アフィリエイトリンク化のif文を削除し、targetUrlをそのまま返す
     return targetUrl;
   };
-
-  // ... (後略)
 
   const getDirectionsUrl = (index: number) => {
       const prevSpot = timeline[index - 1]?.spot?.name;
@@ -300,16 +255,11 @@ export default function PlanView({
           const date = new Date();
           date.setHours(hours, minutes, 0, 0);
 
-          // ★追加: もし時間が現在より過去なら、明日の日付として検索リンクを作る
-          // (過去の時間だと「すぐに出発」になってしまい、意図した検索結果が出ないため)
           if (date.getTime() < Date.now()) {
               date.setDate(date.getDate() + 1);
           }
 
-          // 秒単位のUnix Timestampに変換
           const timestamp = Math.floor(date.getTime() / 1000);
-          
-          // ★修正: 正しいGoogle MapsのURL形式に変更
           return `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(prevSpot)}&destination=${encodeURIComponent(nextSpot)}&travelmode=${mode}&departure_time=${timestamp}`;
       }
       return null;
@@ -325,19 +275,16 @@ export default function PlanView({
       reader.readAsDataURL(file);
   };
 
-  // ★修正: calculateSchedule で 0 を有効な値として扱う
   const calculateSchedule = (currentTimeline: any[]) => {
       let currentTime = new Date(`2000-01-01T${startTime}:00`);
       const newTimeline = currentTimeline.map((item) => {
           const newItem = { ...item };
           if (item.type === 'travel') {
-              // null/undefined の場合のみ 0 にする (0はそのまま維持)
               const duration = item.duration_min !== undefined ? item.duration_min : 0;
               currentTime = new Date(currentTime.getTime() + duration * 60000);
           } else if (item.type === 'spot') {
               newItem.arrival = currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
               
-              // 滞在時間が undefined/null の場合はデフォルト値を使うが、0 は許容する
               let stayTime = item.stay_min;
               if (stayTime === undefined || stayTime === null) {
                   stayTime = item.spot.stay_time || 60;
@@ -349,7 +296,6 @@ export default function PlanView({
                   const [nextH, nextM] = startTime.split(':').map(Number);
                   nextMorning.setHours(nextH, nextM, 0, 0);
                   const diffMin = (nextMorning.getTime() - currentTime.getTime()) / 60000;
-                  // ホテルの場合は最低滞在時間を確保しつつ翌朝まで
                   stayTime = Math.max(diffMin, 60);
                   newItem.is_overnight = true;
               }
@@ -436,61 +382,6 @@ export default function PlanView({
     }
   }, [roomId, selectedDay]); 
 
-  const fetchPinnedPlans = async () => {
-      const { data } = await supabase.from('pinned_plans').select('*').eq('room_id', roomId).order('created_at', { ascending: false });
-      if (data) setPinnedPlans(data);
-  };
-  useEffect(() => { if (isPinListOpen) fetchPinnedPlans(); }, [isPinListOpen]);
-
-  const handlePinPlan = async () => {
-      if (!isPlanGenerated) return;
-      const title = prompt("プラン名を入力して保存:", `Day ${selectedDay} のプラン`);
-      if (!title) return;
-
-      const { data: existingPlans } = await supabase
-          .from('pinned_plans')
-          .select('id')
-          .eq('room_id', roomId)
-          .eq('title', title);
-      
-      const planData = { timeline, unusedSpots, routeGeoJSON, day: selectedDay };
-
-      if (existingPlans && existingPlans.length > 0) {
-          if (!confirm(`プラン「${title}」は既に存在します。\n上書き保存しますか？`)) {
-              return; 
-          }
-          const targetId = existingPlans[0].id;
-          const { error } = await supabase
-              .from('pinned_plans')
-              .update({ plan_data: planData })
-              .eq('id', targetId);
-          if (!error) alert("プランを上書き保存しました！");
-          else alert("保存に失敗しました");
-      } else {
-          const { error } = await supabase
-              .from('pinned_plans')
-              .insert([{ room_id: roomId, title: title, plan_data: planData }]);
-          if (!error) alert("プランを保存しました！");
-          else alert("保存に失敗しました");
-      }
-      if (isPinListOpen) fetchPinnedPlans();
-  };
-
-  const handleLoadPin = (plan: any) => {
-      if (!confirm(`「${plan.title}」を復元しますか？\n現在の編集内容は上書きされます。`)) return;
-      const data = plan.plan_data;
-      setTimeline(calculateSchedule(data.timeline || []));
-      setRouteGeoJSON(data.routeGeoJSON);
-      setIsPlanGenerated(true);
-      setIsPinListOpen(false);
-  };
-  
-  const handleDeletePin = async (id: string) => {
-      if(!confirm("削除しますか？")) return;
-      await supabase.from('pinned_plans').delete().eq('id', id);
-      fetchPinnedPlans();
-  };
-
   const handleAutoGenerate = async () => {
     if (activeDaySpots.length < 2) return alert("この日のスポットが2つ以上必要です");
     
@@ -502,18 +393,14 @@ export default function PlanView({
     try {
       let targetSpots = [...activeDaySpots];
 
-      // ★追加 3: 前の日の宿がある場合、並び替えロジックを変更
       if (prevDayHotel) {
-          // 宿以外のスポットを取り出して、投票数順に並べる
           const others = targetSpots.filter(s => 
               !(s.id && String(s.id) === String(prevDayHotel.id)) && s.name !== prevDayHotel.name
           );
           others.sort((a, b) => (b.votes || 0) - (a.votes || 0));
           
-          // [宿, ...その他] の順で結合し、宿を確実にスタート地点にする
           targetSpots = [prevDayHotel, ...others];
       } else {
-          // 宿がない場合は通常通り（投票数順など）
           targetSpots.sort((a, b) => (b.votes || 0) - (a.votes || 0));
       }
 
@@ -537,7 +424,6 @@ export default function PlanView({
       setTimeline(calculatedTimeline);
       setRouteGeoJSON(data.route_geometry);
       setIsPlanGenerated(true);
-      setShowSettings(false);
       
       const newCount = optimizeCount + 1;
       setOptimizeCount(newCount);
@@ -545,17 +431,64 @@ export default function PlanView({
     } catch (e: any) { alert(`エラー: ${e.message}`); } finally { setIsProcessing(false); }
   };
 
+  // --- ★追加: 自動スクロール制御関数 ---
+  const startAutoScroll = (direction: 'up' | 'down', container: HTMLDivElement) => {
+    if (scrollInterval.current) return; // すでにスクロール中なら何もしない
+    
+    scrollInterval.current = setInterval(() => {
+        const speed = 15; // スクロール速度 (ピクセル/tick)
+        if (direction === 'up') {
+            container.scrollTop -= speed;
+        } else {
+            container.scrollTop += speed;
+        }
+    }, 16); // 60fps程度
+  };
+
+  const stopAutoScroll = () => {
+    if (scrollInterval.current) {
+        clearInterval(scrollInterval.current);
+        scrollInterval.current = null;
+    }
+  };
+
   const onDragStart = (e: React.DragEvent, timelineIndex: number) => {
       e.dataTransfer.setData('text/plain', String(timelineIndex));
       e.dataTransfer.effectAllowed = "move";
       setTimeout(() => { setDraggedItemIndex(timelineIndex); }, 0);
   };
-  const onDragEnd = (e: React.DragEvent) => { setDraggedItemIndex(null); };
-  const onDragOver = (e: React.DragEvent) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; };
+
+  const onDragEnd = (e: React.DragEvent) => { 
+      setDraggedItemIndex(null); 
+      stopAutoScroll(); // ドラッグ終了時にスクロール停止
+  };
   
-  const onDrop = (e: React.DragEvent, targetTimelineIndex: number) => {
+  // ★変更: onDragOverで自動スクロールをトリガー
+  const onDragOver = (e: React.DragEvent) => { 
+      e.preventDefault(); 
+      e.dataTransfer.dropEffect = "move"; 
+
+      const container = listRef.current;
+      if (!container) return;
+
+      const { top, bottom } = container.getBoundingClientRect();
+      const mouseY = e.clientY;
+      const threshold = 100; // 端から100px以内ならスクロール開始
+
+      if (mouseY < top + threshold) {
+          startAutoScroll('up', container);
+      } else if (mouseY > bottom - threshold) {
+          startAutoScroll('down', container);
+      } else {
+          stopAutoScroll(); // 範囲外なら停止
+      }
+  };
+  
+  const onDrop = async (e: React.DragEvent, targetTimelineIndex: number) => {
     e.preventDefault();
     e.stopPropagation(); 
+    stopAutoScroll(); // ドロップ時にスクロール停止
+
     const rawIndex = e.dataTransfer.getData('text/plain');
     const sourceIndex = parseInt(rawIndex, 10);
     const effectiveSourceIndex = !isNaN(sourceIndex) ? sourceIndex : draggedItemIndex;
@@ -564,6 +497,7 @@ export default function PlanView({
     const draggedItem = timeline[effectiveSourceIndex];
     if (!draggedItem || draggedItem.type !== 'spot') return; 
 
+    // 1. ローカルのタイムラインを並び替え
     const currentSpotsOnly = timeline.filter(item => item.type === 'spot');
     const currentTravelsOnly = timeline.filter(item => item.type === 'travel');
     const draggedSpotIndex = currentSpotsOnly.findIndex(s => s.spot.name === draggedItem.spot.name);
@@ -586,31 +520,59 @@ export default function PlanView({
             else reconstructedTimeline.push({ type: 'travel', duration_min: 30, transport_mode: 'car' });
         }
     });
+
+    // ローカルStateの更新
     setTimeline(calculateSchedule(reconstructedTimeline));
     setDraggedItemIndex(null);
+
+    // 2. データベースと親コンポーネントの更新
+    if (roomId) {
+        // 並び替えられたスポットのリスト抽出
+        const activeSpots = newSpotsOrder.map(item => item.spot);
+        const fullSpotsList = [...spots]; // 親から渡された全スポット
+
+        // orderの更新
+        activeSpots.forEach((s, idx) => {
+            // DB更新
+            supabase.from('spots').update({ order: idx }).eq('id', s.id).then();
+            
+            // ローカルリスト内での更新
+            const target = fullSpotsList.find(fs => fs.id === s.id);
+            if (target) {
+                target.order = idx;
+            }
+        });
+
+        // 親コンポーネント(Page.tsx)へ通知
+        // 順番通りにソートして渡す
+        fullSpotsList.sort((a, b) => (a.order || 0) - (b.order || 0));
+        onUpdateSpots(fullSpotsList);
+
+        // LocalStorageも即座に更新 (Page.tsxが参照するキーを更新)
+        const storageKey = `rh_plan_${roomId}_day_${selectedDay}`;
+        localStorage.setItem(storageKey, JSON.stringify({ 
+            timeline: calculateSchedule(reconstructedTimeline), 
+            updatedAt: Date.now() 
+        }));
+    }
   };
 
 const handleEditSave = async () => {
       if (!editItem) return;
       
-      // 1. PlanView(自分自身)の表示を即座に更新
       const newTimeline = [...timeline];
       newTimeline[editItem.index] = editItem.data;
       setTimeline(calculateSchedule(newTimeline));
 
-      // 2. 親コンポーネントとデータベースを更新
       if (editItem.type === 'spot' && roomId) {
           const spotId = editItem.data.spot.id;
           
-          // 更新するデータの内容
           const updates = {
               comment: editItem.data.spot.comment,
               link: editItem.data.url,
               price: editItem.data.spot.cost ? parseInt(editItem.data.spot.cost) : null
           };
 
-          // ★追加: 親コンポーネント(page.tsx)のデータを即座に書き換える (Optimistic Update)
-          // これにより、DB更新を待たずにリスト側の表示が同期されます
           const newSpots = spots.map(s => {
               if ((s.id && String(s.id) === String(spotId)) || s.name === editItem.data.spot.name) {
                   return { ...s, ...updates };
@@ -619,7 +581,6 @@ const handleEditSave = async () => {
           });
           onUpdateSpots(newSpots);
 
-          // 3. データベース(Supabase)を更新
           if (spotId && !String(spotId).startsWith('spot-') && !String(spotId).startsWith('ai-')) {
               try {
                   await supabase
@@ -634,8 +595,7 @@ const handleEditSave = async () => {
 
       setEditItem(null);
   };
-  // ★修正: 入力値を処理する関数
- // 修正後：単一の項目のみを更新し、全体再計算をしない
+
 const handleTimeChange = (index: number, value: string) => {
     const val = value === '' ? 0 : parseInt(value, 10);
     if (isNaN(val)) return;
@@ -647,11 +607,9 @@ const handleTimeChange = (index: number, value: string) => {
         newTimeline[index].stay_min = val;
         if(newTimeline[index].spot) newTimeline[index].spot.stay_time = val;
     }
-    // calculateSchedule(newTimeline) を呼ばずにセット
     setTimeline(newTimeline);
 };
 
- // 出発時間を独立して変更
 const handleDepartureChange = (index: number, newDeparture: string) => {
     const newTimeline = [...timeline];
     if (newTimeline[index]) {
@@ -660,7 +618,6 @@ const handleDepartureChange = (index: number, newDeparture: string) => {
     }
 };
 
-// 到着時間を独立して変更（新規追加）
 const handleArrivalChange = (index: number, newArrival: string) => {
     const newTimeline = [...timeline];
     if (newTimeline[index]) {
@@ -676,7 +633,6 @@ const handleArrivalChange = (index: number, newArrival: string) => {
   };
 
   const toggleSpotInclusion = (spot: any, isAdding: boolean) => {
-    setSelectedMapSpot(null); 
     if (isAdding) {
         const lastItem = timeline[timeline.length - 1];
         const newItems = [];
@@ -702,64 +658,6 @@ const handleArrivalChange = (index: number, newArrival: string) => {
         setTimeline(calculateSchedule(newTimeline));
     }
   };
-
-  useEffect(() => {
-    mapboxgl.accessToken = MAPBOX_TOKEN;
-    if (!map.current && mapContainer.current) {
-      map.current = new mapboxgl.Map({
-        container: mapContainer.current,
-        style: 'mapbox://styles/mapbox/streets-v12', 
-        center: [135.758767, 34.985120], 
-        zoom: 10
-      });
-      map.current.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'top-right');
-    }
-
-    const activePoints = (timeline || []).filter(t => t.type === 'spot').map(t => t.spot);
-    const allDisplaySpots = [...activePoints, ...(unusedSpots || [])];
-
-    if (map.current && allDisplaySpots.length > 0) {
-        const updateMap = () => {
-            if (!map.current) return;
-            document.querySelectorAll('.marker-plan-map').forEach(e => e.remove());
-            const bounds = new mapboxgl.LngLatBounds();
-            activePoints.forEach((spot, i) => {
-                const el = document.createElement('div');
-                el.className = 'marker-plan-map';
-                el.innerHTML = `<div style="background-color:#4f46e5; width:24px; height:24px; border-radius:50%; display:flex; align-items:center; justify-content:center; color:white; font-weight:bold; border:2px solid white; box-shadow:0 3px 6px rgba(0,0,0,0.2); font-size:10px;">${i + 1}</div>`;
-                el.onclick = (e) => { e.stopPropagation(); setSelectedMapSpot({ spot, type: 'active' }); };
-                new mapboxgl.Marker(el).setLngLat(spot.coordinates).addTo(map.current!);
-                bounds.extend(spot.coordinates);
-            });
-            unusedSpots.forEach((spot) => {
-                const el = document.createElement('div');
-                el.className = 'marker-plan-map';
-                el.innerHTML = `<div style="background-color:#94a3b8; width:10px; height:10px; border-radius:50%; border:2px solid white; box-shadow:0 2px 4px rgba(0,0,0,0.1);"></div>`;
-                el.onclick = (e) => { e.stopPropagation(); setSelectedMapSpot({ spot, type: 'unused' }); };
-                new mapboxgl.Marker(el).setLngLat(spot.coordinates).addTo(map.current!);
-                bounds.extend(spot.coordinates);
-            });
-            if (routeGeoJSON) {
-                const sourceId = 'route';
-                if (!map.current.getSource(sourceId)) {
-                    map.current.addSource(sourceId, { type: 'geojson', data: routeGeoJSON });
-                    map.current.addLayer({ 
-                        id: sourceId, 
-                        type: 'line', 
-                        source: sourceId, 
-                        layout: { 'line-join': 'round', 'line-cap': 'round' }, 
-                        paint: { 'line-color': '#4f46e5', 'line-width': 4, 'line-opacity': 0.7 } 
-                    });
-                } else {
-                    (map.current.getSource(sourceId) as mapboxgl.GeoJSONSource).setData(routeGeoJSON);
-                }
-            }
-            if (!bounds.isEmpty()) map.current.fitBounds(bounds, { padding: 80, duration: 1000 });
-        };
-        if (map.current.isStyleLoaded()) updateMap();
-        else map.current.once('styledata', updateMap);
-    }
-  }, [timeline, unusedSpots, routeGeoJSON]);
 
   const handleDownloadImage = async () => {
       if (!captureRef.current) return;
@@ -1006,58 +904,13 @@ const handleArrivalChange = (index: number, newArrival: string) => {
           </div>
       )}
 
-      {showSettings && (
-          <div className="absolute inset-0 z-50 bg-white/80 backdrop-blur-md flex flex-col justify-end sm:justify-center p-4 animate-in slide-in-from-bottom-10">
-              <div className="bg-white w-full max-w-md mx-auto rounded-3xl p-6 shadow-2xl border border-gray-100 space-y-6">
-                  <div className="flex justify-between items-center pb-2">
-                      <h2 className="text-xl font-bold text-gray-800">ルート設定</h2>
-                      <button onClick={() => setShowSettings(false)} className="p-2 bg-gray-100 rounded-full hover:bg-gray-200 text-gray-500"><X size={20}/></button>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                      <div><label className="block text-xs font-bold text-gray-500 mb-2">開始時間</label><input type="time" value={startTime} onChange={(e)=>setStartTime(e.target.value)} className="w-full p-3 bg-gray-50 rounded-xl font-bold text-lg text-gray-800 border border-gray-200 focus:border-indigo-500 outline-none"/></div>
-                      <div><label className="block text-xs font-bold text-gray-500 mb-2">終了時間</label><input type="time" value={endTime} onChange={(e)=>setEndTime(e.target.value)} className="w-full p-3 bg-gray-50 rounded-xl font-bold text-lg text-gray-800 border border-gray-200 focus:border-indigo-500 outline-none"/></div>
-                  </div>
-                  <button onClick={handleAutoGenerate} className="w-full bg-indigo-600 text-white py-4 rounded-xl font-bold text-lg hover:bg-indigo-700 transition flex items-center justify-center gap-2 shadow-lg shadow-indigo-200">
-                      <Sparkles size={20}/> ルートを再生成
-                  </button>
-              </div>
-          </div>
-      )}
-
-      {isPinListOpen && (
-          <div className="absolute inset-0 z-50 bg-black/20 backdrop-blur-sm flex justify-end">
-              <div className="w-full max-w-xs h-full bg-white border-l border-gray-100 p-4 animate-in slide-in-from-right duration-200 flex flex-col shadow-2xl">
-                  <div className="flex justify-between items-center mb-6"><h2 className="font-bold text-gray-800">保存済みプラン</h2><button onClick={() => setIsPinListOpen(false)} className="text-gray-500 hover:bg-gray-100 p-1 rounded-full"><X size={20}/></button></div>
-                  <div className="flex-1 overflow-y-auto space-y-3">
-                      {pinnedPlans.length === 0 && <p className="text-sm text-gray-400 text-center mt-10">保存されたプランはありません</p>}
-                      {pinnedPlans.map((plan) => (
-                          <div key={plan.id} className="bg-white p-4 rounded-xl border border-gray-200 hover:border-indigo-500 hover:shadow-md cursor-pointer group relative transition-all" onClick={() => handleLoadPin(plan)}>
-                              <h3 className="font-bold text-gray-800 text-sm">{plan.title}</h3>
-                              <p className="text-xs text-gray-500 mt-1">{new Date(plan.created_at).toLocaleDateString()}</p>
-                              <button onClick={(e) => { e.stopPropagation(); handleDeletePin(plan.id); }} className="absolute right-2 top-2 p-2 text-gray-400 hover:text-red-500"><Trash2 size={16}/></button>
-                          </div>
-                      ))}
-                  </div>
-              </div>
-          </div>
-      )}
-
+      {/* ★変更: ref={listRef} を追加 */}
       <div 
-        className={`w-full relative shrink-0 z-10 border-b border-gray-200 shadow-sm transition-all duration-300 ease-in-out bg-white`}
-        style={{ height: isMapVisible ? '50vh' : '0px', overflow: 'hidden' }}
+        ref={listRef}
+        className="flex-1 overflow-y-auto relative bg-gray-50 pb-20 custom-scrollbar min-h-0"
       >
-        <div ref={mapContainer} className="w-full h-full" />
-      </div>
-
-      <div className="flex-1 overflow-y-auto relative bg-gray-50 pb-20 custom-scrollbar min-h-0">
         
         <div className="bg-white px-4 py-4 border-b border-gray-100 flex flex-col gap-3 sticky top-0 z-20 shadow-sm">
-            <button 
-                onClick={() => setIsMapVisible(!isMapVisible)} 
-                className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold text-sm transition"
-            >
-                {isMapVisible ? <ArrowUp size={16}/> : <MapIcon size={16}/>} {isMapVisible ? "地図を閉じる" : "地図を表示"}
-            </button>
 
             <div className="flex justify-between items-center gap-2">
                 <div className="flex gap-2 overflow-x-auto no-scrollbar flex-1">
@@ -1073,12 +926,8 @@ const handleArrivalChange = (index: number, newArrival: string) => {
                 </div>
                 
                 <div className="flex items-center gap-2 shrink-0">
-                    <button onClick={() => setShowSettings(true)} className="p-2 bg-white text-gray-500 border border-gray-200 rounded-full shadow-sm hover:text-indigo-600 transition"><Settings size={18}/></button>
-                    <button onClick={() => setIsPinListOpen(true)} className="p-2 bg-white text-gray-500 border border-gray-200 rounded-full shadow-sm hover:text-indigo-600 transition"><BookOpen size={18}/></button>
                     {isPlanGenerated && (
                         <>
-                            <button onClick={() => setTimeline(calculateSchedule(timeline))} className="p-2 bg-white text-gray-500 border border-gray-200 rounded-full shadow-sm hover:text-indigo-600 transition"><RefreshCw size={18}/></button>
-                            <button onClick={handlePinPlan} className="p-2 bg-white text-gray-500 border border-gray-200 rounded-full shadow-sm hover:text-indigo-600 transition"><Save size={18}/></button>
                             <button onClick={() => setShowScreenshotMode(true)} className="p-2 bg-white text-gray-500 border border-gray-200 rounded-full shadow-sm hover:text-indigo-600 transition"><Camera size={18}/></button>
                         </>
                     )}
@@ -1152,7 +1001,6 @@ const handleArrivalChange = (index: number, newArrival: string) => {
                               
 
                               <div className="bg-white border border-gray-200 rounded-xl overflow-hidden hover:border-indigo-400 hover:shadow-md transition-all cursor-grab active:cursor-grabbing" onClick={() => setEditItem({index: i, type: 'spot', data: item})}>
-                                {/* ★修正: h-24 (固定) を min-h-[6rem] (可変) に変更 */}
                                 <div className="flex min-h-[6rem]">
                                     <div className="w-24 bg-gray-100 shrink-0 relative border-r border-gray-100">
                                         {(() => {
@@ -1247,8 +1095,6 @@ const handleArrivalChange = (index: number, newArrival: string) => {
                                             )}
                                         </div>
                                     </div>
-                                    
-                                    {/* ★変更: 右端のグリップ(GripVertical)を削除して全体をドラッグ可能にする */}
                                 </div>
                               </div>
                             </div>
@@ -1268,15 +1114,12 @@ const handleArrivalChange = (index: number, newArrival: string) => {
                                     <div className="flex items-center gap-3">
                                         <div className="h-full absolute left-[24px] top-0 bottom-0 flex flex-col items-center justify-center z-0"></div>
                                         
-                                        {/* ★修正: relative を追加してメニューの基準位置にする */}
                                         <div className="bg-white border border-gray-200 rounded-full px-4 py-2 flex items-center gap-3 text-xs shadow-sm hover:border-gray-300 transition w-full sm:w-auto relative">
                                             
-                                            {/* ★修正: アイコンクリックでメニュー開閉 */}
                                             <div 
                                                 className="text-gray-500 cursor-pointer hover:text-indigo-600 flex items-center gap-1 transition relative" 
                                                 onClick={(e) => {
                                                     e.stopPropagation();
-                                                    // 同じものを押したら閉じる、違うなら開く
                                                     setActiveTransportMenuIndex(activeTransportMenuIndex === i ? null : i);
                                                 }}
                                             >
@@ -1284,13 +1127,10 @@ const handleArrivalChange = (index: number, newArrival: string) => {
                                                 <ChevronDown size={10} className="opacity-50"/>
                                             </div>
 
-                                            {/* ★追加: 移動手段選択メニュー */}
                                             {activeTransportMenuIndex === i && (
                                                 <>
-                                                    {/* 背景クリックで閉じるための透明カバー */}
                                                     <div className="fixed inset-0 z-40" onClick={(e) => { e.stopPropagation(); setActiveTransportMenuIndex(null); }} />
                                                     
-                                                    {/* メニュー本体 */}
                                                     <div className="absolute top-full left-0 mt-2 bg-white shadow-xl rounded-xl border border-gray-100 p-2 z-50 flex flex-wrap gap-1 w-[180px] animate-in fade-in zoom-in-95">
                                                         {TRANSPORT_MODES.map((m) => (
                                                             <button
@@ -1316,7 +1156,6 @@ const handleArrivalChange = (index: number, newArrival: string) => {
 
                                             <div className="h-4 w-px bg-gray-200"></div>
                                             <div className="flex items-center gap-1">
-                                                {/* ここから下は変更なし（時間入力など） */}
                                                 <input type="number" value={item.duration_min} onChange={(e) => handleTimeChange(i, e.target.value)} className="w-8 bg-transparent text-center font-bold text-gray-600 focus:text-indigo-600 outline-none"/>
                                                 <span className="text-[10px] text-gray-400">分</span>
                                             </div>
@@ -1333,9 +1172,7 @@ const handleArrivalChange = (index: number, newArrival: string) => {
                                         </div>
                                     </div>
 
-                                    {/* 移動詳細情報の表示（変更なし） */}
                                     {(item.transport_departure || item.transport_arrival || item.note || item.url || item.cost) && (
-                                        // ... (中身は元のまま)
                                         <div className="flex flex-wrap gap-2 mt-1 ml-2">
                                             {(item.transport_departure || item.transport_arrival) && (
                                                 <div className="bg-indigo-50 border border-indigo-100 text-indigo-700 px-2 py-0.5 rounded text-[10px] font-bold flex items-center gap-1">
