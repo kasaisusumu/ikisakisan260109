@@ -187,15 +187,12 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
         targetUrl = `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotel.id}?f_teikei=&f_heya_su=1&f_sort=min_charge`;
     }
 
-    if (RAKUTEN_AFFILIATE_ID) {
-        const encodedUrl = encodeURIComponent(targetUrl);
-        return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodedUrl}&m=${encodedUrl}`;
-    }
+    // ★変更: アフィリエイト変換処理(ifブロック)を削除し、そのまま返す
     return targetUrl;
   };
 
-  const rakutenHomeUrl = `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent("https://travel.rakuten.co.jp/")}&m=${encodeURIComponent("https://travel.rakuten.co.jp/")}`;
-
+ // const rakutenHomeUrl = `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent("https://travel.rakuten.co.jp/")}&m=${encodeURIComponent("https://travel.rakuten.co.jp/")}`;
+const rakutenHomeUrl = "https://travel.rakuten.co.jp/";
   const updateHotelMarkers = (hotelList: any[]) => {
       if (!map.current) return;
       hotelMarkersRef.current.forEach(m => m.remove());

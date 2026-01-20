@@ -996,8 +996,8 @@ const allParticipants = useMemo(() => {
       return UD_COLORS[index % UD_COLORS.length];
   };
 
-  const rakutenHomeUrl = `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent("https://travel.rakuten.co.jp/")}&m=${encodeURIComponent("https://travel.rakuten.co.jp/")}`;
-
+  //const rakutenHomeUrl = `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent("https://travel.rakuten.co.jp/")}&m=${encodeURIComponent("https://travel.rakuten.co.jp/")}`;
+const rakutenHomeUrl = "https://travel.rakuten.co.jp/";
  // page.tsx の 752行目付近にある filteredSpots を以下に書き換え
 
 // page.tsx 750行目付近
