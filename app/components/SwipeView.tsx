@@ -329,6 +329,7 @@ export default function SwipeView({
         return next;
     });
 
+    // AI提案モードの場合
     if (isSuggestionMode) {
         if (direction === 'right') {
             setTempLikedSpots(prev => [...prev, spot]);
@@ -339,9 +340,16 @@ export default function SwipeView({
         return;
     }
     
+    // 通常モードの場合
     if (!spot.id) return;
     
     const voteType = direction === 'right' ? 'like' : 'nope';
+    
+    // ★追加: 親コンポーネント(page.tsx)に通知して即時反映させるためのコールバックを呼ぶ
+    // (page.tsx側で onLike={handleVoteUpdate} のように渡す必要がありますが、
+    //  現状はSupabaseのリアルタイム更新(subscription)で反映される仕組みです。
+    //  もしそれが遅いなら、ここでも onLike を呼んでローカル更新させる手があります)
+    
     await supabase.from('votes').insert([{
       room_id: roomId, spot_id: spot.id, user_name: currentUser, vote_type: voteType
     }]);

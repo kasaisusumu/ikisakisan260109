@@ -1300,36 +1300,57 @@ const filteredSpots = useMemo(() => {
   // ★重要：ここで loadRoomData 関数を閉じる
 
   // ▼▼▼ ここから useEffect (関数の外に配置) ▼▼▼
-  useEffect(() => {
+  // page.tsx
+
+useEffect(() => {
     if (roomId && isJoined) {
-      // 初回データ読み込み実行
+      // 初回データ読み込み
       loadRoomData(roomId);
 
       const channel = supabase.channel('room_updates')
-        // 1. スポットの変更監視
+        // 1. スポットの変更監視 (INSERT, UPDATE, DELETE)
         .on('postgres_changes', { event: '*', schema: 'public', table: 'spots', filter: `room_id=eq.${roomId}` }, (payload) => {
+            
+            // --- INSERT: 新規追加 ---
             if (payload.eventType === 'INSERT') {
                 const newSpot = payload.new;
                 setPlanSpots(prev => {
-                    if (prev.some(s => s.id === newSpot.id)) return prev; 
-                    return [...prev, newSpot].sort((a, b) => (a.order || 0) - (b.order || 0));
+                    // 自分が追加した「仮ID(temp-...)」のスポットがすでにある場合、それを正式なデータに置き換える
+                    // または、既に同じIDがある場合は無視する
+                    const existingIndex = prev.findIndex(s => s.id === newSpot.id || (s.id.startsWith('temp-') && s.name === newSpot.name));
+                    
+                    let nextSpots = [...prev];
+                    if (existingIndex !== -1) {
+                        // 既存(仮)を正式データで上書き
+                        nextSpots[existingIndex] = newSpot;
+                    } else {
+                        // 新規追加
+                        nextSpots.push(newSpot);
+                    }
+                    // ★重要: order順に並び替える
+                    return nextSpots.sort((a, b) => (a.order || 0) - (b.order || 0));
                 });
-            // 1095行目付近
-} else if (payload.eventType === 'UPDATE') {
-    const updatedSpot = payload.new;
-    setPlanSpots(prev => {
-        // 更新対象を置き換え
-        const next = prev.map(s => s.id === updatedSpot.id ? updatedSpot : s);
-        // ★重要: order順に並び替え直す (これが抜けていると順番が変わりません)
-        return [...next].sort((a, b) => (a.order || 0) - (b.order || 0));
-    });
-}
+            } 
+            
+            // --- UPDATE: 更新 (並び順変更、ステータス変更など) ---
+            else if (payload.eventType === 'UPDATE') {
+                const updatedSpot = payload.new;
+                setPlanSpots(prev => {
+                    // IDが一致するものを更新
+                    const next = prev.map(s => s.id === updatedSpot.id ? updatedSpot : s);
+                    // ★重要: orderが変わっている可能性があるため、必ずソートし直す
+                    return next.sort((a, b) => (a.order || 0) - (b.order || 0));
+                });
+            }
+            
+            // --- DELETE: 削除 ---
             else if (payload.eventType === 'DELETE') {
                 const deletedSpotId = payload.old.id;
                 setPlanSpots(prev => prev.filter(s => s.id !== deletedSpotId));
             }
         })
-        // 2. 投票の変更監視
+        
+        // 2. 投票の変更監視 (リアルタイム反映)
         .on('postgres_changes', { event: '*', schema: 'public', table: 'votes', filter: `room_id=eq.${roomId}` }, (payload) => {
             if (payload.eventType === 'INSERT') {
                 setSpotVotes(prev => [...prev, payload.new]);
@@ -1339,13 +1360,13 @@ const filteredSpots = useMemo(() => {
                 setSpotVotes(prev => prev.filter(v => v.id !== payload.old.id));
             }
         })
-        // 3. 旅行設定（日付・人数）のリアルタイム同期
+        
+        // 3. 旅行設定の変更監視
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'rooms', filter: `id=eq.${roomId}` }, (payload) => {
             const newData = payload.new;
             if (newData.start_date) setStartDate(newData.start_date);
             if (newData.end_date) setEndDate(newData.end_date);
             if (newData.adult_num) setAdultNum(newData.adult_num);
-            
             setNotification({ text: "旅行設定が更新されました", color: "bg-blue-600" });
             setTimeout(() => setNotification(null), 3000);
         })
@@ -1372,18 +1393,13 @@ const filteredSpots = useMemo(() => {
       if (hasValidCoords) { map.current.fitBounds(bounds, { padding: { top: 150, bottom: 200, left: 40, right: 40 }, maxZoom: 15, duration: 1000 }); }
   };
 
-  const handleLikeCandidate = async (spot: any) => {
-    setLikedHistory(prev => [...prev, spot.name]);
-    setCandidates(prev => prev.filter(s => s.id !== spot.id));
-    await addSpot({ ...spot, status: 'candidate' });
-  };
+  
 
   const handleNopeCandidate = (spot: any) => {
     setNopedHistory(prev => [...prev, spot.name]);
     setCandidates(prev => prev.filter(s => s.id !== spot.id));
   };
-
- // スポット追加（宿リストへの即時反映対応版）
+// 即時反映（楽観的UI）対応版の addSpot
   const addSpot = async (spot: any) => {
     // 重複チェック
     if (planSpots.some(s => s.name === spot.name && s.room_id === roomId)) {
@@ -1402,13 +1418,17 @@ const filteredSpots = useMemo(() => {
       votes: 0,
       image_url: spot.image_url,
       is_hotel: spot.is_hotel || false,
-      status: spot.status || 'candidate', // HotelListViewからのステータス(hotel_candidate)を引き継ぐ
-      day: spot.day || 0, // HotelListViewで選択した日程を引き継ぐ
+      status: spot.status || 'candidate',
+      day: spot.day || 0,
       price: spot.price || 0,
       url: spot.url || "",
       rating: spot.rating || 0,
-      // review_count: spot.review_count || 0
     };
+
+    // ★重要: ここで先にローカルStateに追加してしまう (仮IDを持たせる)
+    // これにより、DBの応答を待たずに画面に反映されます
+    const optimisticSpot = { ...newSpotPayload, id: `temp-${Date.now()}` };
+    setPlanSpots(prev => [...prev, optimisticSpot]);
 
     // DBに追加
     const { data, error } = await supabase.from('spots').insert([newSpotPayload]).select().single();
@@ -1416,15 +1436,14 @@ const filteredSpots = useMemo(() => {
     if (error) {
       console.error("Add spot error:", error);
       alert("追加に失敗しました");
+      // エラー時はロールバック（追加した仮スポットを消す）
+      setPlanSpots(prev => prev.filter(s => s.id !== optimisticSpot.id));
       return;
     }
     
-    // ★重要: 画面のリストを即座に更新 (リロード不要にする)
+    // DB登録成功後、仮IDのスポットを正式なデータ(ID付き)に置き換える
     if (data) { 
-        setPlanSpots(prev => {
-            if (prev.some(s => s.id === data.id)) return prev;
-            return [...prev, data];
-        });
+        setPlanSpots(prev => prev.map(s => s.id === optimisticSpot.id ? data : s));
 
         // 自分が追加したものは自動で「いいね」
         if (userName) {
@@ -1452,6 +1471,15 @@ const filteredSpots = useMemo(() => {
         setTimeout(() => setNotification(null), 3000);
     }
   };
+
+  // addSpot を使って保存処理を行う関数
+  const handleLikeCandidate = async (spot: any) => {
+    setLikedHistory(prev => [...prev, spot.name]);
+    setCandidates(prev => prev.filter(s => s.id !== spot.id));
+    // ここで新しい addSpot を呼び出すことで即時反映されます
+    await addSpot({ ...spot, status: 'candidate' });
+  };
+ 
 
   const removeSpot = async (spot: any) => {
     if (!roomId) return;
