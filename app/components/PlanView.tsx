@@ -222,8 +222,6 @@ export default function PlanView({
       });
   }, [activeDaySpots, timeline]);
 
-  // PlanView.tsx (180行目付近)
-
   const getAffiliateUrl = (hotel: any) => {
     let targetUrl = "";
 
@@ -240,7 +238,6 @@ export default function PlanView({
         targetUrl = `https://search.travel.rakuten.co.jp/ds/hotel/search?f_query=${encodeURIComponent(hotel.name)}`;
     }
 
-    // ★変更箇所: アフィリエイトリンク化のif文を削除し、targetUrlをそのまま返す
     return targetUrl;
   };
 
@@ -939,7 +936,7 @@ const handleArrivalChange = (index: number, newArrival: string) => {
                 disabled={activeDaySpots.length < 2 || isProcessing}
                 className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold text-sm hover:bg-indigo-700 transition flex items-center justify-center gap-2 shadow-sm disabled:opacity-50 disabled:shadow-none"
             >
-                {isProcessing ? <Loader2 className="animate-spin w-4 h-4"/> : <Sparkles size={16}/>} ルート最適化
+                {isProcessing ? <Loader2 className="animate-spin w-4 h-4"/> : <Sparkles size={16}/>} ルート最適化(未実装)
             </button>
         </div>
 
@@ -1024,18 +1021,48 @@ const handleArrivalChange = (index: number, newArrival: string) => {
                                                 <button onClick={(e) => { e.stopPropagation(); toggleSpotInclusion(item.spot, false); }} className="text-gray-400 hover:text-red-500 p-1"><MinusCircle size={16}/></button>
                                             </div>
                                            {/* 修正箇所：スポットの到着・出発時間入力部分 */}
+                                           {/* --- PlanView.tsx 1250行目付近: 到着時間入力エリア --- */}
+
 <div className="flex items-center gap-2 text-xs font-bold text-indigo-500 font-mono bg-indigo-50 w-max px-2 py-0.5 rounded" onClick={(e) => e.stopPropagation()}>
-    {/* 到着時間を入力可能にする */}
-    <input 
-        type="time" 
-        value={item.arrival || ""} 
-        onChange={(e) => handleArrivalChange(i, e.target.value)}
-        className="bg-transparent text-indigo-600 font-bold text-xs font-mono w-[36px] text-center focus:outline-none border-b border-transparent focus:border-indigo-300 p-0"
-    />
+    {(() => {
+        // ▼▼▼ 追加: 前のスポットからの時間の整合性チェック ▼▼▼
+        let isArrivalInconsistent = false;
+        // 2つ前の要素(前のスポット)と、1つ前の要素(移動)を取得
+        const prevTravel = timeline[i - 1];
+        const prevSpot = timeline[i - 2];
+        
+        // 前のスポットの出発時間 と 移動時間 がある場合のみ計算
+        if (prevTravel && prevTravel.type === 'travel' && prevSpot && prevSpot.type === 'spot' && prevSpot.departure && item.arrival) {
+            const [pH, pM] = prevSpot.departure.split(':').map(Number);
+            const [cH, cM] = item.arrival.split(':').map(Number);
+            const travelMin = prevTravel.duration_min || 0;
+            
+            // 分単位に変換して比較 (24時間表記のループを考慮して 1440 で割った余り)
+            const expectedMin = (pH * 60 + pM + travelMin) % 1440;
+            const currentMin = (cH * 60 + cM) % 1440;
+            
+            if (expectedMin !== currentMin) {
+                isArrivalInconsistent = true;
+            }
+        }
+        // ▲▲▲ 追加ここまで ▲▲▲
+
+        return (
+            <input 
+                type="time" 
+                value={item.arrival || ""} 
+                onChange={(e) => handleArrivalChange(i, e.target.value)}
+                className={`bg-transparent font-bold text-xs font-mono w-[36px] text-center focus:outline-none border-b border-transparent focus:border-indigo-300 p-0 ${
+                    isArrivalInconsistent 
+                    ? "text-red-500 underline decoration-red-500 decoration-wavy" // 不整合なら赤＋波線
+                    : "text-indigo-600" // 通常時はインディゴ
+                }`}
+            />
+        );
+    })()}
     
     <ArrowRight size={10} className="text-indigo-300"/>
     
-    {/* 出発時間を入力可能にする */}
     <input 
         type="time" 
         value={item.departure || ""} 
@@ -1052,8 +1079,40 @@ const handleArrivalChange = (index: number, newArrival: string) => {
                                                 {!item.is_overnight && (
                                                     <div className="flex items-center gap-1 bg-gray-50 px-2 py-1 rounded border border-gray-200" onClick={(e) => e.stopPropagation()}>
                                                         <Clock size={10} className="text-gray-500"/>
-                                                        <input type="number" value={item.stay_min ?? item.spot.stay_time} onChange={(e) => handleTimeChange(i, e.target.value)} className="w-6 bg-transparent text-center text-xs font-bold outline-none text-gray-700 p-0"/>
-                                                        <span className="text-[9px] text-gray-500">分</span>
+                                                        {/* ★修正箇所：滞在時間を自動計算して表示に変更 */}
+                                                        {/* 滞在時間表示 (自動計算 + 警告スタイル) */}
+<span className="text-xs font-bold">
+    {(() => {
+        if (!item.arrival || !item.departure) return <span className="text-gray-700">0分</span>;
+        
+        const [sH, sM] = item.arrival.split(':').map(Number);
+        const [eH, eM] = item.departure.split(':').map(Number);
+        const diff = (eH * 60 + eM) - (sH * 60 + sM);
+        
+        // ★判定: マイナスの場合は警告扱い
+        const isInvalid = diff < 0;
+
+        const abs = Math.abs(diff);
+        const h = Math.floor(abs / 60);
+        const m = abs % 60;
+        const sign = isInvalid ? "-" : "";
+        
+        let text = `${sign}${m}分`;
+        if (h > 0) {
+            text = `${sign}${h}時間${m > 0 ? m + "分" : ""}`;
+        }
+        
+        return (
+            <span className={
+                isInvalid 
+                ? "text-red-500 underline decoration-red-500 decoration-wavy" // 赤文字＋波線
+                : "text-gray-700" // 通常
+            }>
+                {text}
+            </span>
+        );
+    })()}
+</span>
                                                     </div>
                                                 )}
 

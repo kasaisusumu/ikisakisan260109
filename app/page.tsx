@@ -2343,13 +2343,14 @@ const filteredSpots = useMemo(() => {
 
                   <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
                       {selectedResult.is_saved && (selectedResult.status === 'candidate' || selectedResult.status === 'hotel_candidate') && (
-                          <button 
-                              onClick={(e) => { e.stopPropagation(); handleStatusChangeClick(selectedResult, 'confirmed'); }} 
-                              className="flex items-center gap-1 bg-black text-white px-3 py-2 rounded-lg text-[10px] font-bold hover:bg-gray-800 transition whitespace-nowrap shrink-0 shadow-sm"
-                          >
-                              <CheckCircle size={12}/> 確定にする
-                          </button>
-                      )}
+    <button 
+        onClick={(e) => { e.stopPropagation(); handleStatusChangeClick(selectedResult, 'confirmed'); }} 
+        // ▼▼▼ 修正: bg-black → bg-blue-600, hover:bg-gray-800 → hover:bg-blue-700
+        className="flex items-center gap-1 bg-blue-600 text-white px-3 py-2 rounded-lg text-[10px] font-bold hover:bg-blue-700 transition whitespace-nowrap shrink-0 shadow-sm"
+    >
+        <CheckCircle size={12}/> 確定にする
+    </button>
+)}
                       
                      {selectedResult.is_saved && selectedResult.status === 'confirmed' && (
                           <button 
@@ -2609,7 +2610,15 @@ const filteredSpots = useMemo(() => {
                       
                       {filteredSpots.length === 0 ? (
                           <div className="text-center text-gray-400 py-12 text-sm font-bold opacity-50">
-                              スポットがありません<br/>マップから追加してください
+                              {filterStatus === 'confirmed' ? (
+                                  <>スポットがありません<br/>候補リストから追加してください</>
+                              ) : filterStatus === 'hotel_candidate' ? (
+                                  <>スポットがありません<br/>囲って検索か、ホテルページより<br/>URLで追加してください</>
+                              ) : filterStatus === 'candidate' ? (
+                                  <>スポットがありません<br/>マップかAI提案から追加してください</>
+                              ) : (
+                                  <>スポットがありません<br/>マップから追加してください</>
+                              )}
                           </div>
                       ) : (
                           (() => {
@@ -2659,9 +2668,39 @@ const filteredSpots = useMemo(() => {
                                                         onDragEnd={() => setDraggedTimelineIndex(null)}
                                                     >
                                                         {/* 到着時刻 */}
-                                                        <div className="absolute left-[-16px] top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-white border-2 border-indigo-600 flex items-center justify-center font-bold text-indigo-600 text-[10px] shadow-sm z-20">
-                                                            {item.arrival?.split(':')[0]}:{item.arrival?.split(':')[1]}
-                                                        </div>
+                                                        {/* 到着時刻 (整合性チェック付き) */}
+{(() => {
+    let isInconsistent = false;
+    try {
+        const prevTravel = displayTimeline[idx - 1];
+        const prevSpot = displayTimeline[idx - 2];
+
+        if (prevTravel && prevTravel.type === 'travel' && prevSpot && prevSpot.type === 'spot' && prevSpot.departure && item.arrival) {
+            const [pH, pM] = prevSpot.departure.split(':').map(Number);
+            const [cH, cM] = item.arrival.split(':').map(Number);
+            const travelMin = prevTravel.duration_min || 0;
+            
+            const expectedMin = (pH * 60 + pM + travelMin) % 1440;
+            const currentMin = (cH * 60 + cM) % 1440;
+            
+            if (expectedMin !== currentMin) {
+                isInconsistent = true;
+            }
+        }
+    } catch (e) {
+        // 計算エラー時は無視
+    }
+
+    return (
+        <div className={`absolute left-[-16px] top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-white border-2 flex items-center justify-center font-bold text-[10px] shadow-sm z-20 ${
+            isInconsistent 
+            ? "border-red-500 text-red-500 underline decoration-red-500 decoration-wavy" // 矛盾時は赤
+            : "border-indigo-600 text-indigo-600" // 通常時は青
+        }`}>
+            {item.arrival?.split(':')[0]}:{item.arrival?.split(':')[1]}
+        </div>
+    );
+})()}
 
                                                         {/* スポットカード本体 */}
                                                         <div 
@@ -2689,9 +2728,74 @@ const filteredSpots = useMemo(() => {
                                                                         {/* タグ表示行 */}
                                                                         <div className="flex flex-wrap gap-1 items-center">
                                                                             {/* 滞在時間 */}
-                                                                            <div className="text-[10px] text-gray-400 truncate flex items-center gap-1 shrink-0 bg-gray-50 px-1.5 py-0.5 rounded border border-gray-100">
-                                                                                <Clock size={10}/> {item.stay_min}分
-                                                                            </div>
+                                                                            {/* 滞在時間 (自動計算に変更) */}
+{/* 滞在時間 (自動計算 + 警告表示) */}
+{/* 滞在時間 (自動計算 + 整合性チェック) */}
+<div className="text-[10px] truncate flex items-center gap-1 shrink-0 bg-gray-50 px-1.5 py-0.5 rounded border border-gray-100">
+    <Clock size={10} className="text-gray-400"/>
+    {(() => {
+        // 安全策: データがない場合はデフォルト表示
+        if (!item.arrival || !item.departure) {
+             return <span className="text-gray-400">{item.stay_min || 0}分</span>;
+        }
+
+        try {
+            // 1. 滞在時間の計算 (マイナスチェック)
+            const [sH, sM] = item.arrival.split(':').map(Number);
+            const [eH, eM] = item.departure.split(':').map(Number);
+            const diff = (eH * 60 + eM) - (sH * 60 + sM);
+            
+            const isNegative = diff < 0; // マイナスかどうか
+            
+            const abs = Math.abs(diff);
+            const h = Math.floor(abs / 60);
+            const m = abs % 60;
+            const sign = isNegative ? "-" : "";
+            
+            let text = `${sign}${m}分`;
+            if (h > 0) {
+                text = `${sign}${h}時間${m > 0 ? m + "分" : ""}`;
+            }
+
+            // 2. 前のスポットとの整合性チェック (時間が飛んでいないか)
+            let isInconsistent = false;
+            // idx は displayTimeline.map の引数として受け取っている前提
+            const prevTravel = displayTimeline[idx - 1];
+            const prevSpot = displayTimeline[idx - 2];
+
+            if (prevTravel && prevTravel.type === 'travel' && prevSpot && prevSpot.type === 'spot' && prevSpot.departure) {
+                const [pH, pM] = prevSpot.departure.split(':').map(Number);
+                const [cH, cM] = item.arrival.split(':').map(Number);
+                const travelMin = prevTravel.duration_min || 0;
+                
+                // 期待される到着時間
+                const expectedMin = (pH * 60 + pM + travelMin) % 1440;
+                // 実際の到着時間
+                const currentMin = (cH * 60 + cM) % 1440;
+                
+                if (expectedMin !== currentMin) {
+                    isInconsistent = true;
+                }
+            }
+
+            // 赤くするかどうかの判定
+            const isWarning = isNegative || isInconsistent;
+
+            return (
+                <span className={`font-medium ${
+                    isWarning
+                    ? 'text-red-500 underline decoration-red-500 decoration-wavy'
+                    : 'text-gray-400'
+                }`}>
+                    {text}
+                </span>
+            );
+        } catch (e) {
+            // エラー時は安全に元の分数を表示
+            return <span className="text-gray-400">{item.stay_min || 0}分</span>;
+        }
+    })()}
+</div>
 
                                                                             {/* 金額 (price優先) */}
                                                                             {(spot.price || spot.cost) && (
@@ -2839,8 +2943,13 @@ const filteredSpots = useMemo(() => {
                                                         <div className="flex gap-1 shrink-0 ml-1">
                                                             {voteCount > 0 && <span className="flex items-center gap-0.5 text-[9px] font-bold text-blue-500 bg-blue-50 px-1 py-0.5 rounded"><ThumbsUp size={8}/> {voteCount}</span>}
                                                             {(filterStatus === 'candidate' || filterStatus === 'hotel_candidate') && (
-                                                                <button onClick={(e) => { e.stopPropagation(); handleStatusChangeClick(spot, 'confirmed'); }} className="bg-black text-white text-[9px] px-2 py-0.5 rounded font-bold hover:bg-gray-800 transition">確定にする</button>
-                                                            )}
+    <button 
+        onClick={(e) => { e.stopPropagation(); handleStatusChangeClick(spot, 'confirmed'); }} 
+        className="bg-blue-600 text-white text-[9px] px-2 py-0.5 rounded font-bold hover:bg-blue-700 transition"
+    >
+        確定にする
+    </button>
+)}
                                                             {filterStatus === 'confirmed' && (
                                                                 <button 
                                                                     // ▼▼▼ 修正: 宿判定を行い、適切なステータスを渡す
