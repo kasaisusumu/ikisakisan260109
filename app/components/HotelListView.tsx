@@ -1,5 +1,5 @@
 "use client";
-
+// ▼▼▼ 追加: supabaseをインポート ▼▼▼
 import { supabase } from '@/lib/supabase';
 import { useState, useMemo, useEffect, useRef } from 'react';
 import mapboxgl from 'mapbox-gl';
@@ -10,7 +10,6 @@ import {
   Star, Loader2, PenTool, Trash2, Plus, Calendar, Users, SlidersHorizontal, Link as LinkIcon, Download, ChevronUp, ChevronDown, Check, AlertTriangle, BedDouble,
   Utensils 
 } from 'lucide-react';
-
 
 // ==========================================
 // 🔑 設定
@@ -41,7 +40,6 @@ const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: numbe
     return R * c;
 };
 
-// 円のポリゴンGeoJSONを生成する関数
 const createGeoJSONCircle = (center: [number, number], radiusInKm: number, points = 64) => {
     const coords = { latitude: center[1], longitude: center[0] };
     const km = radiusInKm;
@@ -71,7 +69,6 @@ export type AreaSearchParams = {
   latitude: number;
   longitude: number;
   radius: number;
-  // 実際に描画した多角形の座標
   polygon: number[][]; 
 };
 
@@ -96,7 +93,7 @@ interface Props {
 }
 
 export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot, roomId, initialSearchArea, travelDays }: Props) {
-  // ★追加: ログ送信関数
+  // ログ送信関数
   const logAffiliateClick = async (spotName: string, source: string) => {
       await supabase.from('affiliate_logs').insert({
           room_id: roomId,
@@ -106,7 +103,7 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
       });
   };
   
-    const [hotels, setHotels] = useState<any[]>([]);
+  const [hotels, setHotels] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false); 
   const [selectedHotel, setSelectedHotel] = useState<any>(null);
@@ -119,8 +116,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
 
   const [activeHotelId, setActiveHotelId] = useState<string | null>(null);
   const [isMapLoaded, setIsMapLoaded] = useState(false);
-  
-  // ▼▼▼ 追加: この回で閲覧したホテルのIDを記録するSet ▼▼▼
   const [viewedHotelIds, setViewedHotelIds] = useState<Set<string>>(new Set());
 
   const [conditions, setConditions] = useState<SearchConditions>(() => {
@@ -225,7 +220,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
 
   const handleSelectHotel = (hotel: any) => {
       setActiveHotelId(hotel.id);
-      // ▼▼▼ 追加: 選択した宿を閲覧済みリストに追加 ▼▼▼
       setViewedHotelIds(prev => {
           const next = new Set(prev);
           next.add(hotel.id);
@@ -286,12 +280,15 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
           const color = isActive ? '#EF4444' : '#3B82F6';
           const zIndex = isActive ? 99 : 5;
 
-          el.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;z-index:${zIndex};cursor:pointer;"><div style="background:white;padding:2px 6px;border-radius:6px;font-size:10px;font-weight:bold;color:${color};box-shadow:0 2px 4px rgba(0,0,0,0.2);margin-bottom:2px;white-space:nowrap;border:1px solid ${color};">¥${(hotel.price/10000).toFixed(1)}万</div><svg width="28" height="28" viewBox="0 0 24 24" fill="${color}" stroke="white" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3" fill="white"></circle></svg></div>`;
+          // ▼▼▼ 修正: 価格を人数で割って表示 ▼▼▼
+          const pricePerPerson = Math.round(hotel.price / Math.max(1, conditions.adults));
+          const displayPrice = pricePerPerson >= 10000 
+              ? `${(pricePerPerson/10000).toFixed(1)}万` 
+              : `¥${pricePerPerson.toLocaleString()}`;
+
+          el.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;z-index:${zIndex};cursor:pointer;"><div style="background:white;padding:2px 6px;border-radius:6px;font-size:10px;font-weight:bold;color:${color};box-shadow:0 2px 4px rgba(0,0,0,0.2);margin-bottom:2px;white-space:nowrap;border:1px solid ${color};">${displayPrice}</div><svg width="28" height="28" viewBox="0 0 24 24" fill="${color}" stroke="white" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3" fill="white"></circle></svg></div>`;
           el.onclick = () => handleSelectHotel(hotel);
-          const marker = new mapboxgl.Marker({ element: el, anchor: 'bottom' })
-              .setLngLat(hotel.coordinates)
-              .addTo(map.current!);
-              
+          const marker = new mapboxgl.Marker({ element: el, anchor: 'bottom' }).setLngLat(hotel.coordinates).addTo(map.current!);
           hotelMarkersRef.current.push(marker);
       });
   };
@@ -300,8 +297,10 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
     const paddingLeft = 40; const paddingBottom = 30; const paddingRight = 10; const paddingTop = 10;
     const width = 300; const height = 200; 
     
+    // ▼▼▼ 修正: 散布図のデータも全て1人あたりに変換 ▼▼▼
     const minRating = 3.0; const maxRating = 5.0;
-    const prices = hotels.map(h => h.price).filter(p => p > 0);
+    const prices = hotels.map(h => Math.round(h.price / Math.max(1, conditions.adults))).filter(p => p > 0);
+    
     const minP = prices.length ? Math.min(...prices) * 0.9 : 0;
     const maxP = prices.length ? Math.max(...prices) * 1.1 : 30000;
     
@@ -324,25 +323,25 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                 <text x={(width + paddingLeft) / 2} y={height + 15} fontSize="10" textAnchor="middle" fill="#9ca3af" fontWeight="bold">評価</text>
                 <text x={5} y={height / 2} fontSize="10" textAnchor="middle" fill="#9ca3af" fontWeight="bold" transform={`rotate(-90, 5, ${height / 2})`}>価格</text>
                 {ratingTicks.map(r => (<text key={`x-${r}`} x={getX(r)} y={height - paddingBottom + 12} fontSize="9" textAnchor="middle" fill="#9ca3af">{r.toFixed(1)}</text>))}
+                {/* 軸のラベル表示も調整 */}
                 {priceTicks.map((p, i) => (<text key={`y-${i}`} x={paddingLeft - 6} y={getY(p) + 3} fontSize="9" textAnchor="end" fill="#9ca3af">{p >= 10000 ? `${(p / 10000).toFixed(1)}万` : `¥${(p/1000).toFixed(0)}k`}</text>))}
 
                 {hotels.map((h, i) => {
                     const x = getX(h.rating || 3.0);
-                    const y = getY(h.price);
+                    // ここで1人あたりの価格を使用
+                    const unitPrice = Math.round(h.price / Math.max(1, conditions.adults));
+                    const y = getY(unitPrice);
                     
                     const isActive = activeHotelId === h.id;
-                    
-                    // ▼▼▼ 修正: 追加済み or 閲覧済みなら紫色にする ▼▼▼
-                    // (spotsはDBデータなのでnameでマッチング、viewedはセッションIDなのでidでマッチング)
                     const isAdded = spots.some(s => s.name === h.name);
                     const isViewed = viewedHotelIds.has(h.id);
 
-                    let baseColor = "#3B82F6"; // デフォルト: 青
+                    let baseColor = "#3B82F6"; 
                     if (isAdded || isViewed) {
-                        baseColor = "#8B5CF6"; // 追加済み/閲覧済み: 紫
+                        baseColor = "#8B5CF6"; 
                     }
                     if (isActive) {
-                        baseColor = "#EF4444"; // 選択中: 赤 (最優先)
+                        baseColor = "#EF4444"; 
                     }
 
                     const reviewRatio = Math.min((h.review_count || 0) / maxReviews, 1);
@@ -408,7 +407,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
 
   const executeSearch = async () => {
     if (!searchArea) return alert("範囲を囲んでください");
-    // ▼▼▼ 修正: 検索時に閲覧履歴はリセットしないが、選択状態はリセットする ▼▼▼
     setIsLoading(true); setHotels([]); setSelectedHotel(null); setActiveHotelId(null);
     setShowSettings(false); 
     try {
@@ -585,7 +583,7 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                             href={rakutenHomeUrl} 
                             target="_blank" 
                             rel="noopener noreferrer"
-                            // ★追加
+                            // onClickでログ送信
                             onClick={() => logAffiliateClick("楽天トラベルトップ", "hotel_search_banner")}
                             className="w-full bg-[#BF0000] text-white py-4 rounded-2xl font-black text-center flex items-center justify-center gap-3 shadow-lg active:scale-95 transition-transform"
                         >
@@ -603,18 +601,22 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                           <ScatterPlot />
                       </div>
                       <div className="space-y-4 pb-12">
-                          {hotels.slice(0, 8).map((hotel, i) => (
-                              <div key={i} className="bg-white p-4 rounded-2xl border border-gray-100 flex items-center gap-4 active:bg-slate-50 transition shadow-sm" onClick={() => handleSelectHotel(hotel)}>
-                                  <div className="w-14 h-14 bg-slate-100 rounded-xl overflow-hidden shrink-0">
-                                      {hotel.image_url ? <img src={hotel.image_url} className="w-full h-full object-cover" alt=""/> : <LinkIcon size={20} className="m-auto mt-4 text-gray-300"/>}
+                          {hotels.slice(0, 8).map((hotel, i) => {
+                              // ▼▼▼ 修正: リスト表示も1人あたりに計算 ▼▼▼
+                              const unitPrice = Math.round(hotel.price / Math.max(1, conditions.adults));
+                              return (
+                                  <div key={i} className="bg-white p-4 rounded-2xl border border-gray-100 flex items-center gap-4 active:bg-slate-50 transition shadow-sm" onClick={() => handleSelectHotel(hotel)}>
+                                      <div className="w-14 h-14 bg-slate-100 rounded-xl overflow-hidden shrink-0">
+                                          {hotel.image_url ? <img src={hotel.image_url} className="w-full h-full object-cover" alt=""/> : <LinkIcon size={20} className="m-auto mt-4 text-gray-300"/>}
+                                      </div>
+                                      <div className="flex-1 min-w-0">
+                                          <h4 className="font-bold text-gray-800 text-xs truncate">{hotel.name}</h4>
+                                          <p className="text-red-500 font-black text-sm">¥{unitPrice.toLocaleString()}<span className="text-[10px] text-gray-400 font-normal"> / 人</span></p>
+                                      </div>
+                                      <button onClick={(e)=>{e.stopPropagation(); handleAddCandidate(hotel)}} className="p-2 bg-blue-50 text-blue-600 rounded-full transition active:scale-90 shadow-sm"><Plus size={18}/></button>
                                   </div>
-                                  <div className="flex-1 min-w-0">
-                                      <h4 className="font-bold text-gray-800 text-xs truncate">{hotel.name}</h4>
-                                      <p className="text-red-500 font-black text-sm">¥{hotel.price.toLocaleString()}</p>
-                                  </div>
-                                  <button onClick={(e)=>{e.stopPropagation(); handleAddCandidate(hotel)}} className="p-2 bg-blue-50 text-blue-600 rounded-full transition active:scale-90 shadow-sm"><Plus size={18}/></button>
-                              </div>
-                          ))}
+                              );
+                          })}
                       </div>
                   </div>
               )}
@@ -635,7 +637,7 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
               <div className="w-12 h-1.5 bg-gray-300/50 rounded-full mx-auto mt-3 mb-1 shrink-0" />
               
               <div className="flex-1 overflow-y-auto px-6 pb-8 overscroll-contain">
-                  <div className="relative w-full aspect-[16/9] rounded-[2rem] overflow-hidden shadow-xl mt-4 mb-5 group shrink-0">
+                  <div className="relative w-full aspect-[4/3] rounded-[2rem] overflow-hidden shadow-xl mt-4 mb-5 group shrink-0">
                       {selectedHotel.image_url ? (
                           <img src={selectedHotel.image_url} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" alt=""/>
                       ) : (
@@ -668,7 +670,10 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                           <div className="relative z-10">
                               <p className="text-[9px] text-gray-400 font-black uppercase tracking-widest mb-0.5">Lowest Price</p>
                               <div className="flex items-baseline gap-1">
-                                  <span className="font-black text-2xl text-gray-900">¥{selectedHotel.price.toLocaleString()}</span>
+                                  {/* ▼▼▼ 修正: 詳細カードも1人あたりに計算 ▼▼▼ */}
+                                  <span className="font-black text-2xl text-gray-900">
+                                      ¥{Math.round(selectedHotel.price / Math.max(1, conditions.adults)).toLocaleString()}
+                                  </span>
                                   <span className="text-[10px] text-gray-400 font-bold">~ / 人</span>
                               </div>
                           </div>
@@ -697,7 +702,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                           <a 
                               href={getAffiliateUrl(selectedHotel)} 
                               target="_blank" 
-                              // ★追加: onClickでログ送信
                               onClick={() => logAffiliateClick(selectedHotel.name, "hotel_search_detail")}
                               className="flex-1 bg-white text-gray-900 py-3.5 rounded-[1.25rem] border border-gray-200 font-bold text-sm active:scale-95 transition-all shadow-sm flex items-center justify-center gap-2 hover:bg-gray-50"
                           >
