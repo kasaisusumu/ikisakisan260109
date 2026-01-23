@@ -1,5 +1,5 @@
 "use client";
-// ▼▼▼ 追加: supabaseをインポート ▼▼▼
+
 import { supabase } from '@/lib/supabase';
 import { useState, useMemo, useEffect, useRef } from 'react';
 import mapboxgl from 'mapbox-gl';
@@ -40,6 +40,7 @@ const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: numbe
     return R * c;
 };
 
+// 円のポリゴンGeoJSONを生成する関数
 const createGeoJSONCircle = (center: [number, number], radiusInKm: number, points = 64) => {
     const coords = { latitude: center[1], longitude: center[0] };
     const km = radiusInKm;
@@ -118,6 +119,7 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
   const [isMapLoaded, setIsMapLoaded] = useState(false);
   const [viewedHotelIds, setViewedHotelIds] = useState<Set<string>>(new Set());
 
+  // 検索条件の初期化
   const [conditions, setConditions] = useState<SearchConditions>(() => {
       const today = new Date();
       const nextMonth = new Date(today);
@@ -148,6 +150,10 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
       return defaultConditions;
   });
 
+  // ▼▼▼ 修正: 検索実行時の人数を保持するステート (計算用) ▼▼▼
+  const [searchedAdults, setSearchedAdults] = useState(conditions.adults);
+
+  // 検索条件が変更されたら保存
   useEffect(() => {
       if (roomId) {
           localStorage.setItem(`rh_hotel_conditions_${roomId}`, JSON.stringify(conditions));
@@ -186,12 +192,14 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
       }
   }, [initialSearchArea, centerOfGravity]);
 
+  // ▼▼▼ 修正: hotels依存を追加してピンが確実に表示されるように修正 ▼▼▼
   useEffect(() => {
       if (hotels.length > 0) {
           updateHotelMarkers(hotels);
       }
-  }, [activeHotelId]);
+  }, [hotels, activeHotelId, searchedAdults]); 
 
+  // 検索範囲（ポリゴン）の描画
   useEffect(() => {
       if (!map.current || !searchArea || !isMapLoaded) return;
       const source: any = map.current.getSource('search-area-source');
@@ -280,15 +288,20 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
           const color = isActive ? '#EF4444' : '#3B82F6';
           const zIndex = isActive ? 99 : 5;
 
-          // ▼▼▼ 修正: 価格を人数で割って表示 ▼▼▼
-          const pricePerPerson = Math.round(hotel.price / Math.max(1, conditions.adults));
+          // ▼▼▼ 修正: searchedAdultsを使って計算 ▼▼▼
+          const pricePerPerson = Math.round(hotel.price / Math.max(1, searchedAdults));
           const displayPrice = pricePerPerson >= 10000 
               ? `${(pricePerPerson/10000).toFixed(1)}万` 
               : `¥${pricePerPerson.toLocaleString()}`;
 
           el.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;z-index:${zIndex};cursor:pointer;"><div style="background:white;padding:2px 6px;border-radius:6px;font-size:10px;font-weight:bold;color:${color};box-shadow:0 2px 4px rgba(0,0,0,0.2);margin-bottom:2px;white-space:nowrap;border:1px solid ${color};">${displayPrice}</div><svg width="28" height="28" viewBox="0 0 24 24" fill="${color}" stroke="white" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3" fill="white"></circle></svg></div>`;
           el.onclick = () => handleSelectHotel(hotel);
-          const marker = new mapboxgl.Marker({ element: el, anchor: 'bottom' }).setLngLat(hotel.coordinates).addTo(map.current!);
+          
+          // ▼▼▼ 修正: anchor: 'bottom' でピンの位置ズレ防止 ▼▼▼
+          const marker = new mapboxgl.Marker({ element: el, anchor: 'bottom' })
+              .setLngLat(hotel.coordinates)
+              .addTo(map.current!);
+              
           hotelMarkersRef.current.push(marker);
       });
   };
@@ -297,9 +310,9 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
     const paddingLeft = 40; const paddingBottom = 30; const paddingRight = 10; const paddingTop = 10;
     const width = 300; const height = 200; 
     
-    // ▼▼▼ 修正: 散布図のデータも全て1人あたりに変換 ▼▼▼
+    // ▼▼▼ 修正: searchedAdultsを使って計算 ▼▼▼
     const minRating = 3.0; const maxRating = 5.0;
-    const prices = hotels.map(h => Math.round(h.price / Math.max(1, conditions.adults))).filter(p => p > 0);
+    const prices = hotels.map(h => Math.round(h.price / Math.max(1, searchedAdults))).filter(p => p > 0);
     
     const minP = prices.length ? Math.min(...prices) * 0.9 : 0;
     const maxP = prices.length ? Math.max(...prices) * 1.1 : 30000;
@@ -323,13 +336,12 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                 <text x={(width + paddingLeft) / 2} y={height + 15} fontSize="10" textAnchor="middle" fill="#9ca3af" fontWeight="bold">評価</text>
                 <text x={5} y={height / 2} fontSize="10" textAnchor="middle" fill="#9ca3af" fontWeight="bold" transform={`rotate(-90, 5, ${height / 2})`}>価格</text>
                 {ratingTicks.map(r => (<text key={`x-${r}`} x={getX(r)} y={height - paddingBottom + 12} fontSize="9" textAnchor="middle" fill="#9ca3af">{r.toFixed(1)}</text>))}
-                {/* 軸のラベル表示も調整 */}
                 {priceTicks.map((p, i) => (<text key={`y-${i}`} x={paddingLeft - 6} y={getY(p) + 3} fontSize="9" textAnchor="end" fill="#9ca3af">{p >= 10000 ? `${(p / 10000).toFixed(1)}万` : `¥${(p/1000).toFixed(0)}k`}</text>))}
 
                 {hotels.map((h, i) => {
                     const x = getX(h.rating || 3.0);
-                    // ここで1人あたりの価格を使用
-                    const unitPrice = Math.round(h.price / Math.max(1, conditions.adults));
+                    // ▼▼▼ 修正: searchedAdultsを使用 ▼▼▼
+                    const unitPrice = Math.round(h.price / Math.max(1, searchedAdults));
                     const y = getY(unitPrice);
                     
                     const isActive = activeHotelId === h.id;
@@ -407,6 +419,10 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
 
   const executeSearch = async () => {
     if (!searchArea) return alert("範囲を囲んでください");
+    
+    // ▼▼▼ 修正: 検索ボタンを押した時点の人数を保存して、計算に利用する ▼▼▼
+    setSearchedAdults(conditions.adults);
+
     setIsLoading(true); setHotels([]); setSelectedHotel(null); setActiveHotelId(null);
     setShowSettings(false); 
     try {
@@ -423,8 +439,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
         const data = await res.json();
         if (data.hotels?.length > 0) { 
             setHotels(data.hotels); 
-            updateHotelMarkers(data.hotels); 
-            
             if (map.current) {
                 const bounds = new mapboxgl.LngLatBounds();
                 searchArea.polygon.forEach(coord => bounds.extend(coord as [number, number]));
@@ -602,8 +616,8 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                       </div>
                       <div className="space-y-4 pb-12">
                           {hotels.slice(0, 8).map((hotel, i) => {
-                              // ▼▼▼ 修正: リスト表示も1人あたりに計算 ▼▼▼
-                              const unitPrice = Math.round(hotel.price / Math.max(1, conditions.adults));
+                              // ▼▼▼ 修正: リスト表示も searchedAdults を使用 ▼▼▼
+                              const unitPrice = Math.round(hotel.price / Math.max(1, searchedAdults));
                               return (
                                   <div key={i} className="bg-white p-4 rounded-2xl border border-gray-100 flex items-center gap-4 active:bg-slate-50 transition shadow-sm" onClick={() => handleSelectHotel(hotel)}>
                                       <div className="w-14 h-14 bg-slate-100 rounded-xl overflow-hidden shrink-0">
@@ -627,6 +641,7 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
       {selectedHotel && (
           <div className="absolute inset-x-0 bottom-0 h-auto max-h-[85dvh] z-[100] bg-white/90 backdrop-blur-xl rounded-t-[2.5rem] shadow-[0_-20px_60px_rgba(0,0,0,0.3)] border-t border-white/50 animate-in slide-in-from-bottom-10 duration-500 flex flex-col relative">
               
+              {/* ▼▼▼ 閉じるボタンを画像外に配置 ▼▼▼ */}
               <button 
                   onClick={() => setSelectedHotel(null)} 
                   className="absolute top-5 right-6 p-2.5 bg-slate-100/80 hover:bg-slate-200/80 backdrop-blur-md rounded-full text-gray-500 transition-all active:scale-90 z-50 shadow-sm"
@@ -637,6 +652,7 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
               <div className="w-12 h-1.5 bg-gray-300/50 rounded-full mx-auto mt-3 mb-1 shrink-0" />
               
               <div className="flex-1 overflow-y-auto px-6 pb-8 overscroll-contain">
+                  {/* ▼▼▼ 修正: aspect-[4/3] に変更して写真の縦幅を確保 ▼▼▼ */}
                   <div className="relative w-full aspect-[4/3] rounded-[2rem] overflow-hidden shadow-xl mt-4 mb-5 group shrink-0">
                       {selectedHotel.image_url ? (
                           <img src={selectedHotel.image_url} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" alt=""/>
@@ -670,9 +686,9 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                           <div className="relative z-10">
                               <p className="text-[9px] text-gray-400 font-black uppercase tracking-widest mb-0.5">Lowest Price</p>
                               <div className="flex items-baseline gap-1">
-                                  {/* ▼▼▼ 修正: 詳細カードも1人あたりに計算 ▼▼▼ */}
+                                  {/* ▼▼▼ 修正: 詳細カードも searchedAdults を使用 ▼▼▼ */}
                                   <span className="font-black text-2xl text-gray-900">
-                                      ¥{Math.round(selectedHotel.price / Math.max(1, conditions.adults)).toLocaleString()}
+                                      ¥{Math.round(selectedHotel.price / Math.max(1, searchedAdults)).toLocaleString()}
                                   </span>
                                   <span className="text-[10px] text-gray-400 font-bold">~ / 人</span>
                               </div>
