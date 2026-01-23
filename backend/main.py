@@ -121,13 +121,15 @@ class VacantSearchRequest(BaseModel):
     checkin_date: Optional[str] = None
     checkout_date: Optional[str] = None
     adult_num: int = 2
+    meal_type: Optional[str] = None # 'room_only', 'breakfast', 'half_board'
+    # ▼▼▼ 追加: ポリゴン座標 [[lng, lat], ...] ▼▼▼
+    polygon: Optional[List[List[float]]] = None 
 
 class ImportRequest(BaseModel):
     url: str
 
 class SuggestRequest(BaseModel):
     theme: str             
-    # ★変更: 名前だけでなく座標も受け取れるように変更
     existing_spots: List[Union[ExistingSpot, str, Dict[str, Any]]] = [] 
     liked_spots: list[str] = []
     noped_spots: list[str] = []
@@ -190,7 +192,6 @@ WIKI_HEADERS = {
     "User-Agent": "RouteHackerBot/1.0 (contact@example.com)"
 }
 
-# ★追加: 2点間の距離計算 (Haversine formula)
 def haversine_distance(coord1, coord2):
     R = 6371  # 地球の半径 (km)
     if not coord1 or not coord2: return float('inf')
@@ -204,6 +205,22 @@ def haversine_distance(coord1, coord2):
         return R * c
     except:
         return float('inf')
+
+# ▼▼▼ 追加: 点が多角形内にあるか判定する関数 (Ray casting algorithm) ▼▼▼
+def is_inside_polygon(lat, lng, poly_coords):
+    # poly_coords is list of [lng, lat]
+    inside = False
+    j = len(poly_coords) - 1
+    for i in range(len(poly_coords)):
+        xi, yi = poly_coords[i][0], poly_coords[i][1] # lng, lat
+        xj, yj = poly_coords[j][0], poly_coords[j][1]
+        
+        intersect = ((yi > lat) != (yj > lat)) and \
+            (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi)
+        if intersect:
+            inside = not inside
+        j = i
+    return inside
 
 async def fetch_with_retry(client, url, params=None, headers=None, retries=5, initial_timeout=10.0):
     current_timeout = initial_timeout
@@ -390,7 +407,8 @@ async def search_hotels_vacant(req: VacantSearchRequest):
     if http_client is None: return {"error": "Server starting up..."}
     client = http_client
 
-    cache_key = f"rakuten_vacant:{req.latitude}:{req.longitude}:{req.checkin_date}:{req.min_price}:{req.max_price}"
+    # キャッシュキーに meal_type を追加
+    cache_key = f"rakuten_vacant:{req.latitude}:{req.longitude}:{req.checkin_date}:{req.min_price}:{req.max_price}:{req.meal_type}:{hashlib.md5(str(req.polygon).encode()).hexdigest() if req.polygon else 'all'}"
     cached = get_cache(cache_key)
     if cached: return cached
 
@@ -409,6 +427,15 @@ async def search_hotels_vacant(req: VacantSearchRequest):
     if req.max_price: base_params["maxCharge"] = req.max_price
     if req.min_price: base_params["minCharge"] = req.min_price
 
+    if req.meal_type == 'room_only':
+        base_params["breakfastFlag"] = 0
+        base_params["dinnerFlag"] = 0
+    elif req.meal_type == 'breakfast':
+        base_params["breakfastFlag"] = 1
+    elif req.meal_type == 'half_board':
+        base_params["breakfastFlag"] = 1
+        base_params["dinnerFlag"] = 1
+
     url = "https://app.rakuten.co.jp/services/api/Travel/VacantHotelSearch/20170426"
 
     async def fetch_page(page_num):
@@ -421,7 +448,7 @@ async def search_hotels_vacant(req: VacantSearchRequest):
         return None
 
     try:
-        results = await asyncio.gather(*[fetch_page(i) for i in range(1, 4)])
+        results = await asyncio.gather(*[fetch_page(i) for i in range(1, 6)])
         all_hotels = []
         seen_ids = set()
 
@@ -435,6 +462,11 @@ async def search_hotels_vacant(req: VacantSearchRequest):
                     if not basic: continue
                     hotel_id = str(basic["hotelNo"])
                     if hotel_id in seen_ids: continue
+
+                    # ▼▼▼ 追加: ポリゴンによる位置フィルタリング ▼▼▼
+                    if req.polygon:
+                        if not is_inside_polygon(basic["latitude"], basic["longitude"], req.polygon):
+                            continue
 
                     best_price = float('inf')
                     best_plan_id, best_room_class = None, None
@@ -574,7 +606,7 @@ async def suggest_spots_generator(req: SuggestRequest):
             res = await future
             if res and res["coordinates"] != [0.0, 0.0]:
                 
-                # ★重要: 既存リストとの詳細な重複チェック
+                # 既存リストとの詳細な重複チェック
                 is_duplicate = False
                 
                 # 1. 名前チェック (正規化して比較)

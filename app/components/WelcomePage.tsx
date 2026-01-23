@@ -93,14 +93,13 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
     
     const newRoomId = generateUUID();
     
-    // ★修正: ここで start_date, end_date, adult_num を保存するように変更
     const { error } = await supabase.from('rooms').insert({
       id: newRoomId,
       name: roomName,
       created_by: userName,
-      start_date: startDate || null, // 日付を追加
-      end_date: endDate || null,     // 日付を追加
-      adult_num: Number(adultNum) || 1 // 人数を追加
+      start_date: startDate || null,
+      end_date: endDate || null,
+      adult_num: Number(adultNum) || 1
     });
 
     if (error) {
@@ -110,7 +109,7 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
       return;
     }
 
-    // ローカルストレージにも保存（念のため）
+    // ローカルストレージにも保存
     localStorage.setItem(`rh_settings_${newRoomId}`, JSON.stringify({
       start: startDate,
       end: endDate,
@@ -207,9 +206,9 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
             </button>
             
             <h3 className="text-xl font-black text-gray-900 mb-6 flex items-center gap-2">
-                {activeModal === 'terms' && <><FileText className="text-blue-500"/> 利用規約</>}
-                {activeModal === 'privacy' && <><Lock className="text-blue-500"/> プライバシーポリシー</>}
-                {activeModal === 'developer' && <><User className="text-blue-500"/> 運営者情報</>}
+                {activeModal === 'terms' && <><FileText className="text-emerald-500"/> 利用規約</>}
+                {activeModal === 'privacy' && <><Lock className="text-emerald-500"/> プライバシーポリシー</>}
+                {activeModal === 'developer' && <><User className="text-emerald-500"/> 運営者情報</>}
             </h3>
             
             <div className="flex-1 overflow-y-auto custom-scrollbar text-sm text-gray-600 leading-relaxed space-y-4 pr-2">
@@ -242,8 +241,8 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                 )}
                 {activeModal === 'developer' && (
                     <div className="text-center py-4">
-                        <div className="w-20 h-20 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                            <Plane className="text-blue-600" size={32} />
+                        <div className="w-20 h-20 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                            <Plane className="text-emerald-600" size={32} />
                         </div>
                         <h4 className="font-bold text-lg text-gray-800">MapWith Team</h4>
                         <p className="text-xs text-gray-500 mt-2">
@@ -267,13 +266,13 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
         desc: "MapWithなら、リアルタイムで\n友達と同じ地図を囲めます。\n行き先をみんなで決めよう🗺️",
         visual: (
             <div className="relative w-40 h-40 mx-auto flex items-center justify-center">
-                <div className="absolute inset-0 bg-blue-100 rounded-full animate-pulse opacity-50"></div>
-                <div className="w-32 h-32 bg-white rounded-full shadow-lg flex items-center justify-center relative border-4 border-blue-50">
-                    <MapIcon size={64} className="text-blue-500" />
-                    <div className="absolute -bottom-2 -right-2 bg-green-500 text-white p-3 rounded-full border-4 border-white shadow-md">
+                <div className="absolute inset-0 bg-emerald-100 rounded-full animate-pulse opacity-50"></div>
+                <div className="w-32 h-32 bg-white rounded-full shadow-lg flex items-center justify-center relative border-4 border-emerald-50">
+                    <MapIcon size={64} className="text-emerald-500" />
+                    <div className="absolute -bottom-2 -right-2 bg-teal-500 text-white p-3 rounded-full border-4 border-white shadow-md">
                         <Users size={24} />
                     </div>
-                    <div className="absolute -top-2 -left-2 bg-indigo-500 text-white p-2 rounded-full border-4 border-white shadow-md">
+                    <div className="absolute -top-2 -left-2 bg-lime-500 text-white p-2 rounded-full border-4 border-white shadow-md">
                         <MapPinned size={20} />
                     </div>
                 </div>
@@ -285,19 +284,19 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
         desc: "AIによるスポット提案、指で囲って宿検索、\nみんなで投票機能などが使えます✨",
         visual: (
             <div className="relative w-40 h-40 mx-auto flex items-center justify-center">
-                <div className="w-32 h-32 bg-gradient-to-tr from-yellow-100 to-orange-100 rounded-full shadow-lg flex items-center justify-center relative border-4 border-white">
+                <div className="w-32 h-32 bg-gradient-to-tr from-yellow-50 to-emerald-50 rounded-full shadow-lg flex items-center justify-center relative border-4 border-white">
                     <div className="grid grid-cols-2 gap-3 p-4">
                         <div className="flex flex-col items-center gap-1">
-                            <div className="bg-purple-500 text-white p-2 rounded-xl shadow-sm"><Sparkles size={20}/></div>
-                            <span className="text-[8px] font-bold text-purple-600">AI提案</span>
+                            <div className="bg-purple-400 text-white p-2 rounded-xl shadow-sm"><Sparkles size={20}/></div>
+                            <span className="text-[8px] font-bold text-purple-500">AI提案</span>
                         </div>
                         <div className="flex flex-col items-center gap-1">
-                            <div className="bg-red-500 text-white p-2 rounded-xl shadow-sm"><PenTool size={20}/></div>
-                            <span className="text-[8px] font-bold text-red-600">囲って検索</span>
+                            <div className="bg-orange-400 text-white p-2 rounded-xl shadow-sm"><PenTool size={20}/></div>
+                            <span className="text-[8px] font-bold text-orange-500">囲って検索</span>
                         </div>
                         <div className="flex flex-col items-center gap-1 col-span-2">
-                            <div className="bg-blue-500 text-white p-2 rounded-xl shadow-sm"><ThumbsUp size={20}/></div>
-                            <span className="text-[8px] font-bold text-blue-600">投票</span>
+                            <div className="bg-emerald-500 text-white p-2 rounded-xl shadow-sm"><ThumbsUp size={20}/></div>
+                            <span className="text-[8px] font-bold text-emerald-600">投票</span>
                         </div>
                     </div>
                 </div>
@@ -309,11 +308,11 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
         desc: "さあ、最高の旅行プラン作りを\nMapWithではじめましょう！✈️",
         visual: (
             <div className="relative w-40 h-40 mx-auto flex items-center justify-center">
-                <div className="absolute inset-0 bg-blue-500/10 rounded-full animate-[spin_10s_linear_infinite]"></div>
-                {/* 枠線を濃くして視認性を向上 (border-blue-200) */}
-                <div className="w-32 h-32 bg-blue-600 rounded-full shadow-xl flex items-center justify-center relative border-4 border-blue-200 overflow-hidden group">
+                <div className="absolute inset-0 bg-emerald-500/10 rounded-full animate-[spin_10s_linear_infinite]"></div>
+                {/* 枠線を濃くして視認性を向上 */}
+                <div className="w-32 h-32 bg-emerald-600 rounded-full shadow-xl flex items-center justify-center relative border-4 border-emerald-200 overflow-hidden group">
                     <Plane size={64} className="text-white relative z-10" />
-                    <div className="absolute inset-0 bg-gradient-to-tr from-blue-600 to-cyan-400 opacity-80"></div>
+                    <div className="absolute inset-0 bg-gradient-to-tr from-emerald-600 to-teal-400 opacity-80"></div>
                     {/* Clouds */}
                     <div className="absolute top-6 left-4 w-8 h-8 bg-white/20 rounded-full blur-md"></div>
                     <div className="absolute bottom-8 right-6 w-10 h-10 bg-white/20 rounded-full blur-md"></div>
@@ -330,21 +329,21 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
       title: "ルーム作成",
       desc: "旅行のタイトルや日程を決めて、\nあなただけのしおりを作成。",
       icon: <Plus size={24} className="text-white"/>,
-      color: "bg-blue-500"
+      color: "bg-emerald-500"
     },
     {
       step: 2,
       title: "URLをシェア！",
       desc: "作成した旅行ページのURLを\nLINEなどで友達に送ります。",
       icon: <Share2 size={24} className="text-white"/>,
-      color: "bg-indigo-500"
+      color: "bg-teal-500"
     },
     {
       step: 3,
       title: "スポットを追加→みんなで計画！",
       desc: "マップ検索やAI提案から、\n行きたい場所をどんどん追加。",
       icon: <MapPinned size={24} className="text-white"/>,
-      color: "bg-teal-500"
+      color: "bg-cyan-600"
     }
   ];
 
@@ -355,8 +354,8 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
         {/* メインコンテンツ */}
         <div className="min-h-screen bg-slate-50 relative overflow-hidden flex flex-col">
             {/* 背景装飾 */}
-            <div className="fixed top-[-10%] right-[-10%] w-96 h-96 bg-blue-200 rounded-full blur-3xl opacity-30 pointer-events-none"></div>
-            <div className="fixed bottom-[-10%] left-[-10%] w-96 h-96 bg-purple-200 rounded-full blur-3xl opacity-30 pointer-events-none"></div>
+            <div className="fixed top-[-10%] right-[-10%] w-96 h-96 bg-emerald-200 rounded-full blur-3xl opacity-30 pointer-events-none"></div>
+            <div className="fixed bottom-[-10%] left-[-10%] w-96 h-96 bg-teal-200 rounded-full blur-3xl opacity-30 pointer-events-none"></div>
 
             {/* スクロール領域 */}
             <div className="flex-1 overflow-y-auto w-full custom-scrollbar pb-32">
@@ -367,15 +366,15 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                         <div className="mb-8 flex justify-center">
                             <div className="w-24 h-24 bg-white rounded-[2rem] shadow-xl flex items-center justify-center transform -rotate-3 border-4 border-white/50">
                                 <div className="relative w-full h-full flex items-center justify-center overflow-hidden rounded-[1.7rem]">
-                                    <div className="absolute inset-0 bg-gradient-to-br from-blue-500 to-indigo-600 opacity-10"></div>
-                                    <Plane className="text-blue-600 relative z-10" size={48} />
-                                    <MapIcon className="text-blue-200 absolute -bottom-2 -right-2 opacity-50" size={60} />
+                                    <div className="absolute inset-0 bg-gradient-to-br from-emerald-500 to-teal-600 opacity-10"></div>
+                                    <Plane className="text-emerald-600 relative z-10" size={48} />
+                                    <MapIcon className="text-emerald-200 absolute -bottom-2 -right-2 opacity-50" size={60} />
                                 </div>
                             </div>
                         </div>
                         
                         <h1 className="text-4xl font-black text-slate-800 mb-4 tracking-tight leading-tight">
-                            <span className="text-blue-600 inline-block mb-1">MapWith</span><br/>
+                            <span className="text-emerald-600 inline-block mb-1">MapWith</span><br/>
                             ーみんなで旅行計画ー
                         </h1>
                         <p className="text-slate-500 leading-relaxed font-medium">
@@ -410,7 +409,7 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                     {/* 使い方セクション */}
                     <div className="mb-16 border-t border-slate-200 pt-16">
                         <h3 className="text-xl font-black text-slate-800 mb-8 flex items-center justify-center gap-2">
-                            <span className="bg-blue-100 text-blue-600 px-3 py-1 rounded-full text-xs">How to</span>
+                            <span className="bg-emerald-100 text-emerald-600 px-3 py-1 rounded-full text-xs">How to</span>
                             使い方はかんたん
                         </h3>
                         <div className="space-y-4 relative">
@@ -450,7 +449,7 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                 <div className="max-w-md mx-auto">
                     <button 
                         onClick={() => setStep('create')}
-                        className="w-full bg-slate-900 text-white py-4 rounded-2xl font-bold text-lg shadow-xl hover:bg-slate-800 hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2"
+                        className="w-full bg-emerald-800 text-white py-4 rounded-2xl font-bold text-lg shadow-xl hover:bg-emerald-900 hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2"
                     >
                         しおりを作る <ArrowRight size={20}/>
                     </button>
@@ -485,7 +484,7 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                     placeholder="例：卒業旅行 in 京都 🍵" 
                     value={roomName}
                     onChange={(e) => setRoomName(e.target.value)}
-                    className="w-full bg-slate-50 p-4 rounded-2xl font-bold text-lg text-slate-800 border-2 border-transparent focus:border-blue-500 focus:bg-white transition outline-none"
+                    className="w-full bg-slate-50 p-4 rounded-2xl font-bold text-lg text-slate-800 border-2 border-transparent focus:border-emerald-500 focus:bg-white transition outline-none"
                     />
                 </div>
 
@@ -496,18 +495,18 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                     placeholder="例：たろう" 
                     value={userName}
                     onChange={(e) => setUserName(e.target.value)}
-                    className="w-full bg-slate-50 p-4 rounded-2xl font-bold text-lg text-slate-800 border-2 border-transparent focus:border-blue-500 focus:bg-white transition outline-none"
+                    className="w-full bg-slate-50 p-4 rounded-2xl font-bold text-lg text-slate-800 border-2 border-transparent focus:border-emerald-500 focus:bg-white transition outline-none"
                     />
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
                     <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1"><Calendar size={12}/> 開始日</label>
-                    <input type="date" value={startDate} onChange={(e)=>setStartDate(e.target.value)} className="w-full bg-slate-50 p-3 rounded-xl font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-100"/>
+                    <input type="date" value={startDate} onChange={(e)=>setStartDate(e.target.value)} className="w-full bg-slate-50 p-3 rounded-xl font-bold text-slate-700 outline-none focus:ring-2 focus:ring-emerald-100"/>
                     </div>
                     <div className="space-y-2">
                     <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1"><Calendar size={12}/> 終了日</label>
-                    <input type="date" value={endDate} onChange={(e)=>setEndDate(e.target.value)} className="w-full bg-slate-50 p-3 rounded-xl font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-100"/>
+                    <input type="date" value={endDate} onChange={(e)=>setEndDate(e.target.value)} className="w-full bg-slate-50 p-3 rounded-xl font-bold text-slate-700 outline-none focus:ring-2 focus:ring-emerald-100"/>
                     </div>
                 </div>
 
@@ -528,7 +527,7 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                             if (!isNaN(num)) setAdultNum(num);
                             }
                         }}
-                        className="w-full bg-slate-50 p-4 rounded-2xl font-bold text-lg text-slate-800 border-2 border-transparent focus:border-blue-500 focus:bg-white transition outline-none"
+                        className="w-full bg-slate-50 p-4 rounded-2xl font-bold text-lg text-slate-800 border-2 border-transparent focus:border-emerald-500 focus:bg-white transition outline-none"
                         />
                         <div className="absolute right-6 top-1/2 -translate-y-1/2 text-slate-400 font-bold pointer-events-none">
                         名
@@ -542,7 +541,7 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                     onClick={handleCreateTrip}
                     disabled={!roomName || !userName || isLoading}
                     className={`w-full py-4 rounded-2xl font-bold text-lg shadow-xl transition-all flex items-center justify-center gap-2
-                    ${(!roomName || !userName || isLoading) ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700 hover:scale-[1.02] active:scale-95'}
+                    ${(!roomName || !userName || isLoading) ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-emerald-600 text-white hover:bg-emerald-700 hover:scale-[1.02] active:scale-95'}
                     `}
                 >
                     {isLoading ? <Loader2 className="animate-spin"/> : '次へ進む'}
@@ -560,7 +559,7 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
   if (step === 'share') {
     return (
       <>
-        <div className="min-h-screen bg-blue-600 flex flex-col items-center justify-center p-6 relative">
+        <div className="min-h-screen bg-emerald-600 flex flex-col items-center justify-center p-6 relative">
             <div className="w-full max-w-md bg-white rounded-[2rem] p-8 shadow-2xl animate-in zoom-in-95 duration-300">
                 <div className="flex flex-col items-center text-center mb-8">
                 <div className="w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mb-4">
@@ -629,7 +628,7 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                         value={userName}
                         onChange={(e) => setUserName(e.target.value)}
                         className={`w-full bg-slate-50 p-4 rounded-2xl font-bold text-lg text-slate-800 border-2 transition outline-none
-                            ${existingMembers.includes(userName) ? 'border-red-500 focus:border-red-500 bg-red-50' : 'border-transparent focus:border-blue-500 focus:bg-white'}
+                            ${existingMembers.includes(userName) ? 'border-red-500 focus:border-red-500 bg-red-50' : 'border-transparent focus:border-emerald-500 focus:bg-white'}
                         `}
                         />
                         {existingMembers.includes(userName) && (
@@ -651,7 +650,7 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                     onClick={handleJoin}
                     disabled={!!inviteRoomId && !userName}
                     className={`w-full py-4 rounded-2xl font-bold text-lg shadow-lg transition-all
-                    ${(inviteRoomId && !userName) ? 'bg-slate-200 text-slate-400' : 'bg-blue-600 text-white hover:bg-blue-700 hover:scale-[1.02] active:scale-95'}
+                    ${(inviteRoomId && !userName) ? 'bg-slate-200 text-slate-400' : 'bg-emerald-600 text-white hover:bg-emerald-700 hover:scale-[1.02] active:scale-95'}
                     `}
                 >
                     {inviteRoomId ? '参加する' : '同意してはじめる'}
@@ -667,7 +666,7 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
 function FeatureItem({ icon, title, desc }: { icon: React.ReactNode, title: string, desc: string }) {
   return (
     <div className="flex items-center gap-4 bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
-      <div className="w-10 h-10 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center shrink-0">
+      <div className="w-10 h-10 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center shrink-0">
         {icon}
       </div>
       <div>

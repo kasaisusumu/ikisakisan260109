@@ -76,8 +76,17 @@ export default function MenuView({ spots }: Props) {
   // LINEでシェアする機能
   const handleShareLine = () => {
     if (typeof window === 'undefined') return;
-    const url = encodeURIComponent(window.location.href);
-    window.open(`https://social-plugins.line.me/lineit/share?url=${url}`, '_blank');
+
+    // 現在のルーム名を取得 (履歴から検索、なければデフォルト)
+    const currentRoom = roomHistory.find(r => r.id === currentRoomId);
+    const roomName = currentRoom ? currentRoom.name : '旅行';
+    const url = window.location.href;
+
+    // WelcomePageと同じ文言を作成
+    const text = `「${roomName}」のしおりを作りました！\nここから参加して一緒に計画しよう✈️\n${url}`;
+
+    // テキスト付きでLINE共有を開く
+    window.open(`https://line.me/R/msg/text/?${encodeURIComponent(text)}`, '_blank');
   };
 
   // 安全なコピー機能 (HTTP環境対応)

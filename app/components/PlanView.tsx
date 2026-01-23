@@ -85,6 +85,8 @@ interface Props {
   onScreenshotClosed?: () => void;
   startDate?: string;
   adultNum?: number;
+  // ★追加
+  currentUser?: string;
 }
 
 const TRANSPORT_MODES = [
@@ -99,8 +101,24 @@ const TRANSPORT_MODES = [
 export default function PlanView({ 
     spots, onRemove, onUpdateSpots, roomId, travelDays = 1, 
     autoShowScreenshot, onScreenshotClosed,
-    startDate, adultNum = 2
+    startDate, adultNum = 2,
+
+    // ★追加: ここに currentUser を追加します
+    currentUser
+    
 }: Props) {  
+
+    // ▼▼▼ 追加: この関数定義が抜けていました ▼▼▼
+  const logAffiliateClick = async (spotName: string) => {
+      if (!roomId) return;
+      await supabase.from('affiliate_logs').insert({
+          room_id: roomId,
+          user_name: currentUser || 'Guest',
+          spot_name: spotName,
+          source_view: 'plan_timeline'
+      });
+  };
+  // ▲▲▲ 追加ここまで ▲▲▲
   
   const captureRef = useRef<HTMLDivElement>(null); 
   const scrollContainerRef = useRef<HTMLDivElement>(null); 
@@ -222,21 +240,70 @@ export default function PlanView({
       });
   }, [activeDaySpots, timeline]);
 
-  const getAffiliateUrl = (hotel: any) => {
-    let targetUrl = "";
+  // 日付計算ヘルパー
+  const parseLocalYMD = (ymd: string) => {
+      if (!ymd) return null;
+      const parts = ymd.split('-').map(Number);
+      if (parts.length !== 3) return null;
+      return new Date(parts[0], parts[1] - 1, parts[2]);
+  };
 
-    // パターンA: IDがある場合
-    if (hotel.id) {
-        targetUrl = `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotel.id}?f_teikei=&f_heya_su=1&f_sort=min_charge`;
+  const getAffiliateUrl = (hotel: any) => {
+    // 1. 基準日の決定
+    let targetDate = new Date();
+    targetDate.setDate(targetDate.getDate() + 30);
+
+    if (startDate) {
+        const parsedStart = parseLocalYMD(startDate);
+        if (parsedStart) targetDate = parsedStart;
     }
-    // パターンB: 既存URL
-    else if (hotel.url && hotel.url.includes('rakuten.co.jp')) {
+
+    // 2. Dayによる日付加算
+    const dayOffset = Math.max(0, selectedDay - 1);
+    targetDate.setDate(targetDate.getDate() + dayOffset);
+
+    // 3. チェックアウト日
+    const checkOutDate = new Date(targetDate);
+    checkOutDate.setDate(targetDate.getDate() + 1);
+
+    // 4. パラメータ生成
+    const y1 = targetDate.getFullYear();
+    const m1 = targetDate.getMonth() + 1;
+    const d1 = targetDate.getDate();
+    const y2 = checkOutDate.getFullYear();
+    const m2 = checkOutDate.getMonth() + 1;
+    const d2 = checkOutDate.getDate();
+    const pad = (n: number) => n.toString().padStart(2, '0');
+
+    // ★追加: URLから楽天IDを抽出するヘルパー
+    const extractRakutenId = (url: string) => {
+        if (!url) return null;
+        const match = url.match(/hotelinfo\/plan\/(\d+)/) || url.match(/HOTEL\/(\d+)/);
+        return match ? match[1] : null;
+    };
+
+    let targetUrl = "";
+    let hotelId = null;
+
+    if (hotel.url && hotel.url.includes('rakuten')) {
+        hotelId = extractRakutenId(hotel.url);
+    }
+    if (!hotelId && hotel.id && /^\d+$/.test(String(hotel.id))) {
+        hotelId = hotel.id;
+    }
+
+    if (hotelId) {
+        targetUrl = `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotelId}?f_teikei=&f_heya_su=1&f_otona_su=${adultNum}&f_nen1=${y1}&f_tuki1=${pad(m1)}&f_hi1=${pad(d1)}&f_nen2=${y2}&f_tuki2=${pad(m2)}&f_hi2=${pad(d2)}&f_sort=min_charge`;
+    } else if (hotel.url && hotel.url.includes('rakuten.co.jp')) {
         targetUrl = hotel.url;
+    } else {
+        targetUrl = `https://search.travel.rakuten.co.jp/ds/hotel/search?f_query=${encodeURIComponent(hotel.name)}&f_teikei=&f_heya_su=1&f_otona_su=${adultNum}&f_nen1=${y1}&f_tuki1=${pad(m1)}&f_hi1=${pad(d1)}&f_nen2=${y2}&f_tuki2=${pad(m2)}&f_hi2=${pad(d2)}&f_sort=min_charge`;
     }
-    // フォールバック
-    else {
-        targetUrl = `https://search.travel.rakuten.co.jp/ds/hotel/search?f_query=${encodeURIComponent(hotel.name)}`;
-    }
+
+    // ★修正: アフィリエイトリンクに変換して返す
+   // if (RAKUTEN_AFFILIATE_ID) {
+     //   return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent(targetUrl)}&m=${encodeURIComponent(targetUrl)}`;
+    //}
 
     return targetUrl;
   };
@@ -1139,8 +1206,17 @@ const handleArrivalChange = (index: number, newArrival: string) => {
 
                                                 {/* 楽天アフィリエイトリンク (宿の場合) */}
                                                 {item.spot.is_hotel && (
-                                                    <a href={getAffiliateUrl(item.spot)} target="_blank" onClick={(e)=>e.stopPropagation()} className="bg-orange-50 text-orange-600 px-2 py-1 rounded text-[10px] font-bold border border-orange-200 hover:bg-orange-100 transition shadow-sm flex items-center gap-1">
-                                                        <ExternalLink size={10}/> 空室確認(無効)
+                                                    <a 
+                                                        href={getAffiliateUrl(item.spot)} 
+                                                        target="_blank" 
+                                                        // ★追加: onClickでログ送信
+                                                        onClick={(e)=> {
+                                                            e.stopPropagation();
+                                                            logAffiliateClick(item.spot.name);
+                                                        }} 
+                                                        className="bg-orange-50 text-orange-600 px-2 py-1 rounded text-[10px] font-bold border border-orange-200 hover:bg-orange-100 transition shadow-sm flex items-center gap-1"
+                                                    >
+                                                        <ExternalLink size={10}/> 空室確認
                                                     </a>
                                                 )}
                                             </div>

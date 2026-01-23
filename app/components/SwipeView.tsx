@@ -563,6 +563,13 @@ export default function SwipeView({
       {/* 4. スワイプカード */}
       {activeSpots.length > 0 && areImagesReady && !showConfirmModal && !isSearching && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center animate-in zoom-in duration-300">
+        {/* ▼▼▼ 修正: z-indexをカード(1000~)より高い値(2000)に変更して最前面に表示 ▼▼▼ */}
+            <div className="absolute top-6 z-[2000] pointer-events-none animate-in fade-in slide-in-from-top-2 duration-500">
+                <div className="bg-black/40 backdrop-blur-md text-white px-5 py-2 rounded-full text-xs font-black tracking-widest shadow-lg border border-white/10 flex items-center gap-2">
+                    <span className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></span>
+                    REMAINING: {activeSpots.length}
+                </div>
+            </div>
             <div className="relative w-full h-full max-w-md mx-auto flex items-center justify-center pointer-events-none">
                 {activeSpots.map((spot, index) => {
                 const bgImage = images[spot.name] || spot.image_url; 
