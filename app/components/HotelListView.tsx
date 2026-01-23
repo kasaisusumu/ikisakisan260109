@@ -288,7 +288,10 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
 
           el.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;z-index:${zIndex};cursor:pointer;"><div style="background:white;padding:2px 6px;border-radius:6px;font-size:10px;font-weight:bold;color:${color};box-shadow:0 2px 4px rgba(0,0,0,0.2);margin-bottom:2px;white-space:nowrap;border:1px solid ${color};">¥${(hotel.price/10000).toFixed(1)}万</div><svg width="28" height="28" viewBox="0 0 24 24" fill="${color}" stroke="white" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3" fill="white"></circle></svg></div>`;
           el.onclick = () => handleSelectHotel(hotel);
-          const marker = new mapboxgl.Marker({ element: el }).setLngLat(hotel.coordinates).addTo(map.current!);
+          const marker = new mapboxgl.Marker({ element: el, anchor: 'bottom' })
+              .setLngLat(hotel.coordinates)
+              .addTo(map.current!);
+              
           hotelMarkersRef.current.push(marker);
       });
   };
