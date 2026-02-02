@@ -121,8 +121,7 @@ class VacantSearchRequest(BaseModel):
     checkin_date: Optional[str] = None
     checkout_date: Optional[str] = None
     adult_num: int = 2
-    meal_type: Optional[str] = None # 'room_only', 'breakfast', 'half_board'
-    # ▼▼▼ 追加: ポリゴン座標 [[lng, lat], ...] ▼▼▼
+    meal_type: Optional[str] = None # 'room_only', 'breakfast', 'half_board', 'none'
     polygon: Optional[List[List[float]]] = None 
 
 class ImportRequest(BaseModel):
@@ -206,7 +205,7 @@ def haversine_distance(coord1, coord2):
     except:
         return float('inf')
 
-# ▼▼▼ 追加: 点が多角形内にあるか判定する関数 (Ray casting algorithm) ▼▼▼
+# 点が多角形内にあるか判定する関数 (Ray casting algorithm)
 def is_inside_polygon(lat, lng, poly_coords):
     # poly_coords is list of [lng, lat]
     inside = False
@@ -407,8 +406,9 @@ async def search_hotels_vacant(req: VacantSearchRequest):
     if http_client is None: return {"error": "Server starting up..."}
     client = http_client
 
-    # キャッシュキーに meal_type を追加
-    cache_key = f"rakuten_vacant:{req.latitude}:{req.longitude}:{req.checkin_date}:{req.min_price}:{req.max_price}:{req.meal_type}:{hashlib.md5(str(req.polygon).encode()).hexdigest() if req.polygon else 'all'}"
+    # ▼▼▼ 変更: キャッシュキーを v2 に更新し、meal_type を含める ▼▼▼
+    cache_key = f"rakuten_vacant_v2:{req.latitude}:{req.longitude}:{req.checkin_date}:{req.checkout_date}:{req.adult_num}:{req.min_price}:{req.max_price}:{req.meal_type}:{hashlib.md5(str(req.polygon).encode()).hexdigest() if req.polygon else 'all'}"
+    
     cached = get_cache(cache_key)
     if cached: return cached
 
@@ -427,14 +427,20 @@ async def search_hotels_vacant(req: VacantSearchRequest):
     if req.max_price: base_params["maxCharge"] = req.max_price
     if req.min_price: base_params["minCharge"] = req.min_price
 
+    # APIへのリクエストパラメータも調整
     if req.meal_type == 'room_only':
         base_params["breakfastFlag"] = 0
         base_params["dinnerFlag"] = 0
     elif req.meal_type == 'breakfast':
         base_params["breakfastFlag"] = 1
+        # 朝食付き希望時は、夕食なしを強制しない方がプランが多いが、
+        # 今回は「朝食付き」と「2食付き」を区別したい場合は dinnerFlag=0 を送る手もある。
+        # ここではユーザーの要望「区別したい」に合わせて dinnerFlag=0 を送る設定にする
+        base_params["dinnerFlag"] = 0 
     elif req.meal_type == 'half_board':
         base_params["breakfastFlag"] = 1
         base_params["dinnerFlag"] = 1
+    # 'none' の場合は指定しない
 
     url = "https://app.rakuten.co.jp/services/api/Travel/VacantHotelSearch/20170426"
 
@@ -463,7 +469,7 @@ async def search_hotels_vacant(req: VacantSearchRequest):
                     hotel_id = str(basic["hotelNo"])
                     if hotel_id in seen_ids: continue
 
-                    # ▼▼▼ 追加: ポリゴンによる位置フィルタリング ▼▼▼
+                    # ポリゴンフィルタリング
                     if req.polygon:
                         if not is_inside_polygon(basic["latitude"], basic["longitude"], req.polygon):
                             continue
@@ -475,6 +481,24 @@ async def search_hotels_vacant(req: VacantSearchRequest):
                     for j in range(1, len(hotel_content)):
                         r_info = hotel_content[j].get("roomInfo")
                         if isinstance(r_info, list) and len(r_info) >= 2:
+                            
+                            # ▼▼▼ 追加: プランごとの食事条件チェック（厳密化） ▼▼▼
+                            r_basic = r_info[0].get("roomBasicInfo", {})
+                            
+                            if req.meal_type == 'room_only':
+                                # 素泊まり希望: 食事ありプランを除外
+                                if r_basic.get("withBreakfastFlag") == 1 or r_basic.get("withDinnerFlag") == 1:
+                                    continue
+                            elif req.meal_type == 'breakfast':
+                                # 朝食付き希望: 朝食なしプランを除外
+                                if r_basic.get("withBreakfastFlag") != 1:
+                                    continue
+                            elif req.meal_type == 'half_board':
+                                # 2食付き希望: どちらか欠けているプランを除外
+                                if r_basic.get("withBreakfastFlag") != 1 or r_basic.get("withDinnerFlag") != 1:
+                                    continue
+                            # ▲▲▲ 追加ここまで ▲▲▲
+
                             r_charge = r_info[1].get("dailyCharge")
                             if r_charge and r_charge.get("total", 0) > 0:
                                 if r_charge["total"] < best_price:

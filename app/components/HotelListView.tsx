@@ -119,6 +119,15 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
   const [isMapLoaded, setIsMapLoaded] = useState(false);
   const [viewedHotelIds, setViewedHotelIds] = useState<Set<string>>(new Set());
 
+  // ズーム機能用のStateとRef
+  const rightEdgeGestureRef = useRef({
+      isActive: false,
+      startY: 0,
+      startZoom: 0
+  });
+  const [showZoomUI, setShowZoomUI] = useState(false);
+  const zoomKnobRef = useRef<HTMLDivElement>(null);
+
   // 検索条件の初期化
   const [conditions, setConditions] = useState<SearchConditions>(() => {
       const today = new Date();
@@ -150,7 +159,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
       return defaultConditions;
   });
 
-  // ▼▼▼ 修正: 検索実行時の人数を保持するステート (計算用) ▼▼▼
   const [searchedAdults, setSearchedAdults] = useState(conditions.adults);
 
   // 検索条件が変更されたら保存
@@ -192,7 +200,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
       }
   }, [initialSearchArea, centerOfGravity]);
 
-  // ▼▼▼ 修正: hotels依存を追加してピンが確実に表示されるように修正 ▼▼▼
   useEffect(() => {
       if (hotels.length > 0) {
           updateHotelMarkers(hotels);
@@ -225,6 +232,73 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
           source.setData({ type: "Feature", geometry: { type: "Polygon", coordinates: [] }, properties: {} });
       }
   }, [searchArea, isMapLoaded]);
+
+  // ズームジェスチャーのロジック
+  useEffect(() => {
+    const container = mapContainer.current;
+    if (!container) return;
+
+    const onTouchStart = (e: TouchEvent) => {
+        if (e.touches.length !== 1 || isDrawing) return;
+
+        const touch = e.touches[0];
+        const screenWidth = window.innerWidth;
+        const edgeThreshold = 60; 
+
+        if (touch.clientX > screenWidth - edgeThreshold) {
+            rightEdgeGestureRef.current = {
+                isActive: true,
+                startY: touch.clientY,
+                startZoom: map.current?.getZoom() || 14
+            };
+            
+            // UIを表示
+            setShowZoomUI(true);
+            
+            // ツマミをタッチ位置へ移動
+            if (zoomKnobRef.current) {
+                zoomKnobRef.current.style.transform = `translateY(${touch.clientY}px)`;
+            }
+
+            if (navigator.vibrate) navigator.vibrate(10);
+        }
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+        if (!rightEdgeGestureRef.current.isActive || !map.current) return;
+        if (e.cancelable) e.preventDefault();
+
+        const touch = e.touches[0];
+        const deltaY = rightEdgeGestureRef.current.startY - touch.clientY;
+        const sensitivity = 0.015; 
+        const newZoom = rightEdgeGestureRef.current.startZoom + (deltaY * sensitivity);
+        
+        map.current.setZoom(newZoom);
+
+        // ツマミの位置を更新
+        if (zoomKnobRef.current) {
+            zoomKnobRef.current.style.transform = `translateY(${touch.clientY}px)`;
+        }
+    };
+
+    const onTouchEnd = () => {
+        rightEdgeGestureRef.current.isActive = false;
+        // UIを非表示
+        setShowZoomUI(false);
+    };
+
+    container.addEventListener('touchstart', onTouchStart, { passive: false });
+    container.addEventListener('touchmove', onTouchMove, { passive: false });
+    container.addEventListener('touchend', onTouchEnd);
+    container.addEventListener('touchcancel', onTouchEnd);
+
+    return () => {
+        container.removeEventListener('touchstart', onTouchStart);
+        container.removeEventListener('touchmove', onTouchMove);
+        container.removeEventListener('touchend', onTouchEnd);
+        container.removeEventListener('touchcancel', onTouchEnd);
+    };
+  }, [isDrawing]);
 
   const handleSelectHotel = (hotel: any) => {
       setActiveHotelId(hotel.id);
@@ -288,7 +362,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
           const color = isActive ? '#EF4444' : '#3B82F6';
           const zIndex = isActive ? 99 : 5;
 
-          // ▼▼▼ 修正: searchedAdultsを使って計算 ▼▼▼
           const pricePerPerson = Math.round(hotel.price / Math.max(1, searchedAdults));
           const displayPrice = pricePerPerson >= 10000 
               ? `${(pricePerPerson/10000).toFixed(1)}万` 
@@ -297,7 +370,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
           el.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;z-index:${zIndex};cursor:pointer;"><div style="background:white;padding:2px 6px;border-radius:6px;font-size:10px;font-weight:bold;color:${color};box-shadow:0 2px 4px rgba(0,0,0,0.2);margin-bottom:2px;white-space:nowrap;border:1px solid ${color};">${displayPrice}</div><svg width="28" height="28" viewBox="0 0 24 24" fill="${color}" stroke="white" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3" fill="white"></circle></svg></div>`;
           el.onclick = () => handleSelectHotel(hotel);
           
-          // ▼▼▼ 修正: anchor: 'bottom' でピンの位置ズレ防止 ▼▼▼
           const marker = new mapboxgl.Marker({ element: el, anchor: 'bottom' })
               .setLngLat(hotel.coordinates)
               .addTo(map.current!);
@@ -310,7 +382,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
     const paddingLeft = 40; const paddingBottom = 30; const paddingRight = 10; const paddingTop = 10;
     const width = 300; const height = 200; 
     
-    // ▼▼▼ 修正: searchedAdultsを使って計算 ▼▼▼
     const minRating = 3.0; const maxRating = 5.0;
     const prices = hotels.map(h => Math.round(h.price / Math.max(1, searchedAdults))).filter(p => p > 0);
     
@@ -340,7 +411,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
 
                 {hotels.map((h, i) => {
                     const x = getX(h.rating || 3.0);
-                    // ▼▼▼ 修正: searchedAdultsを使用 ▼▼▼
                     const unitPrice = Math.round(h.price / Math.max(1, searchedAdults));
                     const y = getY(unitPrice);
                     
@@ -420,19 +490,27 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
   const executeSearch = async () => {
     if (!searchArea) return alert("範囲を囲んでください");
     
-    // ▼▼▼ 修正: 検索ボタンを押した時点の人数を保存して、計算に利用する ▼▼▼
     setSearchedAdults(conditions.adults);
 
     setIsLoading(true); setHotels([]); setSelectedHotel(null); setActiveHotelId(null);
     setShowSettings(false); 
     try {
+        const mealTypeParam = conditions.mealType === 'none' ? undefined : conditions.mealType;
+
         const body = {
-            latitude: searchArea.latitude, longitude: searchArea.longitude, radius: Number(searchArea.radius.toFixed(1)), 
+            latitude: searchArea.latitude, 
+            longitude: searchArea.longitude, 
+            radius: Number(searchArea.radius.toFixed(1)), 
             polygon: searchArea.polygon,
             max_price: conditions.budgetMax >= 50000 ? undefined : conditions.budgetMax,
-            checkin_date: conditions.checkin, checkout_date: conditions.checkout, adult_num: conditions.adults,
-            meal_type: conditions.mealType === 'none' ? undefined : conditions.mealType
+            checkin_date: conditions.checkin, 
+            checkout_date: conditions.checkout, 
+            adult_num: conditions.adults,
+            meal_type: mealTypeParam
         };
+        
+        console.log("Searching with:", body); 
+
         const res = await fetch(`${API_BASE_URL}/api/search_hotels_vacant`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
         });
@@ -445,8 +523,18 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                 map.current.fitBounds(bounds, { padding: 80, duration: 1500 });
             }
         }
-        else alert("条件に合う宿が見つかりませんでした");
-    } catch (e) { alert("通信エラー"); } finally { setIsLoading(false); }
+        else {
+            // ▼▼▼ 修正: 見つからなかった場合、設定画面を再表示する ▼▼▼
+            alert("条件に合う宿が見つかりませんでした。\n条件を変更して再検索してください。");
+            setShowSettings(true);
+            // ▲▲▲ 修正ここまで ▲▲▲
+        }
+    } catch (e) { 
+        alert("通信エラーが発生しました"); 
+        setShowSettings(true); 
+    } finally { 
+        setIsLoading(false); 
+    }
   };
 
   const executeImport = async () => {
@@ -608,7 +696,11 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
             ) : (
                   <div className="flex flex-col gap-6 pt-2 animate-in fade-in">
                       <div className="flex justify-between items-center">
-                          <h3 className="text-xl font-black text-gray-800 flex items-center gap-2"><TrendingUp size={22} className="text-blue-500"/> 分析結果</h3>
+                          <h3 className="text-xl font-black text-gray-800 flex items-center gap-2">
+                              <TrendingUp size={22} className="text-blue-500"/> 
+                              分析結果 
+                              <span className="text-sm font-bold text-gray-500 ml-1">({hotels.length}件)</span>
+                          </h3>
                           <button onClick={() => setShowSettings(true)} className="p-2 bg-slate-100 rounded-full text-gray-600"><SlidersHorizontal size={18}/></button>
                       </div>
                       <div className="w-full aspect-[4/3] bg-slate-50 rounded-[2rem] border border-gray-100 relative overflow-hidden shadow-inner shrink-0">
@@ -616,7 +708,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                       </div>
                       <div className="space-y-4 pb-12">
                           {hotels.slice(0, 8).map((hotel, i) => {
-                              // ▼▼▼ 修正: リスト表示も searchedAdults を使用 ▼▼▼
                               const unitPrice = Math.round(hotel.price / Math.max(1, searchedAdults));
                               return (
                                   <div key={i} className="bg-white p-4 rounded-2xl border border-gray-100 flex items-center gap-4 active:bg-slate-50 transition shadow-sm" onClick={() => handleSelectHotel(hotel)}>
@@ -686,7 +777,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                           <div className="relative z-10">
                               <p className="text-[9px] text-gray-400 font-black uppercase tracking-widest mb-0.5">Lowest Price</p>
                               <div className="flex items-baseline gap-1">
-                                  {/* ▼▼▼ 修正: 詳細カードも searchedAdults を使用 ▼▼▼ */}
                                   <span className="font-black text-2xl text-gray-900">
                                       ¥{Math.round(selectedHotel.price / Math.max(1, searchedAdults)).toLocaleString()}
                                   </span>
@@ -881,6 +971,43 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
               </div>
           </div>
       )}
+
+      {/* ズームインジケーターUI */}
+      <div 
+          className={`fixed top-0 right-0 bottom-0 w-16 z-[60] pointer-events-none transition-opacity duration-300 flex justify-end ${
+              showZoomUI ? 'opacity-100' : 'opacity-0'
+          }`}
+      >
+          {/* 背景の黒い帯 */}
+          <div className="absolute right-0 top-0 bottom-0 w-12 bg-gradient-to-l from-black/40 to-transparent"></div>
+
+          {/* 目盛り（Rail） */}
+          <div className="h-full w-2 border-r border-white/30 mr-4 flex flex-col justify-between py-12 opacity-50">
+              {Array.from({ length: 20 }).map((_, i) => (
+                  <div key={i} className="w-1.5 h-px bg-white/50 self-end"></div>
+              ))}
+          </div>
+
+          {/* 動くツマミ（Knob） */}
+          <div 
+              ref={zoomKnobRef}
+              className="absolute top-0 right-2 w-auto h-0 flex items-center justify-end pr-2 will-change-transform"
+              style={{ transform: 'translateY(0px)' }} // 初期値
+          >
+              {/* 指の横に出るラベル */}
+              <div className="mr-3 bg-black/80 backdrop-blur text-white text-[10px] font-bold px-2 py-1 rounded-full shadow-lg">
+                  ZOOM
+              </div>
+
+              {/* ツマミ本体 */}
+              <div className="w-8 h-8 -mr-2 bg-white rounded-full shadow-[0_0_15px_rgba(255,255,255,0.6)] flex items-center justify-center relative">
+                  <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
+                  {/* ピンガ（波紋）アニメーション */}
+                  <div className="absolute inset-0 rounded-full border border-white animate-ping opacity-50"></div>
+              </div>
+          </div>
+      </div>
+
     </div>
   );
 }

@@ -105,6 +105,8 @@ export type AreaSearchParams = {
 };
 
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
+// ▼▼▼ 追加: GeoapifyのAPIキー ▼▼▼
+const GEOAPIFY_API_KEY = process.env.NEXT_PUBLIC_GEOAPIFY_API_KEY || "";
 const RAKUTEN_AFFILIATE_ID = "4fcc24e4.174bb117.4fcc24e5.5b178353"; 
 
 const TRANSPORT_MODES = [
@@ -1192,22 +1194,38 @@ const filteredSpots = useMemo(() => {
                 results = [...cachedResults];
             }
         }
-        const token = MAPBOX_TOKEN;
-        const bounds = map.current!.getBounds();
-        let bbox = "";
-        if (bounds) bbox = `${bounds.getWest()},${bounds.getSouth()},${bounds.getEast()},${bounds.getNorth()}`;
-        let url = `https://api.mapbox.com/search/searchbox/v1/suggest?q=${encodeURIComponent(activeQuery)}&access_token=${token}&session_token=${sessionToken}&language=ja&limit=10&bbox=${bbox}&types=poi,place,address`;
-        let res = await fetch(url);
-        let data = await res.json();
-        if (!data.suggestions || data.suggestions.length < 2) {
-          url = `https://api.mapbox.com/search/searchbox/v1/suggest?q=${encodeURIComponent(activeQuery)}&access_token=${token}&session_token=${sessionToken}&language=ja&limit=10&proximity=${lng},${lat}&types=poi,place,address`;
-          res = await fetch(url);
-          data = await res.json();
+        // ▼▼▼ 変更: Geoapify API を使用 ▼▼▼
+        const apiKey = GEOAPIFY_API_KEY;
+        // 日本語(lang=ja)、最大10件、日本限定(filter=countrycode:jp) ※必要に応じてcountrycodeは外してください
+        const url = `https://api.geoapify.com/v1/geocode/autocomplete?text=${encodeURIComponent(activeQuery)}&apiKey=${apiKey}&lang=ja&limit=10&filter=countrycode:jp`;
+        
+        const res = await fetch(url);
+        const data = await res.json();
+
+        if (data.features) {
+            const newSuggestions = data.features.map((feat: any) => {
+                const props = feat.properties;
+                // Geoapifyは住所のみの場合などnameが無いことがあるのでformattedで代用
+                const name = props.name || props.formatted.split(',')[0]; 
+                const address = props.formatted;
+                
+                return {
+                    // Geoapify独自の place_id をIDとして使用
+                    id: props.place_id,
+                    name: name,
+                    place_name: address,
+                    // Geoapifyは検索結果に座標(lon, lat)を含んでいる！
+                    center: [props.lon, props.lat], 
+                    // Mapbox IDは無いので、後続処理のためにフラグで区別（あるいは center があることで区別）
+                    is_geoapify: true 
+                };
+            });
+
+            // 重複排除して追加
+            const filteredSuggestions = newSuggestions.filter((s: any) => !results.some(r => r.name === s.name || r.text === s.name));
+            results = [...results, ...filteredSuggestions];
         }
-        if (data.suggestions) {
-            const newSuggestions = data.suggestions.filter((s: any) => !results.some(r => r.name === s.name || r.text === s.name));
-            results = [...results, ...newSuggestions];
-        }
+        // ▲▲▲ 変更ここまで ▲▲▲
         setSearchResults(results);
       } catch (e) { console.error(e); } finally { setIsSearching(false); }
   }; 
@@ -1266,37 +1284,44 @@ const filteredSpots = useMemo(() => {
     }
 
     // パターンB: Mapboxの検索結果（新規）を選択した場合
+    // ▼▼▼ 変更: Geoapifyの結果（新規）を選択した場合 ▼▼▼
+    // Geoapify検索結果(suggestion)には既に center [lng, lat] が含まれているため、
+    // APIを再度叩く必要がありません。そのまま表示します。
     try {
-      const token = MAPBOX_TOKEN;
-      const url = `https://api.mapbox.com/search/searchbox/v1/retrieve/${suggestion.mapbox_id}?access_token=${token}&session_token=${sessionToken}`;
-      const res = await fetch(url);
-      const data = await res.json();
-      if (data.features && data.features.length > 0) {
-        const feature = data.features[0];
-        const [searchLng, searchLat] = feature.geometry.coordinates;
-        const name = feature.properties.name;
-        const address = feature.properties.full_address || feature.properties.place_formatted || "";
+        const center = suggestion.center; // handleSearchでセットした [lon, lat]
+        const name = suggestion.name;
+        const address = suggestion.place_name;
+
         const isSaved = planSpots.some(s => s.name === name);
-        showResultOnMap(name, address, [searchLng, searchLat], isSaved);
+        showResultOnMap(name, address, center, isSaved);
+        
         const img = await fetchSpotImage(name);
         if(img) setSelectedResult((prev: any) => ({...prev, image_url: img}));
         
-        // ★履歴に追加
+        // 履歴に追加
         addToSearchHistory({
-            id: suggestion.mapbox_id || `hist-${Date.now()}`,
+            id: suggestion.id || `geoapify-${Date.now()}`,
             name: name,
             place_name: address,
-            center: [searchLng, searchLat],
+            center: center,
             timestamp: Date.now()
         });
 
         if (roomId) {
             await supabase.from('room_search_cache').insert({
-                room_id: roomId, text: name, place_name: address, center: [searchLng, searchLat], image_url: img || null, mapbox_id: suggestion.mapbox_id
+                room_id: roomId, 
+                text: name, 
+                place_name: address, 
+                center: center, 
+                image_url: img || null, 
+                mapbox_id: null // mapbox_idはないのでnull
             });
         }
-      }
-    } catch(e) { alert("詳細情報の取得に失敗しました"); }
+    } catch(e) { 
+        console.error(e);
+        alert("詳細情報の取得に失敗しました"); 
+    }
+    // ▲▲▲ 変更ここまで ▲▲▲
   };
 
   useEffect(() => {
