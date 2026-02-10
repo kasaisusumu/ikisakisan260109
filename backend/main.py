@@ -183,6 +183,13 @@ class OptimizeRequest(BaseModel):
     start_spot_name: Optional[str] = None
     end_spot_name: Optional[str] = None
 
+class NearbyRequest(BaseModel):
+    latitude: float
+    longitude: float
+    radius: int = 3000  # デフォルト3km
+    limit: int = 20
+    mode: str = "standard" # 'standard' (観光) or 'wide' (商業施設・食事等)
+
 # ---------------------------------------------------------
 # ユーティリティ
 # ---------------------------------------------------------
@@ -205,7 +212,6 @@ def haversine_distance(coord1, coord2):
     except:
         return float('inf')
 
-# 点が多角形内にあるか判定する関数 (Ray casting algorithm)
 def is_inside_polygon(lat, lng, poly_coords):
     # poly_coords is list of [lng, lat]
     inside = False
@@ -242,43 +248,104 @@ async def fetch_with_retry(client, url, params=None, headers=None, retries=5, in
             return None
 
 async def fetch_wikipedia_image(client, query: str):
-    if not query: return None
-    cache_key = f"wiki_img:{query}"
+    """(旧互換) 画像URLのみを取得"""
+    info = await fetch_wikipedia_info(client, query)
+    return info.get("image_url")
+
+async def fetch_wikipedia_info(client, query: str, target_name: str = None):
+    """
+    画像と概要(summary)をまとめて取得する
+    target_name が指定されている場合、ページタイトルにその名前が含まれているかチェックする
+    """
+    if not query: return {"image_url": None, "summary": None}
+    
+    # キャッシュキー (v4として分離: 厳格チェック導入のため)
+    cache_key = f"wiki_info_v4:{query}"
     cached = get_cache(cache_key)
-    if cached and "url" in cached: return cached["url"]
+    if cached: return cached
 
     try:
+        # 1. 検索してページIDを取得
         search_url = "https://ja.wikipedia.org/w/api.php"
-        search_params = {"action": "query", "list": "search", "srsearch": query, "format": "json", "utf8": 1, "srlimit": 1}
-        res = await fetch_with_retry(client, search_url, params=search_params, headers=WIKI_HEADERS, initial_timeout=5.0)
-        if not res: return None
+        search_params = {
+            "action": "query", "list": "search", "srsearch": query,
+            "format": "json", "utf8": 1, "srlimit": 5 # 上位5件を取得して照合する
+        }
+        res = await fetch_with_retry(client, search_url, params=search_params, headers=WIKI_HEADERS, initial_timeout=3.0)
         
+        if not res: return {"image_url": None, "summary": None}
         data = res.json()
-        if not data.get("query", {}).get("search"): return None
-        page_id = data["query"]["search"][0]["pageid"]
         
-        img_url = "https://ja.wikipedia.org/w/api.php"
-        img_params = {"action": "query", "prop": "pageimages", "pageids": page_id, "pithumbsize": 400, "format": "json"}
-        img_res = await fetch_with_retry(client, img_url, params=img_params, headers=WIKI_HEADERS, initial_timeout=5.0)
-        if not img_res: return None
+        search_results = data.get("query", {}).get("search", [])
+        if not search_results:
+             return {"image_url": None, "summary": None}
+             
+        # ▼▼▼ 改善: タイトル照合ロジック ▼▼▼
+        page_id = None
+        
+        if target_name:
+            # ターゲット名（例: "金閣寺"）がタイトルに含まれているものを探す
+            # 正規化: スペース削除
+            norm_target = target_name.replace(" ", "").replace("　", "")
+            
+            for item in search_results:
+                title = item["title"].replace(" ", "").replace("　", "")
+                # タイトルにターゲット名が含まれている、またはターゲット名がタイトルに含まれている場合
+                if norm_target in title or title in norm_target:
+                    page_id = item["pageid"]
+                    break
+            
+            # 見つからなかった場合、厳格モードならNoneのまま（無関係な画像を表示しない）
+        else:
+            # ターゲット指定がない場合は1件目
+            page_id = search_results[0]["pageid"]
 
-        img_data = img_res.json()
-        pages = img_data.get("query", {}).get("pages", {})
+        if not page_id:
+             return {"image_url": None, "summary": None}
+        
+        # 2. 詳細情報（画像と概要）を取得
+        info_url = "https://ja.wikipedia.org/w/api.php"
+        info_params = {
+            "action": "query", 
+            "prop": "pageimages|extracts", 
+            "pageids": page_id, 
+            "pithumbsize": 500, # 画像サイズを少し大きく
+            "exintro": 1,       
+            "explaintext": 1,   
+            "exchars": 200,     # 文字数を増やす
+            "format": "json"
+        }
+        info_res = await fetch_with_retry(client, info_url, params=info_params, headers=WIKI_HEADERS, initial_timeout=3.0)
+        
+        if not info_res: return {"image_url": None, "summary": None}
+        
+        info_data = info_res.json()
+        pages = info_data.get("query", {}).get("pages", {})
         page = pages.get(str(page_id))
         
-        if page and "thumbnail" in page:
-            url = page["thumbnail"]["source"]
-            set_cache(cache_key, {"url": url})
-            return url
+        if page:
+            image_url = page.get("thumbnail", {}).get("source")
+            summary = page.get("extract", "").replace("\n", "")
+            
+            # 不要な情報の削除（「〜を参照」など）
+            if "参照" in summary or "曖昧さ回避" in summary:
+                summary = None
+            
+            if summary and len(summary) >= 200:
+                summary = summary.rstrip("、。") + "..."
+            
+            result = {"image_url": image_url, "summary": summary}
+            set_cache(cache_key, result)
+            return result
+            
     except Exception as e:
-        print(f"Wiki fetch error: {e}")
-        pass
+        print(f"Wiki info fetch error: {e}")
     
-    set_cache(cache_key, {"url": None})
-    return None
+    return {"image_url": None, "summary": None}
 
 async def fetch_spot_coordinates(client, target_name: str, search_query: str):
-    cache_key = f"geo:{target_name}:{search_query}"
+    # キャッシュキー (v4)
+    cache_key = f"geo_v4:{target_name}:{search_query}"
     cached = get_cache(cache_key)
     if cached: return cached
 
@@ -289,10 +356,7 @@ async def fetch_spot_coordinates(client, target_name: str, search_query: str):
         res = await fetch_with_retry(client, url, params=params, initial_timeout=8.0, retries=5)
 
         image_url = None
-        try:
-             image_url = await fetch_wikipedia_image(client, target_name)
-        except:
-             pass
+        wiki_summary = None
         
         if res and res.status_code == 200:
             data = res.json()
@@ -314,12 +378,34 @@ async def fetch_spot_coordinates(client, target_name: str, search_query: str):
                     is_match = is_contained or match_ratio >= 0.5
 
                     if is_match:
+                        # descriptionには必ず「住所」を入れる
                         desc = formatted_addr.replace(result_name, "").strip(", ")
+                        if not desc: desc = "住所不明"
+
+                        # Wiki検索用クエリを作成
+                        state = props.get("state", "")
+                        city = props.get("city", "") or props.get("town", "")
+                        
+                        # 検索クエリ: "金閣寺 京都府" (市まで入れると検索漏れしやすいので県まで)
+                        wiki_query = f"{result_name} {state}".strip()
+                        if len(wiki_query) < len(result_name) + 2:
+                             wiki_query = search_query
+
+                        try:
+                            # ▼▼▼ 修正: target_name を渡して厳格にチェック ▼▼▼
+                            wiki_info = await fetch_wikipedia_info(client, wiki_query, target_name=result_name)
+                            image_url = wiki_info.get("image_url")
+                            if wiki_info.get("summary"):
+                                wiki_summary = wiki_info["summary"]
+                        except:
+                            pass
+
                         result_data = {
                             "name": result_name, 
-                            "description": desc or "AIおすすめスポット",
+                            "description": desc, # 住所
                             "coordinates": feat["geometry"]["coordinates"],
-                            "image_url": image_url
+                            "image_url": image_url,
+                            "comment": wiki_summary or "" # 説明文
                         }
                         set_cache(cache_key, result_data)
                         return result_data
@@ -329,8 +415,192 @@ async def fetch_spot_coordinates(client, target_name: str, search_query: str):
     return None
 
 # ---------------------------------------------------------
+# ▼▼▼ 追加: 座標からスポット情報を取得する関数 (逆ジオコーディング) ▼▼▼
+# ---------------------------------------------------------
+# ---------------------------------------------------------
+# ▼▼▼ 修正: 座標からスポット情報を取得する関数 (省エネ版) ▼▼▼
+# ---------------------------------------------------------
+async def fetch_spot_by_coordinates(client, lat: float, lng: float, fallback_name: str):
+    # 座標を小数点以下6桁（約10cm精度）に丸めてキャッシュキーを作る
+    # これにより、微細な誤差による無駄なAPI呼び出しを防ぐ
+    lat_k = round(lat, 6)
+    lng_k = round(lng, 6)
+    cache_key = f"geo_reverse_v1:{lat_k}:{lng_k}"
+    
+    cached = get_cache(cache_key)
+    if cached: return cached
+
+    try:
+        # Geoapify Reverse Geocoding API
+        url = "https://api.geoapify.com/v1/geocode/reverse"
+        params = {
+            "lat": lat, 
+            "lon": lng, 
+            "apiKey": GEOAPIFY_API_KEY, 
+            "lang": "ja", 
+            "limit": 1
+        }
+        
+        res = await fetch_with_retry(client, url, params=params, initial_timeout=8.0, retries=3)
+
+        image_url = None
+        wiki_summary = None
+        
+        if res and res.status_code == 200:
+            data = res.json()
+            if "features" in data and len(data["features"]) > 0:
+                props = data["features"][0]["properties"]
+                
+                result_name = props.get("name", "")
+                if not result_name:
+                    result_name = fallback_name
+
+                formatted_addr = props.get("formatted", "")
+                
+                desc = formatted_addr.replace(result_name, "").strip(", ")
+                desc = re.sub(r'〒\d{3}-\d{4}', '', desc).strip()
+                if not desc: desc = "住所不明"
+
+                state = props.get("state", "")
+                city = props.get("city", "") or props.get("town", "")
+                wiki_query = f"{result_name} {state} {city}".strip()
+
+                try:
+                    wiki_info = await fetch_wikipedia_info(client, wiki_query, target_name=result_name)
+                    image_url = wiki_info.get("image_url")
+                    if wiki_info.get("summary"):
+                        wiki_summary = wiki_info["summary"]
+                except:
+                    pass
+
+                result_data = {
+                    "name": result_name, 
+                    "description": desc,
+                    "coordinates": [lng, lat],
+                    "image_url": image_url,
+                    "comment": wiki_summary or "" 
+                }
+                # 結果を保存
+                set_cache(cache_key, result_data)
+                return result_data
+    except Exception as e:
+        print(f"Reverse Geo Error: {e}")
+    
+    return None
+# ---------------------------------------------------------
 # API: 各種エンドポイント
 # ---------------------------------------------------------
+
+@app.post("/api/nearby_spots")
+async def nearby_spots(req: NearbyRequest):
+    global http_client
+    if http_client is None: return {"spots": []}
+    client = http_client
+
+    # キャッシュキー (v3 -> v4)
+    lat_k = round(req.latitude, 3)
+    lon_k = round(req.longitude, 3)
+    cache_key = f"nearby_v4:{lat_k}:{lon_k}:{req.radius}:{req.mode}"
+    
+    cached = get_cache(cache_key)
+    if cached: return cached
+
+    try:
+        # Geoapify Places API
+        url = "https://api.geoapify.com/v2/places"
+        
+        # モードによるカテゴリの切り替え
+        if req.mode == "wide":
+            categories = "commercial.shopping_mall,commercial.department_store,catering.restaurant,catering.cafe,entertainment,leisure.park,public_transport"
+        else:
+            categories = "tourism,building.historic,natural,entertainment.culture,religion,natural.cave_entrance"
+
+        params = {
+            "categories": categories,
+            "filter": f"circle:{req.longitude},{req.latitude},{req.radius}",
+            "bias": f"proximity:{req.longitude},{req.latitude}",
+            "limit": 20,
+            "apiKey": GEOAPIFY_API_KEY,
+            "lang": "ja"
+        }
+
+        res = await fetch_with_retry(client, url, params=params, initial_timeout=10.0)
+        
+        base_spots = []
+        if res and res.status_code == 200:
+            data = res.json()
+            if "features" in data:
+                for feat in data["features"]:
+                    props = feat["properties"]
+                    name = props.get("name", "")
+                    if not name: continue 
+
+                    geometry = feat.get("geometry")
+                    if not geometry or "coordinates" not in geometry: continue
+                    coords = geometry["coordinates"]
+                    if not isinstance(coords, list) or len(coords) != 2: continue
+
+                    # 住所 (description用)
+                    formatted = props.get("formatted", "")
+                    
+                    categories_list = props.get("categories", [])
+                    cat_str = "スポット"
+                    if "catering" in str(categories_list): cat_str = "グルメ"
+                    elif "commercial" in str(categories_list): cat_str = "ショッピング"
+                    elif "tourism" in str(categories_list): cat_str = "観光"
+                    elif "religion" in str(categories_list): cat_str = "寺社仏閣"
+                    elif "natural" in str(categories_list): cat_str = "自然"
+
+                    state = props.get('state', '')
+                    city = props.get('city', '') or props.get('town', '')
+                    # Wiki検索用クエリ
+                    search_query = f"{name} {state}".strip()
+
+                    base_spots.append({
+                        "id": f"nearby-{props.get('place_id')}",
+                        "name": name,
+                        "description": formatted,   # 住所
+                        "coordinates": coords,
+                        "is_nearby": True,
+                        "category": cat_str,
+                        "is_commercial": req.mode == "wide",
+                        "search_query": search_query,
+                        "image_url": None,
+                        "comment": "" 
+                    })
+
+        # Wikipedia情報の並列取得
+        async def enrich_spot(spot):
+            try:
+                # ▼▼▼ 修正: target_name として spot["name"] を渡す ▼▼▼
+                wiki_data = await fetch_wikipedia_info(client, spot["search_query"], target_name=spot["name"])
+                
+                if wiki_data["image_url"]:
+                    spot["image_url"] = wiki_data["image_url"]
+                
+                if wiki_data["summary"]:
+                    spot["comment"] = wiki_data["summary"] 
+            except:
+                pass 
+            return spot
+
+        if base_spots:
+            enriched_spots = await asyncio.gather(*[enrich_spot(s) for s in base_spots])
+        else:
+            enriched_spots = []
+
+        result = {"spots": enriched_spots}
+        
+        if enriched_spots:
+            set_cache(cache_key, result)
+            
+        return result
+
+    except Exception as e:
+        print(f"Nearby fetch error: {e}")
+        return {"spots": []}
+
+
 @app.get("/api/get_spot_image")
 async def get_spot_image(query: str):
     global http_client
@@ -348,7 +618,7 @@ async def import_rakuten_hotel(req: ImportRequest):
     client = http_client
 
     try:
-        cache_key = f"rakuten_import:{req.url}"
+        cache_key = f"rakuten_import_v2:{req.url}"
         cached = get_cache(cache_key)
         if cached: return cached
 
@@ -383,13 +653,16 @@ async def import_rakuten_hotel(req: ImportRequest):
 
         if not basic: return {"error": "ホテル情報の解析に失敗しました。"}
 
+        address = f"{basic.get('address1', '')}{basic.get('address2', '')}"
+        
         spot_data = {
             "id": str(basic["hotelNo"]), "name": basic["hotelName"],
-            "description": basic.get("hotelSpecial", "")[:100] + "...",
+            "description": address, 
             "coordinates": [basic["longitude"], basic["latitude"]],
             "image_url": basic.get("hotelImageUrl"), "url": basic.get("hotelInformationUrl"),
             "price": basic.get("hotelMinCharge", 0), "rating": basic.get("reviewAverage", 3.0),
-            "source": "rakuten", "is_hotel": True, "status": "hotel_candidate"
+            "source": "rakuten", "is_hotel": True, "status": "hotel_candidate",
+            "comment": basic.get("hotelSpecial", "")[:100] + "..." 
         }
         
         result = {"spot": spot_data}
@@ -406,7 +679,7 @@ async def search_hotels_vacant(req: VacantSearchRequest):
     if http_client is None: return {"error": "Server starting up..."}
     client = http_client
 
-    cache_key = f"rakuten_vacant_v2:{req.latitude}:{req.longitude}:{req.checkin_date}:{req.checkout_date}:{req.adult_num}:{req.min_price}:{req.max_price}:{req.meal_type}:{hashlib.md5(str(req.polygon).encode()).hexdigest() if req.polygon else 'all'}"
+    cache_key = f"rakuten_vacant_v3:{req.latitude}:{req.longitude}:{req.checkin_date}:{req.checkout_date}:{req.adult_num}:{req.min_price}:{req.max_price}:{req.meal_type}:{hashlib.md5(str(req.polygon).encode()).hexdigest() if req.polygon else 'all'}"
     
     cached = get_cache(cache_key)
     if cached: return cached
@@ -498,15 +771,18 @@ async def search_hotels_vacant(req: VacantSearchRequest):
                     if not found_valid_plan: continue
                     if req.min_price and best_price < req.min_price: continue
                     if req.max_price and best_price > req.max_price: continue
-
+                    
+                    address = f"{basic.get('address1', '')}{basic.get('address2', '')}"
+                    
                     all_hotels.append({
                         "id": hotel_id, "name": basic["hotelName"],
-                        "description": basic.get("hotelSpecial", "")[:60] + "...",
+                        "description": address, 
                         "coordinates": [basic["longitude"], basic["latitude"]],
                         "image_url": basic.get("hotelImageUrl"), "url": basic.get("hotelInformationUrl"),
                         "price": int(best_price), "rating": basic.get("reviewAverage") or 3.0,
                         "review_count": basic.get("reviewCount", 0), "source": "rakuten", "is_hotel": True,
-                        "plan_id": best_plan_id, "room_class": best_room_class, "status": "hotel_candidate"
+                        "plan_id": best_plan_id, "room_class": best_room_class, "status": "hotel_candidate",
+                        "comment": basic.get("hotelSpecial", "")[:60] + "..." 
                     })
                     seen_ids.add(hotel_id)
                 except: continue
@@ -604,7 +880,10 @@ async def suggest_spots_generator(req: SuggestRequest):
     async def fetch_and_enrich(spot_info):
         res = await fetch_spot_coordinates(client, spot_info["name"], spot_info["search_query"])
         if res:
-            res["description"] = spot_info.get("summary", res["description"])
+            ai_summary = spot_info.get("summary", "")
+            if ai_summary:
+                res["comment"] = ai_summary
+                
             res["category"] = spot_info.get("category", "観光スポット")
             return res
         return None
@@ -727,9 +1006,6 @@ async def calculate_route_endpoint(req: OptimizeRequest):
     
     return await calculate_route_fallback(client, spots, start, limit)
 
-# ---------------------------------------------------------
-# ▼▼▼ 追加: 統一された検索エンドポイント ▼▼▼
-# ---------------------------------------------------------
 @app.get("/api/search_places")
 async def search_places(query: str):
     """
@@ -797,6 +1073,40 @@ async def search_places(query: str):
     except Exception as e:
         print(f"Search Error: {e}")
         return {"results": []}
+
+# ---------------------------------------------------------
+# ▼▼▼ 修正: スポット詳細情報取得API (座標対応版) ▼▼▼
+# ---------------------------------------------------------
+@app.get("/api/get_spot_info")
+async def get_spot_info(query: str, lat: Optional[float] = None, lng: Optional[float] = None):
+    """
+    スポット名を指定して、住所・画像・Wiki概要をまとめて取得する。
+    lat, lng が指定されている場合は「逆ジオコーディング」を行い、
+    その座標にある正しい住所を優先して返す。
+    """
+    global http_client
+    if http_client is None: return {}
+    client = http_client
+    
+    # 1. 座標があるなら、座標から住所を特定する (これが一番確実)
+    if lat is not None and lng is not None:
+        data = await fetch_spot_by_coordinates(client, lat, lng, query)
+        if data:
+            return data
+
+    # 2. 座標がない、または失敗した場合は既存の名前検索を行う
+    data = await fetch_spot_coordinates(client, query, query)
+    if data:
+        return data
+    
+    # 3. 見つからなかった場合のフォールバック（Wikiのみ検索）
+    wiki = await fetch_wikipedia_info(client, query, target_name=query)
+    return {
+        "name": query,
+        "description": "", # 住所不明
+        "image_url": wiki.get("image_url"),
+        "comment": wiki.get("summary") or ""
+    }
 
 @app.get("/")
 async def root():

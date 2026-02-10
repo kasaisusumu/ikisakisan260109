@@ -160,9 +160,16 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
     window.open(`https://line.me/R/msg/text/?${encodeURIComponent(text)}`, '_blank');
   };
 
+ // 125行目あたりにある handleJoin 関数を探して修正
+
   const handleJoin = () => {
     if (!userName && inviteRoomId) return alert('名前を入力してください');
     
+    // ▼▼▼ 追加: 規約に同意したフラグを保存（LegalModalと同じキーを使用） ▼▼▼
+    const TERMS_VERSION = 'route_hacker_agreed_v1';
+    localStorage.setItem(TERMS_VERSION, 'true');
+    // ▲▲▲ 追加ここまで ▲▲▲
+
     if (inviteRoomId) {
        localStorage.setItem(`route_hacker_user_${inviteRoomId}`, userName);
        window.location.href = `/?room=${inviteRoomId}`;

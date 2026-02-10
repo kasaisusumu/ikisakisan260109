@@ -25,8 +25,13 @@ import PlanView from './components/PlanView';
 import MenuView from './components/MenuView';
 import Ticker from './components/Ticker';
 import SwipeView from './components/SwipeView';
-import LegalModal from './components/LegalModal';
+// import LegalModal from './components/LegalModal';
 import WelcomePage from './components/WelcomePage';
+
+// ★追加アイコン
+import { Binoculars,  GripHorizontal } from 'lucide-react';
+
+
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -330,6 +335,148 @@ const logAffiliateClick = async (spotName: string, source: string) => {
     });
 };
 
+// ▼▼▼ 追加: 周辺検索結果を保持するState ▼▼▼
+  const [nearbyCandidates, setNearbyCandidates] = useState<any[]>([]);
+  const [isSearchingNearby, setIsSearchingNearby] = useState(false);
+
+  // ▼▼▼ 追加: 周辺スポット検索関数 ▼▼▼
+  // ▼▼▼ 追加: 周辺スポット検索関数 ▼▼▼
+  // ▼▼▼ 周辺スポット検索関数 (修正版) ▼▼▼
+  // ▼▼▼ 周辺スポット検索関数 (DBキャッシュ対応版) ▼▼▼
+  // ▼▼▼ 周辺スポット検索関数 (自動フォールバック対応版) ▼▼▼
+  const handleSearchNearby = async () => {
+      // トグル動作：既に表示中ならクリアして終了
+      if (nearbyCandidates.length > 0) {
+          setNearbyCandidates([]);
+          return;
+      }
+
+      if (!map.current || !roomId) return;
+      const { lng, lat } = map.current.getCenter();
+      
+      setIsSearchingNearby(true);
+      try {
+          // 1. まずは「観光地」で検索 (standard)
+          // ------------------------------------------------
+          // キャッシュキー作成 (約100m単位)
+          const latKey = Math.round(lat * 1000) / 1000;
+          const lngKey = Math.round(lng * 1000) / 1000;
+          const cacheKeyStandard = `nearby-${latKey}-${lngKey}-standard`;
+          
+          let foundSpots: any[] = [];
+          let usedMode = 'standard';
+
+          // DBキャッシュ確認 (standard)
+         const { data: cachedStandard } = await supabase
+              .from('room_api_cache')
+              .select('*')
+              .eq('room_id', roomId)
+              .eq('key', cacheKeyStandard)
+              .maybeSingle();
+
+          const now = new Date().getTime();
+          const cacheDuration = 3 * 24 * 60 * 60 * 1000; // 3日
+
+          if (cachedStandard && (now - new Date(cachedStandard.created_at).getTime() < cacheDuration)) {
+              console.log("♻️ Using Cached Standard Data");
+              foundSpots = cachedStandard.data;
+          } else {
+              // APIコール (standard)
+              const res = await fetch(`${API_BASE_URL}/api/nearby_spots`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ latitude: lat, longitude: lng, radius: 5000, mode: 'standard' })
+              });
+              if (res.ok) {
+                  const data = await res.json();
+                  foundSpots = data.spots || [];
+                  // 保存
+                  if (foundSpots.length > 0) {
+                      await supabase.from('room_api_cache').upsert({
+                          room_id: roomId, key: cacheKeyStandard, data: foundSpots, created_at: new Date().toISOString()
+                      });
+                  }
+              }
+          }
+
+          // 2. もし0件なら「手当たり次第」検索 (wide)
+          // ------------------------------------------------
+          if (foundSpots.length === 0) {
+              console.log("⚠️ No spots found. Switching to WIDE mode.");
+              usedMode = 'wide';
+              const cacheKeyWide = `nearby-${latKey}-${lngKey}-wide`;
+
+              // DBキャッシュ確認 (wide)
+             // ▼▼▼ 修正: .single() → .maybeSingle() に変更 (406エラー回避) ▼▼▼
+              const { data: cachedWide } = await supabase
+                  .from('room_api_cache')
+                  .select('*')
+                  .eq('room_id', roomId)
+                  .eq('key', cacheKeyWide)
+                  .maybeSingle();
+              if (cachedWide && (now - new Date(cachedWide.created_at).getTime() < cacheDuration)) {
+                  console.log("♻️ Using Cached Wide Data");
+                  foundSpots = cachedWide.data;
+              } else {
+                  // APIコール (wide)
+                  const res = await fetch(`${API_BASE_URL}/api/nearby_spots`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ latitude: lat, longitude: lng, radius: 5000, mode: 'wide' })
+                  });
+                  if (res.ok) {
+                      const data = await res.json();
+                      foundSpots = data.spots || [];
+                      // 保存
+                      if (foundSpots.length > 0) {
+                          await supabase.from('room_api_cache').upsert({
+                              room_id: roomId, key: cacheKeyWide, data: foundSpots, created_at: new Date().toISOString()
+                          });
+                      }
+                  }
+              }
+          }
+
+          // 3. 結果の表示処理
+          // ------------------------------------------------
+          // 座標データがないものを除外 & 既存プランにあるものを除外
+          const validSpots = foundSpots.filter((s: any) => 
+              s.coordinates && Array.isArray(s.coordinates) && 
+              !planSpots.some(p => p.name === s.name)
+          );
+
+          setNearbyCandidates(validSpots);
+          
+          if (validSpots.length === 0) {
+              alert("周辺にスポットが見つかりませんでした");
+          } else {
+              if (usedMode === 'wide') {
+                  // ワイドモードで見つかった旨を通知（トースト通知などがあればベストですが、ここではコンソールかアラート）
+                  // alert("観光スポットが見つからなかったため、周辺の商業施設などを表示します");
+              }
+              fitBoundsToSpots([...filteredSpots, ...validSpots]);
+          }
+
+      } catch (e) {
+          console.error(e);
+          alert("検索に失敗しました");
+      } finally {
+          setIsSearchingNearby(false);
+      }
+  };
+
+  // ▼▼▼ 追加: 写真で選ぶ（スワイプモードへ移動） ▼▼▼
+  const handleGoToPhotoSwipe = () => {
+      // SwipeViewへ候補として渡す
+      // 一時的なIDを付与して、SwipeViewが正しく認識できるようにする
+      setCandidates(nearbyCandidates.map(s => ({
+          ...s,
+          id: s.id || `nearby-${Date.now()}-${Math.random()}`, 
+          status: 'candidate'
+      })));
+      setCurrentTab('swipe');
+  };
+
   // ...existing.useState
   
   // ★追加: オンボーディング表示用
@@ -387,6 +534,8 @@ const zoomKnobRef = useRef<HTMLDivElement>(null);
   const [sheetHeight, setSheetHeight] = useState(140);
   const [isDragging, setIsDragging] = useState(false);
   const dragInfo = useRef({ startY: 0, startHeight: 0, hasMoved: false });
+
+  
 
   
 
@@ -546,7 +695,7 @@ const onTimelineDrop = async (e: React.DragEvent, targetIndex: number) => {
   const [isSettingsLoaded, setIsSettingsLoaded] = useState(false);
 
   const [selectedConfirmDay, setSelectedConfirmDay] = useState<number>(0);
-  const [selectedCandidateDay, setSelectedCandidateDay] = useState<number>(0);
+  const [selectedCandidateArea, setSelectedCandidateArea] = useState<string>('all');
   
   const [showActivityLog, setShowActivityLog] = useState(false);
   const [autoShowScreenshot, setAutoShowScreenshot] = useState(false);
@@ -560,8 +709,117 @@ const onTimelineDrop = async (e: React.DragEvent, targetIndex: number) => {
 const timelineListRef = useRef<HTMLDivElement>(null);
 const timelineScrollInterval = useRef<NodeJS.Timeout | null>(null);
 
+// ▼▼▼ 追加: 住所からエリア（市町村）を抽出するヘルパー関数 ▼▼▼
+// ▼▼▼ 改善版: エリア抽出ロジック ▼▼▼
+
+const PREFECTURES = [
+  "北海道", "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県",
+  "茨城県", "栃木県", "群馬県", "埼玉県", "千葉県", "東京都", "神奈川県",
+  "新潟県", "富山県", "石川県", "福井県", "山梨県", "長野県", "岐阜県",
+  "静岡県", "愛知県", "三重県", "滋賀県", "京都府", "大阪府", "兵庫県",
+  "奈良県", "和歌山県", "鳥取県", "島根県", "岡山県", "広島県", "山口県",
+  "徳島県", "香川県", "愛媛県", "高知県", "福岡県", "佐賀県", "長崎県",
+  "熊本県", "大分県", "宮崎県", "鹿児島県", "沖縄県"
+];
+
+const extractPrefecture = (spot: any) => {
+    const text = spot.description || spot.place_name || spot.name || "";
+    
+    // 1. 都道府県リストから完全一致検索
+    for (const pref of PREFECTURES) {
+        if (text.includes(pref)) return pref;
+    }
+    
+    // 2. 省略表記への対応（主要都市のみ救済）
+    if (text.includes("京都")) return "京都府";
+    if (text.includes("大阪")) return "大阪府";
+    if (text.includes("東京")) return "東京都";
+    
+    return "その他";
+};
+
+const extractCity = (spot: any) => {
+    const text = spot.description || spot.place_name || spot.name || "";
+    
+    // 1. まず都道府県を特定して除去（誤検知防止）
+    let addressBody = text;
+    const pref = extractPrefecture(spot);
+    if (pref !== "その他") {
+        const split = text.split(pref);
+        if (split.length > 1) {
+            addressBody = split[1]; // 都道府県より後ろの部分
+        }
+    }
+
+    // 2. 正規表現で市町村を抽出
+    
+    // パターンA: 「〇〇市」 (政令指定都市も「京都市」などでまとめる)
+    // 住所の先頭から「市」が出てくるまでを取得
+    const cityMatch = addressBody.match(/([^0-9\s,]{1,8}市)/);
+    if (cityMatch) {
+        return cityMatch[1];
+    }
+    
+    // パターンB: 東京23区などの「〇〇区」
+    // (市が見つからなかった場合のみ検索)
+    const wardMatch = addressBody.match(/([^0-9\s,]{1,8}区)/);
+    if (wardMatch) return wardMatch[1];
+    
+    // パターンC: 「〇〇郡 〇〇町/村」 -> 郡を無視して「〇〇町/村」だけ返す
+    const townMatch = addressBody.match(/([^0-9\s,]{1,8}[町村])/);
+    if (townMatch) {
+        const val = townMatch[1];
+        // "郡"が含まれていたら、その後ろを使う (例: 与謝郡伊根町 -> 伊根町)
+        if (val.includes("郡")) {
+            return val.split("郡")[1];
+        }
+        return val;
+    }
+
+    // 3. それでも取れない場合（海外や特殊な表記）
+    
+    // カンマ区切りの場合は先頭を使う（海外住所対応）
+    if (text.includes(",")) {
+        return text.split(",")[0].trim();
+    }
+    
+    // 何もなければ都道府県があればそれを返す（"その他"になるよりはマシ）
+    if (pref !== "その他") return pref;
+
+    return "その他";
+};
+
+const getSpotArea = (spot: any, mode: 'city' | 'prefecture') => {
+    return mode === 'prefecture' ? extractPrefecture(spot) : extractCity(spot);
+};
+
   // ...既存のuseState
   const [isSuggesting, setIsSuggesting] = useState(false);
+
+  // ...既存のuseState定義のあたり...
+
+  // ★追加: エリア区分のモード ('city' | 'prefecture')
+  const [groupingMode, setGroupingMode] = useState<'city' | 'prefecture'>('city');
+
+  // ★追加: ルームごとの設定をロード
+  useEffect(() => {
+      if (roomId) {
+          const savedMode = localStorage.getItem(`rh_grouping_mode_${roomId}`);
+          if (savedMode === 'prefecture') {
+              setGroupingMode('prefecture');
+          }
+      }
+  }, [roomId]);
+
+  // ★追加: モード切替と保存
+  const toggleGroupingMode = () => {
+      const nextMode = groupingMode === 'city' ? 'prefecture' : 'city';
+      setGroupingMode(nextMode);
+      setSelectedCandidateArea('all'); // モード切替時は「すべて」にリセット
+      if (roomId) {
+          localStorage.setItem(`rh_grouping_mode_${roomId}`, nextMode);
+      }
+  };
   
   // ★追加: シークレットモード警告用
   const [showIncognitoWarning, setShowIncognitoWarning] = useState(false);
@@ -616,24 +874,35 @@ const [arrivalModalSpots, setArrivalModalSpots] = useState<any[]>([]); // ★追
           } catch(e) {}
       }
   }, [roomId]);
+  // ▼▼▼ 修正: 既読管理のロジック (リロード対策版) ▼▼▼
+  // ▼▼▼ 修正: 既読管理のロジック (リロード対策版) ▼▼▼
   useEffect(() => {
       if (!roomId) return;
-      let currentStatus = filterStatus;
-      if (currentStatus === 'all') return;
+      if (filterStatus === 'all') return;
+      
       let currentDay = 0;
-      if (currentStatus === 'confirmed') currentDay = selectedConfirmDay;
-      if (currentStatus === 'candidate') currentDay = selectedCandidateDay;
-      const key = getContextKey(currentStatus, currentDay);
-      return () => {
-          const now = Date.now();
-          setLastVisited(prev => {
-              const next = { ...prev, [key]: now };
-              localStorage.setItem(`rh_last_visited_${roomId}`, JSON.stringify(next));
-              return next;
-          });
-      };
-  }, [filterStatus, selectedConfirmDay, selectedCandidateDay, roomId]);
- // ... (前略)
+      if (filterStatus === 'confirmed') currentDay = selectedConfirmDay;
+      if (filterStatus === 'hotel_candidate') currentDay = selectedHotelDay;
+      // 候補リスト(candidate)の場合は currentDay = 0 のままでOK
+
+      const key = getContextKey(filterStatus, currentDay);
+      
+      // 画面を表示した時点で「現在時刻」を記録して保存する
+      const now = Date.now();
+
+      setLastVisited(prev => {
+          // 無限ループ防止: 既に直近(1秒以内)に更新済みなら何もしない
+          if (prev[key] && now - prev[key] < 1000) return prev;
+
+          const next = { ...prev, [key]: now };
+          // 即座にローカルストレージに保存
+          localStorage.setItem(`rh_last_visited_${roomId}`, JSON.stringify(next));
+          return next;
+      });
+      
+  }, [filterStatus, selectedConfirmDay, selectedHotelDay, roomId]); 
+  // ▲▲▲ 修正ここまで ▲▲▲
+  // ▲▲▲ 修正ここまで ▲▲▲
 
   const isNewSpot = (spot: any) => {
       const key = getContextKey(spot.status, spot.day);
@@ -861,6 +1130,21 @@ useEffect(() => {
       return null;
   };
 
+  // ▼▼▼ 追加: 詳細情報（住所・画像・説明）をまとめて取得 ▼▼▼
+  // ▼▼▼ 修正: 座標も渡せるように変更 ▼▼▼
+  const fetchSpotInfo = async (name: string, lat?: number, lng?: number) => {
+      try {
+          let url = `${API_BASE_URL}/api/get_spot_info?query=${encodeURIComponent(name)}`;
+          // 座標があればクエリパラメータに追加
+          if (lat !== undefined && lng !== undefined) {
+              url += `&lat=${lat}&lng=${lng}`;
+          }
+          const res = await fetch(url);
+          if (res.ok) return await res.json();
+      } catch (e) { console.error("Spot info fetch failed", e); }
+      return null;
+  };
+
   // 600行目付近（loadRoomData 関連の useEffect の後あたり）に追加
 
 // 600行目付近（先程追加した useEffect）を以下に置き換え
@@ -1048,41 +1332,59 @@ const rakutenHomeUrl = "https://travel.rakuten.co.jp/";
 // page.tsx 750行目付近
 
 const filteredSpots = useMemo(() => {
+    // 1. ALL表示
     if (filterStatus === 'all') return planSpots;
     
     let spots = planSpots;
     
+    // 2. 確定リスト (Dayごとの表示 + 前日の宿表示ロジック)
     if (filterStatus === 'confirmed') {
-        // ...（確定リストのロジックはそのまま）...
         const currentDaySpots = planSpots.filter(s => s.status === 'confirmed' && (s.day || 0) === selectedConfirmDay);
+        
+        // 2日目以降の場合、前日の宿をリストの先頭に表示する（移動の起点として分かりやすくするため）
         if (selectedConfirmDay > 1) {
             const prevDayHotel = planSpots.find(s => 
                 s.status === 'confirmed' && 
                 s.day === selectedConfirmDay - 1 && 
                 (s.is_hotel || isHotel(s.name))
             );
+            // 現在のリストにまだ含まれていなければ追加
             if (prevDayHotel && !currentDaySpots.some(s => s.id === prevDayHotel.id)) {
                 return [prevDayHotel, ...currentDaySpots];
             }
         }
         return currentDaySpots;
     } 
+    // 3. 候補リスト (エリアによる絞り込み)
     else if (filterStatus === 'candidate') {
         spots = planSpots.filter(s => (s.status || 'candidate') === 'candidate');
-        spots = spots.filter(s => (s.day || 0) === selectedCandidateDay);
+        
+        // 選択中のエリアがある場合、モード(市町村/県)に合わせてフィルタリング
+        if (selectedCandidateArea !== 'all') {
+            spots = spots.filter(s => getSpotArea(s, groupingMode) === selectedCandidateArea);
+        }
     } 
-    // ▼▼▼ 追加修正: 宿リストの場合も日付で絞り込む ▼▼▼
+    // 4. 宿候補リスト (Dayごとの表示)
     else if (filterStatus === 'hotel_candidate') {
         spots = planSpots.filter(s => s.status === 'hotel_candidate');
         spots = spots.filter(s => (s.day || 0) === selectedHotelDay);
     }
-    // ▲▲▲ 追加ここまで ▲▲▲
+    // 5. その他 (予備)
     else {
         spots = planSpots.filter(s => (s.status || 'candidate') === filterStatus);
     }
+    
     return spots;
-    // ▼▼▼ 修正: 依存配列に selectedHotelDay を追加 ▼▼▼
-}, [planSpots, filterStatus, selectedConfirmDay, selectedCandidateDay, selectedHotelDay]);
+  }, [planSpots, filterStatus, selectedConfirmDay, selectedCandidateArea, selectedHotelDay, groupingMode]);
+
+// ▼▼▼ 修正: candidateAreas の生成ロジック ▼▼▼
+  const candidateAreas = useMemo(() => {
+      const candidates = planSpots.filter(s => (s.status || 'candidate') === 'candidate');
+      // ★修正: getSpotArea(s, groupingMode) を使用
+      const areas = new Set(candidates.map(s => getSpotArea(s, groupingMode)));
+      return Array.from(areas).sort();
+      // 依存配列に groupingMode を追加
+  }, [planSpots, groupingMode]);
 
   useEffect(() => {
       if (currentTab === 'explore' && !isSearching && !selectedResult && map.current) {
@@ -1197,9 +1499,19 @@ const filteredSpots = useMemo(() => {
             }
         }
 
-        // ▼▼▼ 変更: バックエンドAPI経由に変更 ▼▼▼
+        // ▼▼▼ 変更: バックエンドAPI経由に変更 (現在地バイアス追加) ▼▼▼
         // これにより main.py と同じ正規化・リトライ・キャッシュロジックが適用されます
-        const res = await fetch(`${API_BASE_URL}/api/search_places?query=${encodeURIComponent(activeQuery)}`);
+        
+        // ベースのクエリパラメータを作成
+        let queryParams = `query=${encodeURIComponent(activeQuery)}`;
+      
+        // 地図が表示されている場合、その中心座標を渡して周辺検索を優先させる
+        if (map.current) {
+            const { lng, lat } = map.current.getCenter();
+            queryParams += `&lat=${lat}&lng=${lng}`;
+        }
+
+        const res = await fetch(`${API_BASE_URL}/api/search_places?${queryParams}`);
         
         if (res.ok) {
             const data = await res.json();
@@ -1644,7 +1956,31 @@ const now = new Date().toISOString(); // ★現在時刻
     
     // DB登録成功後、仮IDのスポットを正式なデータ(ID付き)に置き換える
     if (data) { 
-        setPlanSpots(prev => prev.map(s => s.id === optimisticSpot.id ? data : s));
+       // ▼▼▼ ここから置換 ▼▼▼
+        setPlanSpots(prev => prev.map(s => {
+            if (s.id === optimisticSpot.id) {
+                // バックグラウンド更新の競合対策
+                // もしDB登録中に fetchSpotInfo が完了してローカルの住所が更新されていた場合、
+                // DBから返ってきた古いデータ(data)ではなく、ローカルの最新情報(s)を採用する
+                if (s.description !== optimisticSpot.description && s.description !== "住所調査中...") {
+                     const mergedData = { ...data, description: s.description, comment: s.comment, image_url: s.image_url };
+                     
+                     // DB側も最新情報で即座に更新しておく
+                     if (roomId) {
+                         supabase.from('spots').update({
+                             description: s.description,
+                             comment: s.comment,
+                             image_url: s.image_url
+                         }).eq('id', data.id).then();
+                     }
+                     return mergedData;
+                }
+                // 変更がなければDBのデータをそのまま使う
+                return data;
+            }
+            return s;
+        }));
+        // ▲▲▲ 置換ここまで ▲▲▲
 
         // 自分が追加したものは自動で「いいね」
         if (userName) {
@@ -1740,11 +2076,16 @@ const now = new Date().toISOString(); // ★現在時刻
     setIsEditingMemo(openMemo);
 
     // ★修正: 最新の sourceSpot の情報を使って previewData を作る
+   // ★修正: 最新の sourceSpot の情報を使って previewData を作る
     const previewData = { 
         ...sourceSpot, // 最新データを展開
         id: sourceSpot.id, 
         text: sourceSpot.name, 
         place_name: sourceSpot.description, 
+        
+        // ▼▼▼ 追加: 座標(center)を確実にセット（これがないと保存時に座標なしになる） ▼▼▼
+        center: sourceSpot.coordinates || sourceSpot.center,
+        
         is_saved: isSaved, 
         voters: uniqueVoters, 
         added_by: sourceSpot.added_by, 
@@ -1754,7 +2095,10 @@ const now = new Date().toISOString(); // ★現在時刻
         comment: sourceSpot.comment, 
         link: sourceSpot.link, 
         day: sourceSpot.day || 0, 
-        status: sourceSpot.status || 'candidate' 
+        status: sourceSpot.status || 'candidate',
+        
+        // ▼▼▼ 追加: ホテル情報も引き継ぐ ▼▼▼
+        is_hotel: sourceSpot.is_hotel 
     };
 
     setSelectedResult(previewData);
@@ -1920,6 +2264,29 @@ const now = new Date().toISOString(); // ★現在時刻
       map.current = new mapboxgl.Map({ container: mapContainer.current, style: 'mapbox://styles/mapbox/streets-v12', center: [lng, lat], zoom: 14, pitch: 45, bearing: 0, antialias: true });
       map.current.on('load', () => {
         if (!map.current) return;
+
+
+        // ▼▼▼ 追加: 日本語ラベル化 ＆ 道路シールド非表示処理 ▼▼▼
+        const style = map.current.getStyle();
+        if (style && style.layers) {
+            style.layers.forEach((layer) => {
+                // 1. 道路番号のマーク（シールド）を非表示にする
+                // 'shield' という名前が含まれるレイヤー（road-number-shieldなど）を隠す
+                if (layer.type === 'symbol' && layer.id.includes('shield')) {
+                    map.current?.setLayoutProperty(layer.id, 'visibility', 'none');
+                }
+
+                // 2. 日本語ラベルへの強制変換（既存の処理）
+                if (layer.type === 'symbol' && layer.layout && layer.layout['text-field']) {
+                    map.current?.setLayoutProperty(layer.id, 'text-field', [
+                        'coalesce',
+                        ['get', 'name_ja'],
+                        ['get', 'name']
+                    ]);
+                }
+            });
+        }
+        // ▲▲▲ 追加ここまで ▲▲▲
         map.current.resize();
         map.current.addSource('draw-source', { type: 'geojson', data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } } });
         map.current.addLayer({ id: 'draw-line', type: 'line', source: 'draw-source', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#EF4444', 'line-width': 4, 'line-opacity': 0.8 } });
@@ -1928,29 +2295,98 @@ const now = new Date().toISOString(); // ★現在時刻
         const layers = map.current.getStyle().layers;
         const labelLayerId = layers?.find((layer) => layer.type === 'symbol' && layer.layout?.['text-field'])?.id;
         if(!map.current.getLayer('3d-buildings')) { map.current.addLayer({ 'id': '3d-buildings', 'source': 'composite', 'source-layer': 'building', 'filter': ['==', 'extrude', 'true'], 'type': 'fill-extrusion', 'minzoom': 15, 'paint': { 'fill-extrusion-color': '#aaa', 'fill-extrusion-height': ['interpolate', ['linear'], ['zoom'], 15, 0, 15.05, ['get', 'height']], 'fill-extrusion-base': ['interpolate', ['linear'], ['zoom'], 15, 0, 15.05, ['get', 'min_height']], 'fill-extrusion-opacity': 0.6 } }, labelLayerId); }
+        // ▼▼▼ 修正: マップ上のスポットクリック時の処理 ▼▼▼
         map.current.on('click', 'poi-label', (e) => {
           if (!e.features || e.features.length === 0) return;
           const feature = e.features[0];
           const name = feature.properties?.name || "名称不明";
-          const category = feature.properties?.category_en || feature.properties?.type || "";
-          const address = feature.properties?.address || "";
-          const initialDesc = category ? `${category} (${address})` : address || "詳細情報を入力してください";
+          // Mapboxの住所データ（不完全な場合が多い）
+          const rawAddress = feature.properties?.address || "";
+          
+          // 一時的なID生成
+          const tempId = Date.now();
           // @ts-ignore
           const coordinates = feature.geometry.coordinates.slice();
           const isSaved = planSpotsRef.current.some(s => s.name === name);
-          setSelectedResult({ id: Date.now(), text: name, place_name: initialDesc, center: coordinates, is_saved: isSaved, voters: [] });
+
+          // 1. まずは仮の状態で表示（住所はMapboxのデータを使用）
+          setSelectedResult({ 
+              id: tempId, 
+              text: name, 
+              place_name: rawAddress || "住所調査中...", // 仮の住所
+              center: coordinates, 
+              is_saved: isSaved, 
+              voters: [],
+              comment: "" // 仮の説明
+          });
           setViewMode('selected');
           setIsEditingDesc(false);
           setIsEditingMemo(false);
-          setEditCommentValue("");
+          setEditCommentValue(""); // 初期化
           setEditLinkValue("");
           
           map.current?.flyTo({ center: coordinates, zoom: 16, offset: [0, -200] });
           
-          fetchSpotImage(name).then(img => {
-              if(img) setSelectedResult((prev: any) => ({...prev, image_url: img}));
+          // 2. バックエンドから正確な「住所」と「説明文(Wiki)」を取得して更新
+          // 2. バックエンドから正確な「住所」と「説明文(Wiki)」を取得して更新
+          const [clickedLng, clickedLat] = coordinates; // coordinatesは [lng, lat] の順
+          fetchSpotInfo(name, clickedLat, clickedLng).then(info => {
+              if (info) {
+                  // A. 選択中のポップアップ(selectedResult)を更新
+                  setSelectedResult((prev: any) => {
+                      if (!prev || prev.id !== tempId) return prev;
+                      
+                      return {
+                          ...prev,
+                          place_name: info.description || prev.place_name,
+                          image_url: info.image_url,
+                          comment: info.comment || ""
+                      };
+                  });
+                  
+                  // 編集フォームの初期値も更新
+                  if (info.comment) {
+                      setEditCommentValue(prev => prev === "" ? info.comment : prev);
+                  }
+
+                  // ▼▼▼ 追加: 既にリストに追加されていたら、後追いで更新する処理 ▼▼▼
+                  setPlanSpots(prevSpots => {
+                      return prevSpots.map(s => {
+                          // 名前が一致し、かつ住所が「調査中」のままのスポットを探す
+                          if (s.name === name && (s.description === "住所調査中..." || s.description === "住所調査中")) {
+                              
+                              const newDesc = info.description || s.description;
+                              const newComment = info.comment || s.comment;
+                              const newImage = info.image_url || s.image_url;
+
+                              // IDが確定している(DBにある)なら、DBも更新する
+                              if (s.id && !String(s.id).startsWith('temp-') && roomId) {
+                                  supabase.from('spots').update({ 
+                                      description: newDesc,
+                                      comment: newComment,
+                                      image_url: newImage,
+                                      updated_at: new Date().toISOString()
+                                  }).eq('id', s.id).then(res => {
+                                      if(res.error) console.error("Late update failed", res.error);
+                                  });
+                              }
+                              
+                              // ローカルの状態を更新 (仮IDの場合もこれで表示は直る)
+                              return { 
+                                  ...s, 
+                                  description: newDesc,
+                                  comment: newComment,
+                                  image_url: newImage
+                              };
+                          }
+                          return s;
+                      });
+                  });
+                  // ▲▲▲ 追加ここまで ▲▲▲
+              }
           });
         });
+        // ▲▲▲ 修正ここまで ▲▲▲
       });
       
     }
@@ -1966,28 +2402,44 @@ const now = new Date().toISOString(); // ★現在時刻
 // ---------------------------------------------------------
   // ▼▼▼ 修正: マーカー描画ロジックの軽量化・最適化版 ▼▼▼
   // ---------------------------------------------------------
+  // ---------------------------------------------------------
+  // ▼▼▼ 修正: マーカー描画ロジック (周辺検索対応版) ▼▼▼
+  // ---------------------------------------------------------
   useEffect(() => {
     if (!map.current) return;
 
-    // 1. 高速削除: Refに保存しておいたマーカーを直接削除（DOM検索しないので高速）
+    // 1. 高速削除: Refに保存しておいたマーカーを直接削除
     planMarkersRef.current.forEach(marker => marker.remove());
     planMarkersRef.current = [];
     
+    // 表示対象: 既存のフィルタリング済みスポット + 周辺検索候補
+    // (周辺検索候補は、currentTabが'explore'の時のみ表示)
+    const spotsToRender = [
+        ...filteredSpots, 
+        ...(currentTab === 'explore' ? nearbyCandidates : [])
+    ];
+    
     // 2. マーカー生成ループ
-    filteredSpots.forEach((spot, index) => { 
-        // 投票者・参加者の計算
-        const voters = spotVotes.filter(v => v.spot_id === spot.id && v.vote_type === 'like').map(v => v.user_name);
-        const participants = [spot.added_by, ...voters];
+    spotsToRender.forEach((spot, index) => { 
+        const isNearby = spot.is_nearby === true;
+
+        // 投票者・参加者の計算 (周辺スポットの場合は投票なし)
+        const voters = isNearby ? [] : spotVotes.filter(v => v.spot_id === spot.id && v.vote_type === 'like').map(v => v.user_name);
+        const participants = isNearby ? [] : [spot.added_by, ...voters];
         const uniqueParticipants = Array.from(new Set(participants));
         
         // 色・グラデーションの計算
         const size = 24; 
-        const segmentSize = 100 / uniqueParticipants.length;
-        const gradientParts = uniqueParticipants.map((name, i) => { 
-            const color = getUserColor(name as string); 
-            return `${color} ${i * segmentSize}% ${(i + 1) * segmentSize}%`; 
-        });
-        const gradientString = `conic-gradient(${gradientParts.join(', ')})`;
+        let gradientString = '#9CA3AF'; // デフォルト
+        
+        if (!isNearby && uniqueParticipants.length > 0) {
+            const segmentSize = 100 / uniqueParticipants.length;
+            const gradientParts = uniqueParticipants.map((name, i) => { 
+                const color = getUserColor(name as string); 
+                return `${color} ${i * segmentSize}% ${(i + 1) * segmentSize}%`; 
+            });
+            gradientString = `conic-gradient(${gradientParts.join(', ')})`;
+        }
         
         // スタイル変数の決定
         const isSpotHotel = isHotel(spot.name) || spot.is_hotel;
@@ -2000,7 +2452,7 @@ const now = new Date().toISOString(); // ★現在時刻
 
         // ホテル情報の吹き出しHTML作成
         let hotelInfoHtml = '';
-        if (isSpotHotel && spot.price) {
+        if (!isNearby && isSpotHotel && spot.price) {
             hotelInfoHtml = `
                 <div style="position:absolute; bottom:100%; left:50%; transform:translateX(-50%) translateY(-8px); background:white; padding:2px 6px; border-radius:6px; font-size:10px; font-weight:bold; color:#d32f2f; white-space:nowrap; box-shadow:0 2px 4px rgba(0,0,0,0.2); display:flex; flex-direction:column; align-items:center;">
                     <span>¥${Number(spot.price).toLocaleString()}</span>
@@ -2015,32 +2467,54 @@ const now = new Date().toISOString(); // ★現在時刻
         el.className = 'marker-plan'; 
         el.style.cursor = 'pointer';
 
-        // ピンのデザイン設定 (transform: translateY(-50%) は削除済み)
-        if (isConfirmed) {
+        // ピンのデザイン分岐
+        if (isNearby) {
+            // ★周辺スポット用デザイン: 黒枠白丸、クエスチョンマーク
+            const nearbySize = 20;
+            el.innerHTML = `
+                <div style="position:relative; display:flex; flex-direction:column; align-items:center;">
+                    <div style="width:${nearbySize + 4}px; height:${nearbySize + 4}px; background:black; border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 5px rgba(0,0,0,0.3);">
+                        <div style="width:${nearbySize}px; height:${nearbySize}px; background:white; border-radius:50%; display:flex; align-items:center; justify-content:center; color:black; font-weight:bold; font-size:10px;">
+                           ?
+                        </div>
+                    </div>
+                    <div style="width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:6px solid black; margin-top:-1px;"></div>
+                </div>`;
+        } else if (isConfirmed) {
             if (isDayView) {
                 // 確定(Day表示): 番号付き角丸ピン
+                // filteredSpots内でのインデックスを使うため、spot.id等で検索して正しい番号を振るのが理想ですが、
+                // ここでは簡易的に index + 1 を使用 (filteredSpotsのみが渡ってくるときはこれでOK)
+                // ※ nearbyCandidatesが混ざる場合は index の扱いを分ける必要がありますが、
+                //    isConfirmed が true の時点で nearbyCandidates ではないので安全です。
                 el.innerHTML = `<div style="position:relative; display:flex; flex-direction:column; align-items:center;">${hotelInfoHtml}<div style="width:${size + 6}px; height:${size + 6}px; background:${confirmedColor}; border-radius:6px; display:flex; align-items:center; justify-content:center; box-shadow:0 4px 10px rgba(0,0,0,0.5);"><div style="width:${size}px; height:${size}px; background:${confirmedColor}; border-radius:5px; display:flex; align-items:center; justify-content:center; color:white; font-weight:800; font-size:14px; border:1px solid rgba(255,255,255,0.3);">${index + 1}</div></div><div style="width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent; border-top:7px solid ${confirmedColor}; margin-top:-1px; filter:drop-shadow(0 1px 1px rgba(0,0,0,0.1));"></div></div>`;
             } else {
                 // 確定(全体): 日付入り丸ピン
-                el.innerHTML = `<div style="position:relative; display:flex; flex-direction:column; align-items:center;">${hotelInfoHtml}<div style="width:${size + 6}px; height:${size + 6}px; background:${confirmedColor}; border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 4px 10px rgba(0,0,0,0.5);"><div style=\"width:${size}px; height:${size}px; background:${confirmedColor}; border-radius:50%; display:flex; align-items:center; justify-content:center; color:white; font-weight:800; font-size:12px; border:1px solid rgba(255,255,255,0.3);\">${isSpotHotel ? '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4v16"/><path d="M2 8h18a2 2 0 0 1 2 2v10"/><path d="M2 17h20"/><path d="M6 8v9"/></svg>' : (spot.day || '')}</div></div><div style="width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent; border-top:7px solid ${confirmedColor}; margin-top:-1px; filter:drop-shadow(0 1px 1px rgba(0,0,0,0.1));"></div></div>`;
+                el.innerHTML = `<div style="position:relative; display:flex; flex-direction:column; align-items:center;">${hotelInfoHtml}<div style="width:${size + 6}px; height:${size + 6}px; background:${confirmedColor}; border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 4px 10px rgba(0,0,0,0.5);"><div style="width:${size}px; height:${size}px; background:${confirmedColor}; border-radius:50%; display:flex; align-items:center; justify-content:center; color:white; font-weight:800; font-size:12px; border:1px solid rgba(255,255,255,0.3);">${isSpotHotel ? '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4v16"/><path d="M2 8h18a2 2 0 0 1 2 2v10"/><path d="M2 17h20"/><path d="M6 8v9"/></svg>' : (spot.day || '')}</div></div><div style="width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent; border-top:7px solid ${confirmedColor}; margin-top:-1px; filter:drop-shadow(0 1px 1px rgba(0,0,0,0.1));"></div></div>`;
             }
         } else {
             // 候補・宿: 投票数入り丸ピン
             el.innerHTML = `<div style="position:relative; display:flex; flex-direction:column; align-items:center;">${hotelInfoHtml}<div style="width:${size + 6}px; height:${size + 6}px; background:${gradientString}; border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 5px rgba(0,0,0,0.3);"><div style="width:${size}px; height:${size}px; background:${baseColor}; border-radius:50%; display:flex; align-items:center; justify-content:center; color:${textColor}; font-weight:800; font-size:12px; border:1px solid rgba(0,0,0,0.1);">${isSpotHotel ? '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4v16"/><path d="M2 8h18a2 2 0 0 1 2 2v10"/><path d="M2 17h20"/><path d="M6 8v9"/></svg>' : (voteCount > 0 ? voteCount : '')}</div></div><div style="width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent; border-top:7px solid ${baseColor}; margin-top:-1px; filter:drop-shadow(0 1px 1px rgba(0,0,0,0.1));"></div></div>`;
         }
         
-        // クリックイベント
-        el.onclick = (e) => { e.stopPropagation(); handlePreviewSpot(spot); };
+        // クリックイベント (周辺スポットもプレビュー可能にする)
+        el.onclick = (e) => { 
+            e.stopPropagation(); 
+            handlePreviewSpot(spot); 
+        };
         
         // 3. マーカー登録 & Refに保存 (anchor: 'bottom' で位置ズレ防止)
-        const marker = new mapboxgl.Marker({ element: el, anchor: 'bottom' })
-            .setLngLat(spot.coordinates)
-            .addTo(map.current!);
-            
-        planMarkersRef.current.push(marker);
+        // ★修正: 座標が不正な場合はスキップしてクラッシュを防ぐ
+        if (spot.coordinates && Array.isArray(spot.coordinates) && spot.coordinates.length === 2) {
+            const marker = new mapboxgl.Marker({ element: el, anchor: 'bottom' })
+                .setLngLat(spot.coordinates as [number, number])
+                .addTo(map.current!);
+                
+            planMarkersRef.current.push(marker);
+        }
     });
       
-  }, [filteredSpots, spotVotes, currentTab, filterStatus, selectedConfirmDay]);
+  }, [filteredSpots, nearbyCandidates, spotVotes, currentTab, filterStatus, selectedConfirmDay]);
 
  // 認証中、または未参加（名前未入力）の場合
  // 認証中、または未参加（名前未入力）の場合
@@ -2055,7 +2529,7 @@ const now = new Date().toISOString(); // ★現在時刻
 
   return (
     <main className="relative w-screen h-[100dvh] bg-slate-100 overflow-hidden flex flex-col font-sans">
-      <LegalModal />
+      
       <Ticker />
 
       {/* ★追加: シークレットモード警告モーダル */}
@@ -2407,6 +2881,21 @@ const now = new Date().toISOString(); // ★現在時刻
                  {isDrawing ? <X size={24}/> : <PenTool size={20}/>}
              </button>
              
+             {/* ★追加: 周辺を探すボタン */}
+             <button 
+                onClick={handleSearchNearby} 
+                // ▼▼▼ 修正: 表示中は黒背景(bg-black)、通常は白背景(bg-white)に切り替え ▼▼▼
+                className={`w-12 h-12 rounded-full shadow-xl transition-all duration-300 flex items-center justify-center border-2 
+                    ${nearbyCandidates.length > 0 
+                        ? 'bg-black text-white border-black hover:bg-gray-800' // 表示中
+                        : 'bg-white text-gray-700 border-white hover:bg-gray-50 hover:scale-110' // 通常
+                    } 
+                    ${isSearchingNearby ? 'animate-bounce' : ''}`}
+                title="この周辺のスポットを探す"
+             >
+                 {isSearchingNearby ? <Loader2 size={20} className="animate-spin text-blue-500"/> : <Binoculars size={20}/>}
+             </button>
+
              <button 
                 onClick={() => {
                     if (planSpots.length > 0) {
@@ -2424,6 +2913,27 @@ const now = new Date().toISOString(); // ★現在時刻
              {isDrawing && <div className="absolute top-1 right-14 bg-black/80 backdrop-blur text-white px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap shadow-lg">かこって検索</div>}
           </div>
 
+           {/* ▼▼▼ 追加: 「写真で選ぶ」フローティングボタン (周辺候補がある時だけ出現) ▼▼▼ */}
+           {currentTab === 'explore' && nearbyCandidates.length > 0 && (
+               <div className="absolute bottom-40 left-1/2 -translate-x-1/2 z-30 animate-in slide-in-from-bottom-4 fade-in">
+                   <button
+                       onClick={handleGoToPhotoSwipe}
+                       className="bg-black text-white px-6 py-3 rounded-full font-bold shadow-2xl flex items-center gap-2 hover:scale-105 active:scale-95 transition border border-gray-700"
+                   >
+                       <Camera size={18} />
+                       <span className="text-sm">写真で選ぶ ({nearbyCandidates.length}件)</span>
+                   </button>
+                   
+                   {/* 閉じるボタン（検索結果をクリアして閉じる） */}
+                   <button 
+                       onClick={() => { setNearbyCandidates([]); }}
+                       className="absolute -top-2 -right-2 bg-gray-200 text-gray-600 rounded-full p-1 shadow-sm hover:bg-gray-300"
+                   >
+                       <X size={12}/>
+                   </button>
+               </div>
+           )}
+
           {currentTab === 'explore' && allParticipants.length > 0 && (
               <div className="absolute bottom-36 left-4 z-10 flex flex-col gap-2 pointer-events-none">
                   {allParticipants.map(name => (
@@ -2435,10 +2945,14 @@ const now = new Date().toISOString(); // ★現在時刻
               </div>
           )}
           
-         {currentTab === 'explore' && (
+       {currentTab === 'explore' && (
             <div className="absolute top-0 left-0 right-0 z-20 flex flex-col items-center pt-4 px-4 pointer-events-none">
+              
+              
+
               {/* ★追加: マーキーアニメーションのスタイル定義 */}
               <style jsx>{`
+              // ...
                 @keyframes marquee {
                   0% { transform: translateX(0); }
                   100% { transform: translateX(-100%); }
@@ -2778,9 +3292,24 @@ const now = new Date().toISOString(); // ★現在時刻
                           <Trash2 size={14}/> リストから削除
                       </button>
                   ) : (
-                      <button onClick={() => { addSpot({ name: selectedResult.text, description: selectedResult.place_name, coordinates: selectedResult.center, status: 'candidate' }); setSelectedResult((prev: any) => ({...prev, is_saved: true})); }} className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 shadow-lg hover:bg-blue-700 transition active:scale-95">
-                          <Plus size={16}/> リストに追加
-                      </button>
+                     <button 
+    onClick={() => { 
+        addSpot({ 
+            name: selectedResult.text, 
+            description: selectedResult.place_name, 
+            // ▼▼▼ 修正: 座標のフォールバックを追加
+            coordinates: selectedResult.center || selectedResult.coordinates, 
+            // ▼▼▼ 追加: 画像とホテル情報も保存
+            image_url: selectedResult.image_url,
+            is_hotel: selectedResult.is_hotel,
+            status: 'candidate' 
+        }); 
+        setSelectedResult((prev: any) => ({...prev, is_saved: true})); 
+    }} 
+    className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 shadow-lg hover:bg-blue-700 transition active:scale-95"
+>
+    <Plus size={16}/> リストに追加
+</button>
                   )}
                 </div>
 
@@ -2819,103 +3348,118 @@ const now = new Date().toISOString(); // ★現在時刻
                           style={{ touchAction: 'pan-x' }}
                       >
                           {/* 確定・候補・宿（すべて共通でDayボタンを表示） */}
+                          {/* 確定・候補・宿の切り替えタブ */}
                           {(filterStatus === 'confirmed' || filterStatus === 'candidate' || filterStatus === 'hotel_candidate') ? (
                               <>
-                                  <button 
-                                      onClick={(e) => { 
-                                          e.stopPropagation(); 
-                                          if (filterStatus === 'confirmed') setSelectedConfirmDay(0);
-                                          else if (filterStatus === 'candidate') setSelectedCandidateDay(0);
-                                          else setSelectedHotelDay(0);
-                                      }}
-                                      className={`px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition border flex-shrink-0 flex items-center gap-1 relative ${
-                                          (filterStatus === 'confirmed' ? selectedConfirmDay : (filterStatus === 'candidate' ? selectedCandidateDay : selectedHotelDay)) === 0 
-                                          ? (filterStatus === 'confirmed' ? 'bg-blue-600 text-white border-blue-600' : (filterStatus === 'candidate' ? 'bg-yellow-500 text-white border-yellow-500' : 'bg-orange-500 text-white border-orange-500'))
-                                          : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-100'
-                                      }`}
-                                  >
-                                      未定 <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${(filterStatus === 'confirmed' ? selectedConfirmDay : (filterStatus === 'candidate' ? selectedCandidateDay : selectedHotelDay)) === 0 ? 'bg-white/20' : 'bg-gray-100'}`}>
-                                          {planSpots.filter(s => s.status === filterStatus && (!s.day || s.day === 0)).length}
-                                      </span>
-                                      
-                                      {/* バッジ表示 */}
-                                      {((filterStatus === 'confirmed' ? selectedConfirmDay : (filterStatus === 'candidate' ? selectedCandidateDay : selectedHotelDay)) !== 0) && 
-                                       (filterStatus === 'confirmed' ? unreadCounts.confirmedDays[0] > 0 : 
-                                        filterStatus === 'candidate' ? unreadCounts.candidateDays[0] > 0 :
-                                        (unreadCounts.hotelDays && unreadCounts.hotelDays[0] > 0)) && (
-                                          <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-4 bg-red-500 text-white text-[9px] font-bold flex items-center justify-center rounded-full border-2 border-white shadow-sm z-10">
-                                                  {filterStatus === 'confirmed' ? unreadCounts.confirmedDays[0] : (filterStatus === 'candidate' ? unreadCounts.candidateDays[0] : unreadCounts.hotelDays[0])}
-                                              </span>
-                                      )}
-                                  </button>
-
-                               {Array.from({ length: travelDays }).map((_, i) => {
-                                      const dayNum = i + 1;
-                                      
-                                      // アクティブ判定
-                                      let isActive = false;
-                                      if (filterStatus === 'confirmed') isActive = selectedConfirmDay === dayNum;
-                                      else if (filterStatus === 'candidate') isActive = selectedCandidateDay === dayNum;
-                                      else isActive = selectedHotelDay === dayNum;
-
-                                      // 宿リストの場合、最終日（帰る日）のタブは表示しない
-                                      if (filterStatus === 'hotel_candidate' && dayNum === travelDays) return null;
-
-                                      // 色設定
-                                      let activeClass = 'bg-blue-600 text-white border-blue-600';
-                                      if (filterStatus === 'candidate') activeClass = 'bg-yellow-500 text-white border-yellow-500';
-                                      if (filterStatus === 'hotel_candidate') activeClass = 'bg-orange-500 text-white border-orange-500'; // ★念のため追加
-                                      
-                                      // ラベル設定 (宿の場合は "Day 1-2" 表記)
-                                      const label = filterStatus === 'hotel_candidate' ? `Day ${dayNum}-${dayNum+1}` : `Day ${dayNum}`;
-
-                                      // カウント計算（バッジ用）
-                                      // ★修正: ここで宿リスト(hotelDays)のカウントも取得するように変更
-                                      const unreadCount = filterStatus === 'confirmed' ? (unreadCounts.confirmedDays[dayNum] || 0) :
-                                                          filterStatus === 'candidate' ? (unreadCounts.candidateDays[dayNum] || 0) :
-                                                          (unreadCounts.hotelDays && unreadCounts.hotelDays[dayNum] || 0);
-
-                                      // スポット数（右側の小さい数字）
-                                      let spotCount = planSpots.filter(s => s.status === filterStatus && s.day === dayNum).length;
-                                      
-                                      // 確定リストで2日目以降の場合、前日の宿を含めるロジック
-                                      if (filterStatus === 'confirmed' && dayNum > 1) {
-                                          const prevHotel = planSpots.find(s => 
-                                              s.status === 'confirmed' && 
-                                              s.day === dayNum - 1 && 
-                                              (s.is_hotel || isHotel(s.name))
-                                          );
-                                          if (prevHotel) {
-                                              const isDuplicate = planSpots.some(s => s.status === 'confirmed' && s.day === dayNum && s.id === prevHotel.id);
-                                              if (!isDuplicate) spotCount += 1;
-                                          }
-                                      }
-
-                                      return (
+                                  {/* ▼▼▼ 追加: 候補リストの場合だけ「エリア」ボタンを表示 ▼▼▼ */}
+                                  {filterStatus === 'candidate' ? (
+                                      <>
+                                          {/* ▼▼▼ 追加: 区分切替ボタン ▼▼▼ */}
                                           <button 
-                                            key={dayNum}
-                                            onClick={(e) => { 
-                                                e.stopPropagation(); 
-                                                if (filterStatus === 'confirmed') setSelectedConfirmDay(dayNum);
-                                                else if (filterStatus === 'candidate') setSelectedCandidateDay(dayNum);
-                                                else setSelectedHotelDay(dayNum);
-                                            }}
-                                            className={`px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition border flex-shrink-0 flex items-center gap-1 relative ${isActive ? activeClass : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-100'}`}
+                                              onClick={(e) => { e.stopPropagation(); toggleGroupingMode(); }}
+                                              className="px-3 py-2 rounded-full text-[10px] font-bold whitespace-nowrap transition border border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-200 flex items-center gap-1 shrink-0"
                                           >
-                                            {label}
-                                            <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${isActive ? 'bg-white/20' : 'bg-gray-100'}`}>
-                                                {spotCount}
-                                            </span>
-                                            
-                                            {/* ★追加: 未読バッジ (isActiveでない、かつ未読がある場合) */}
-                                            {!isActive && unreadCount > 0 && (
-                                                <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-4 bg-red-500 text-white text-[9px] font-bold flex items-center justify-center rounded-full border-2 border-white shadow-sm z-10 animate-pulse">
-                                                    {unreadCount}
-                                                </span>
-                                            )}
+                                              <MapPinned size={12}/>
+                                              {groupingMode === 'city' ? '市町村' : '県別'}
                                           </button>
-                                      );
-                                  })}
+                                          
+                                          {/* 区切り線 */}
+                                          <div className="w-px h-6 bg-gray-200 shrink-0 mx-1"></div>
+
+                                          {/* ▼▼▼ 既存: 「すべて」ボタン ▼▼▼ */}
+                                          <button 
+                                              onClick={(e) => { e.stopPropagation(); setSelectedCandidateArea('all'); }}
+                                              className={`px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition border flex-shrink-0 flex items-center gap-1 relative ${
+                                                  selectedCandidateArea === 'all'
+                                                  ? 'bg-yellow-500 text-white border-yellow-500'
+                                                  : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-100'
+                                              }`}
+                                          >
+                                              すべて <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${selectedCandidateArea === 'all' ? 'bg-white/20' : 'bg-gray-100'}`}>
+                                                  {planSpots.filter(s => (s.status||'candidate') === 'candidate').length}
+                                              </span>
+                                          </button>
+
+                                          {/* ▼▼▼ 既存: エリア別ボタンリスト ▼▼▼ */}
+                                          {candidateAreas.map((area) => {
+                                              const isActive = selectedCandidateArea === area;
+                                              // ★修正: カウントも getSpotArea を使う
+                                              const count = planSpots.filter(s => (s.status||'candidate') === 'candidate' && getSpotArea(s, groupingMode) === area).length;
+                                              
+                                              return (
+                                                  <button 
+                                                      key={area}
+                                                      onClick={(e) => { e.stopPropagation(); setSelectedCandidateArea(area); }}
+                                                      className={`px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition border flex-shrink-0 flex items-center gap-1 relative ${
+                                                          isActive 
+                                                          ? 'bg-yellow-500 text-white border-yellow-500' 
+                                                          : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-100'
+                                                      }`}
+                                                  >
+                                                      {area}
+                                                      <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${isActive ? 'bg-white/20' : 'bg-gray-100'}`}>
+                                                          {count}
+                                                      </span>
+                                                  </button>
+                                              );
+                                          })}
+                                      </>
+                                  ) : (
+                                    // ...既存のDayボタン処理...
+                                      /* ▼▼▼ 既存の Dayボタン (確定リスト・宿リスト用) ▼▼▼ */
+                                      <>
+                                          <button 
+                                              onClick={(e) => { 
+                                                  e.stopPropagation(); 
+                                                  if (filterStatus === 'confirmed') setSelectedConfirmDay(0);
+                                                  else setSelectedHotelDay(0);
+                                              }}
+                                              className={`px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition border flex-shrink-0 flex items-center gap-1 relative ${
+                                                  (filterStatus === 'confirmed' ? selectedConfirmDay : selectedHotelDay) === 0 
+                                                  ? (filterStatus === 'confirmed' ? 'bg-blue-600 text-white border-blue-600' : 'bg-orange-500 text-white border-orange-500')
+                                                  : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-100'
+                                              }`}
+                                          >
+                                              未定 <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${(filterStatus === 'confirmed' ? selectedConfirmDay : selectedHotelDay) === 0 ? 'bg-white/20' : 'bg-gray-100'}`}>
+                                                  {planSpots.filter(s => s.status === filterStatus && (!s.day || s.day === 0)).length}
+                                              </span>
+                                          </button>
+
+                                          {Array.from({ length: travelDays }).map((_, i) => {
+                                              const dayNum = i + 1;
+                                              let isActive = false;
+                                              if (filterStatus === 'confirmed') isActive = selectedConfirmDay === dayNum;
+                                              else isActive = selectedHotelDay === dayNum;
+
+                                              // 宿リストの最終日除外などは既存通り
+                                              if (filterStatus === 'hotel_candidate' && dayNum === travelDays) return null;
+
+                                              // 色設定
+                                              let activeClass = 'bg-blue-600 text-white border-blue-600';
+                                              if (filterStatus === 'hotel_candidate') activeClass = 'bg-orange-500 text-white border-orange-500';
+
+                                              const label = filterStatus === 'hotel_candidate' ? `Day ${dayNum}-${dayNum+1}` : `Day ${dayNum}`;
+                                              const spotCount = planSpots.filter(s => s.status === filterStatus && s.day === dayNum).length;
+
+                                              return (
+                                                  <button 
+                                                    key={dayNum}
+                                                    onClick={(e) => { 
+                                                        e.stopPropagation(); 
+                                                        if (filterStatus === 'confirmed') setSelectedConfirmDay(dayNum);
+                                                        else setSelectedHotelDay(dayNum);
+                                                    }}
+                                                    className={`px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition border flex-shrink-0 flex items-center gap-1 relative ${isActive ? activeClass : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-100'}`}
+                                                  >
+                                                    {label}
+                                                    <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${isActive ? 'bg-white/20' : 'bg-gray-100'}`}>
+                                                        {spotCount}
+                                                    </span>
+                                                  </button>
+                                              );
+                                          })}
+                                      </>
+                                  )}
                               </>
                           ) : null}
                       </div>
@@ -3025,20 +3569,16 @@ const now = new Date().toISOString(); // ★現在時刻
                                   <>スポットがありません<br/>マップから追加してください</>
                               )}
                           </div>
-                      ) : (
+                     ) : (
                           (() => {
                               // 表示対象のDayを判定
                               let targetDay = -1; 
                               if (filterStatus === 'confirmed') targetDay = selectedConfirmDay;
-                              else if (filterStatus === 'candidate') targetDay = selectedCandidateDay;
+                              // ▼▼▼ 修正: candidate の分岐を削除 (エリア分けになったためDay判定不要) ▼▼▼
                               else if (filterStatus === 'hotel_candidate') targetDay = selectedHotelDay;
 
                               // スポットをフィルタリング (Dayで絞り込み)
                               let displaySpots = filteredSpots;
-                              // filteredSpotsはfilterStatusで絞り込まれているが、Dayまでは考慮していない場合があるためここで再確認
-                              //if (targetDay !== -1) {
-                              //    displaySpots = planSpots.filter(s => s.status === filterStatus && (s.day || 0) === targetDay);
-                              //}
 
                               if (targetDay !== -1 && displaySpots.length === 0) {
                                   return <div className="text-center text-gray-400 py-10 text-xs font-medium">この日のスポットはまだありません</div>;

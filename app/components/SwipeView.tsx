@@ -77,7 +77,7 @@ export default function SwipeView({
   // ストレージキー (ルーム・ユーザーごとに保存)
   const storageKey = `swiped_ids_${roomId}_${currentUser}`;
 
-  // ★改善: 初期マウント時にSessionStorageから状態を復元
+  // 初期マウント時にSessionStorageから状態を復元
   useEffect(() => {
     setIsClient(true);
     const saved = sessionStorage.getItem(storageKey);
@@ -109,7 +109,6 @@ export default function SwipeView({
         setVotedSpotIds(prev => {
             const next = new Set(prev);
             myVotedIds.forEach(id => next.add(id));
-            // sessionStorageにも反映
             if (next.size > prev.size) {
                 sessionStorage.setItem(storageKey, JSON.stringify(Array.from(next)));
             }
@@ -117,6 +116,28 @@ export default function SwipeView({
         });
     }
   }, [spotVotes, currentUser, storageKey]);
+
+  // 表示すべきカードの計算
+  const activeSpots = useMemo(() => {
+    if (isSuggestionMode && candidates) {
+        return candidates
+            .map((spot, index) => ({ ...spot, originalIndex: index }))
+            .filter(s => !votedSpotIds.has(s.id ? String(s.id) : s.name));
+    }
+    return spots
+      .map((spot, index) => ({ ...spot, originalIndex: index }))
+      .filter(s => s.added_by !== currentUser) 
+      .filter(s => s.id && !votedSpotIds.has(String(s.id))); 
+  }, [spots, votedSpotIds, currentUser, candidates, isSuggestionMode]);
+
+  // ▼▼▼ 修正: 表示するカード(activeSpots)がなくなったら、保存確認モーダルを表示 ▼▼▼
+  useEffect(() => {
+      // 以前は candidates.length === 0 を見ていたため、propが更新されない限り発火しなかった
+      if (isSuggestionMode && activeSpots.length === 0 && tempLikedSpots.length > 0) {
+          setShowConfirmModal(true);
+      }
+  }, [activeSpots.length, isSuggestionMode, tempLikedSpots.length]);
+  // ▲▲▲ 修正ここまで ▲▲▲
 
   useEffect(() => {
     document.body.style.overflow = 'hidden';
@@ -129,12 +150,6 @@ export default function SwipeView({
       document.body.style.touchAction = '';
     };
   }, []);
-
-  useEffect(() => {
-      if (isSuggestionMode && candidates && candidates.length === 0 && tempLikedSpots.length > 0) {
-          setShowConfirmModal(true);
-      }
-  }, [candidates, isSuggestionMode, tempLikedSpots]);
 
   useEffect(() => {
     let interval: NodeJS.Timeout;
@@ -177,7 +192,6 @@ export default function SwipeView({
       setProgress(0);
       
       try {
-          // ▼▼▼ 修正: 名前だけでなく座標も含めたオブジェクト配列を作成する ▼▼▼
           const existing = [...spots, ...(candidates || [])].map(s => ({
               name: s.name,
               coordinates: s.coordinates
@@ -186,7 +200,7 @@ export default function SwipeView({
           const response = await fetch(`${API_BASE_URL}/api/suggest_spots`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ theme: inputTheme, existing_spots: existing }), // オブジェクト配列を送信
+              body: JSON.stringify({ theme: inputTheme, existing_spots: existing }), 
           });
 
           if (!response.body) throw new Error("No response body");
@@ -246,9 +260,6 @@ export default function SwipeView({
       }
   };
 
-  // page.tsx の getAffiliateUrl と同じロジックを実装
-  // SwipeView.tsx 内の getAffiliateUrl 関数
-
   const getAffiliateUrl = (spot: any) => {
     const adultNum = 2; // デフォルト値
     let targetUrl = "";
@@ -257,7 +268,6 @@ export default function SwipeView({
         targetUrl = spot.url; 
     }
     else if (spot.id && /^\d+$/.test(String(spot.id))) {
-        // ▼▼▼ 日付計算ロジック (ここが必要でした) ▼▼▼
         const today = new Date();
         const nextMonth = new Date(today);
         nextMonth.setDate(today.getDate() + 30);
@@ -269,7 +279,6 @@ export default function SwipeView({
         const y2 = nextDay.getFullYear();
         const m2 = nextDay.getMonth() + 1;
         const d2 = nextDay.getDate();
-        // ▲▲▲ ここまで ▲▲▲
 
         targetUrl = `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${spot.id}?f_teikei=&f_heya_su=1&f_otona_su=${adultNum}&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_sort=min_charge`;
     }
@@ -277,26 +286,12 @@ export default function SwipeView({
         const queryName = spot.name || "";
         targetUrl = spot.url || `https://search.travel.rakuten.co.jp/ds/hotel/search?f_teikei=&f_query=${encodeURIComponent(queryName)}&f_sort=min_charge`;
     }
-
-    // アフィリエイトIDによる変換を行わず、そのまま返す
     return targetUrl;
   };
   
   const getInstagramTag = (query: string) => encodeURIComponent(query.replace(/[\s\(\)（）「」、。]/g, ''));
   const openInstagramApp = (query: string) => window.location.href = `instagram://explore/tags/${getInstagramTag(query)}`;
   const openWebSearch = (query: string) => window.open(`https://www.google.com/search?q=${encodeURIComponent(query)}`, '_blank');
-
-  const activeSpots = useMemo(() => {
-    if (isSuggestionMode && candidates) {
-        return candidates
-            .map((spot, index) => ({ ...spot, originalIndex: index }))
-            .filter(s => !votedSpotIds.has(s.id ? String(s.id) : s.name));
-    }
-    return spots
-      .map((spot, index) => ({ ...spot, originalIndex: index }))
-      .filter(s => s.added_by !== currentUser) 
-      .filter(s => s.id && !votedSpotIds.has(String(s.id))); 
-  }, [spots, votedSpotIds, currentUser, candidates, isSuggestionMode]);
 
   useEffect(() => {
     const preloadImages = async () => {
@@ -321,7 +316,6 @@ export default function SwipeView({
   const onCardLeftScreen = async (direction: string, spot: any) => {
     setLastDirection(direction);
 
-    // スワイプした瞬間にローカルStateとSessionStorageを即時更新
     const spotKey = spot.id ? String(spot.id) : spot.name;
     setVotedSpotIds(prev => {
         const next = new Set(prev).add(spotKey);
@@ -329,7 +323,6 @@ export default function SwipeView({
         return next;
     });
 
-    // AI提案モードの場合
     if (isSuggestionMode) {
         if (direction === 'right') {
             setTempLikedSpots(prev => [...prev, spot]);
@@ -340,15 +333,9 @@ export default function SwipeView({
         return;
     }
     
-    // 通常モードの場合
     if (!spot.id) return;
     
     const voteType = direction === 'right' ? 'like' : 'nope';
-    
-    // ★追加: 親コンポーネント(page.tsx)に通知して即時反映させるためのコールバックを呼ぶ
-    // (page.tsx側で onLike={handleVoteUpdate} のように渡す必要がありますが、
-    //  現状はSupabaseのリアルタイム更新(subscription)で反映される仕組みです。
-    //  もしそれが遅いなら、ここでも onLike を呼んでローカル更新させる手があります)
     
     await supabase.from('votes').insert([{
       room_id: roomId, spot_id: spot.id, user_name: currentUser, vote_type: voteType
@@ -416,6 +403,17 @@ export default function SwipeView({
                   {isSuggestionMode ? "右スワイプした場所を確認しましょう" : "地名やテーマを入力して\nAIに新しいプランを相談しよう"}
               </p>
               
+              {/* ▼▼▼ 追加: 「まだ保存されていない候補」がある場合に手動保存ボタンを表示 ▼▼▼ */}
+              {tempLikedSpots.length > 0 && (
+                  <button 
+                      onClick={() => setShowConfirmModal(true)}
+                      className="w-full bg-green-600 text-white py-4 rounded-xl font-bold shadow-md hover:bg-green-700 transition flex items-center justify-center gap-2 mb-4 animate-bounce"
+                  >
+                      <CheckCircle size={20}/> 選択した{tempLikedSpots.length}件を保存する
+                  </button>
+              )}
+              {/* ▲▲▲ 追加ここまで ▲▲▲ */}
+
               <div className="relative w-full mb-4">
                     <input 
                         type="text"
