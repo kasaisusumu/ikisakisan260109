@@ -406,7 +406,6 @@ async def search_hotels_vacant(req: VacantSearchRequest):
     if http_client is None: return {"error": "Server starting up..."}
     client = http_client
 
-    # ▼▼▼ 変更: キャッシュキーを v2 に更新し、meal_type を含める ▼▼▼
     cache_key = f"rakuten_vacant_v2:{req.latitude}:{req.longitude}:{req.checkin_date}:{req.checkout_date}:{req.adult_num}:{req.min_price}:{req.max_price}:{req.meal_type}:{hashlib.md5(str(req.polygon).encode()).hexdigest() if req.polygon else 'all'}"
     
     cached = get_cache(cache_key)
@@ -427,20 +426,15 @@ async def search_hotels_vacant(req: VacantSearchRequest):
     if req.max_price: base_params["maxCharge"] = req.max_price
     if req.min_price: base_params["minCharge"] = req.min_price
 
-    # APIへのリクエストパラメータも調整
     if req.meal_type == 'room_only':
         base_params["breakfastFlag"] = 0
         base_params["dinnerFlag"] = 0
     elif req.meal_type == 'breakfast':
         base_params["breakfastFlag"] = 1
-        # 朝食付き希望時は、夕食なしを強制しない方がプランが多いが、
-        # 今回は「朝食付き」と「2食付き」を区別したい場合は dinnerFlag=0 を送る手もある。
-        # ここではユーザーの要望「区別したい」に合わせて dinnerFlag=0 を送る設定にする
         base_params["dinnerFlag"] = 0 
     elif req.meal_type == 'half_board':
         base_params["breakfastFlag"] = 1
         base_params["dinnerFlag"] = 1
-    # 'none' の場合は指定しない
 
     url = "https://app.rakuten.co.jp/services/api/Travel/VacantHotelSearch/20170426"
 
@@ -469,7 +463,6 @@ async def search_hotels_vacant(req: VacantSearchRequest):
                     hotel_id = str(basic["hotelNo"])
                     if hotel_id in seen_ids: continue
 
-                    # ポリゴンフィルタリング
                     if req.polygon:
                         if not is_inside_polygon(basic["latitude"], basic["longitude"], req.polygon):
                             continue
@@ -482,22 +475,17 @@ async def search_hotels_vacant(req: VacantSearchRequest):
                         r_info = hotel_content[j].get("roomInfo")
                         if isinstance(r_info, list) and len(r_info) >= 2:
                             
-                            # ▼▼▼ 追加: プランごとの食事条件チェック（厳密化） ▼▼▼
                             r_basic = r_info[0].get("roomBasicInfo", {})
                             
                             if req.meal_type == 'room_only':
-                                # 素泊まり希望: 食事ありプランを除外
                                 if r_basic.get("withBreakfastFlag") == 1 or r_basic.get("withDinnerFlag") == 1:
                                     continue
                             elif req.meal_type == 'breakfast':
-                                # 朝食付き希望: 朝食なしプランを除外
                                 if r_basic.get("withBreakfastFlag") != 1:
                                     continue
                             elif req.meal_type == 'half_board':
-                                # 2食付き希望: どちらか欠けているプランを除外
                                 if r_basic.get("withBreakfastFlag") != 1 or r_basic.get("withDinnerFlag") != 1:
                                     continue
-                            # ▲▲▲ 追加ここまで ▲▲▲
 
                             r_charge = r_info[1].get("dailyCharge")
                             if r_charge and r_charge.get("total", 0) > 0:
@@ -544,9 +532,7 @@ async def suggest_spots_generator(req: SuggestRequest):
     
     yield json.dumps({"type": "status", "message": "AIが候補地をリストアップ中..."}) + "\n"
 
-    # 既存スポットの名前リストを作成（プロンプト除外用）
     existing_names = []
-    # 重複チェック用のデータ（名前と座標）を整理
     existing_check_list = []
 
     for item in req.existing_spots:
@@ -558,7 +544,7 @@ async def suggest_spots_generator(req: SuggestRequest):
         elif isinstance(item, str):
             existing_names.append(item)
             existing_check_list.append({"name": item, "coordinates": None})
-        elif hasattr(item, "name"): # Pydantic model
+        elif hasattr(item, "name"):
             existing_names.append(item.name)
             existing_check_list.append({"name": item.name, "coordinates": item.coordinates})
 
@@ -595,7 +581,7 @@ async def suggest_spots_generator(req: SuggestRequest):
         json_data = json.loads(content)
         raw_spots = json_data.get("spots", [])
         
-        seen_names = set(existing_names) # AI生成内での重複も防ぐ
+        seen_names = set(existing_names)
         for s in raw_spots:
             if s["name"] not in seen_names:
                 target_spots.append(s)
@@ -630,23 +616,18 @@ async def suggest_spots_generator(req: SuggestRequest):
             res = await future
             if res and res["coordinates"] != [0.0, 0.0]:
                 
-                # 既存リストとの詳細な重複チェック
                 is_duplicate = False
                 
-                # 1. 名前チェック (正規化して比較)
                 def normalize(s): return s.replace(" ", "").replace("　", "")
                 norm_res_name = normalize(res["name"])
                 
                 for ex in existing_check_list:
-                    # 名前が完全一致に近いか
                     if normalize(ex["name"]) == norm_res_name:
                         is_duplicate = True
                         break
                     
-                    # 2. 位置情報チェック (座標がある場合)
                     if ex["coordinates"] and res["coordinates"]:
                         dist = haversine_distance(ex["coordinates"], res["coordinates"])
-                        # 200m以内なら同じ場所とみなす
                         if dist < 0.2: 
                             is_duplicate = True
                             print(f"🚫 Duplicate filtered by location: {res['name']} (Dist: {dist:.3f}km)")
@@ -745,6 +726,77 @@ async def calculate_route_endpoint(req: OptimizeRequest):
     except: start, limit = 540, 1080
     
     return await calculate_route_fallback(client, spots, start, limit)
+
+# ---------------------------------------------------------
+# ▼▼▼ 追加: 統一された検索エンドポイント ▼▼▼
+# ---------------------------------------------------------
+@app.get("/api/search_places")
+async def search_places(query: str):
+    """
+    フロントエンド用の場所検索API
+    - クエリのクリーニング (カッコ除去など)
+    - リトライロジック
+    - キャッシュ
+    を main.py の他の処理と統一して提供する
+    """
+    global http_client
+    if http_client is None: return {"results": []}
+    client = http_client
+
+    # 1. キャッシュチェック
+    cache_key = f"search_places_v1:{query}"
+    cached = get_cache(cache_key)
+    if cached: return cached
+
+    try:
+        # 2. クエリの正規化
+        # カッコ書きを削除して検索精度を上げる
+        clean_query = re.sub(r'[(（].*?[)）]', '', query).strip()
+        
+        # 3. Geoapify API呼び出し
+        url = "https://api.geoapify.com/v1/geocode/search"
+        params = {
+            "text": clean_query, 
+            "apiKey": GEOAPIFY_API_KEY, 
+            "lang": "ja", 
+            "limit": 10, 
+            "countrycode": "jp"
+        }
+        
+        res = await fetch_with_retry(client, url, params=params, initial_timeout=5.0, retries=3)
+
+        results = []
+        if res and res.status_code == 200:
+            data = res.json()
+            if "features" in data:
+                for feat in data["features"]:
+                    props = feat["properties"]
+                    
+                    name = props.get("name", "")
+                    formatted = props.get("formatted", "")
+                    
+                    if not name:
+                        name = formatted.split(",")[0] if formatted else clean_query
+
+                    results.append({
+                        "id": props.get("place_id"),
+                        "name": name,
+                        "place_name": formatted,
+                        "center": feat["geometry"]["coordinates"], # [lon, lat]
+                        "is_geoapify": True
+                    })
+        
+        response_data = {"results": results}
+        
+        # 4. 結果があればキャッシュ保存
+        if results:
+            set_cache(cache_key, response_data)
+            
+        return response_data
+
+    except Exception as e:
+        print(f"Search Error: {e}")
+        return {"results": []}
 
 @app.get("/")
 async def root():

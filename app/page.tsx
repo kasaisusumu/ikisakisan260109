@@ -1181,12 +1181,14 @@ const filteredSpots = useMemo(() => {
     }
   };
 
-  const handleSearch = async (overrideQuery?: string) => {
+ const handleSearch = async (overrideQuery?: string) => {
       const activeQuery = overrideQuery || query; 
       if(!activeQuery) return;
       setIsSearching(true);
       try {
         let results: any[] = [];
+        
+        // 1. ルーム内キャッシュ検索（変更なし）
         if (roomId) {
             const { data: cached } = await supabase.from('room_search_cache').select('*').eq('room_id', roomId).ilike('text', `%${activeQuery}%`).limit(5);
             if (cached && cached.length > 0) {
@@ -1194,41 +1196,28 @@ const filteredSpots = useMemo(() => {
                 results = [...cachedResults];
             }
         }
-        // ▼▼▼ 変更: Geoapify API を使用 ▼▼▼
-        const apiKey = GEOAPIFY_API_KEY;
-        // 日本語(lang=ja)、最大10件、日本限定(filter=countrycode:jp) ※必要に応じてcountrycodeは外してください
-        const url = `https://api.geoapify.com/v1/geocode/autocomplete?text=${encodeURIComponent(activeQuery)}&apiKey=${apiKey}&lang=ja&limit=10&filter=countrycode:jp`;
+
+        // ▼▼▼ 変更: バックエンドAPI経由に変更 ▼▼▼
+        // これにより main.py と同じ正規化・リトライ・キャッシュロジックが適用されます
+        const res = await fetch(`${API_BASE_URL}/api/search_places?query=${encodeURIComponent(activeQuery)}`);
         
-        const res = await fetch(url);
-        const data = await res.json();
-
-        if (data.features) {
-            const newSuggestions = data.features.map((feat: any) => {
-                const props = feat.properties;
-                // Geoapifyは住所のみの場合などnameが無いことがあるのでformattedで代用
-                const name = props.name || props.formatted.split(',')[0]; 
-                const address = props.formatted;
-                
-                return {
-                    // Geoapify独自の place_id をIDとして使用
-                    id: props.place_id,
-                    name: name,
-                    place_name: address,
-                    // Geoapifyは検索結果に座標(lon, lat)を含んでいる！
-                    center: [props.lon, props.lat], 
-                    // Mapbox IDは無いので、後続処理のためにフラグで区別（あるいは center があることで区別）
-                    is_geoapify: true 
-                };
-            });
-
-            // 重複排除して追加
-            const filteredSuggestions = newSuggestions.filter((s: any) => !results.some(r => r.name === s.name || r.text === s.name));
-            results = [...results, ...filteredSuggestions];
+        if (res.ok) {
+            const data = await res.json();
+            if (data.results && Array.isArray(data.results)) {
+                // 既存の結果（キャッシュなど）と重複しないものだけを追加
+                const newSuggestions = data.results.filter((s: any) => !results.some(r => r.name === s.name));
+                results = [...results, ...newSuggestions];
+            }
         }
         // ▲▲▲ 変更ここまで ▲▲▲
+
         setSearchResults(results);
-      } catch (e) { console.error(e); } finally { setIsSearching(false); }
-  }; 
+      } catch (e) { 
+          console.error("Search failed", e); 
+      } finally { 
+          setIsSearching(false); 
+      }
+  };
 
   const showResultOnMap = (name: string, desc: string, center: number[], isSaved: boolean) => {
       if (!map.current) return;
