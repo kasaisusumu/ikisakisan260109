@@ -16,7 +16,7 @@ import {
   PenTool, Loader2, Clock, ThumbsUp, Link as LinkIcon, MessageSquare,
   Save, XCircle, Edit3, ArrowRight, Maximize,
   Car, Train, Footprints, Zap, Plane, Ship, Camera, Globe, ArrowLeftCircle, Database,
-  Banknote, ExternalLink as ExternalLinkIcon, StickyNote, Check,Sparkles
+  Banknote, ExternalLink as ExternalLinkIcon, StickyNote, Check,Sparkles,Bus // ← ★ここに追加
 } from 'lucide-react';
 
 import BottomNav from './components/BottomNav';
@@ -114,11 +114,14 @@ const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 const GEOAPIFY_API_KEY = process.env.NEXT_PUBLIC_GEOAPIFY_API_KEY || "";
 const RAKUTEN_AFFILIATE_ID = "4fcc24e4.174bb117.4fcc24e5.5b178353"; 
 
+// page.tsx (105行目付近)
 const TRANSPORT_MODES = [
   { id: 'car', icon: <Car size={12}/>, label: '車' },
   { id: 'train', icon: <Train size={12}/>, label: '電車' },
   { id: 'walk', icon: <Footprints size={12}/>, label: '徒歩' },
-  { id: 'shinkansen', icon: <Zap size={12}/>, label: '新幹線' },
+  // ▼▼▼ 修正: 新幹線(Zap) を バス(Bus) に変更 ▼▼▼
+  { id: 'bus', icon: <Bus size={12}/>, label: 'バス' }, 
+  // { id: 'shinkansen', icon: <Zap size={12}/>, label: '新幹線' }, // 元のコード
   { id: 'plane', icon: <Plane size={12}/>, label: '飛行機' },
   { id: 'ship', icon: <Ship size={12}/>, label: '船' },
 ];
@@ -593,40 +596,50 @@ const onTimelineDragOver = (e: React.DragEvent) => {
 // page.tsx 内の onTimelineDrop を以下に置き換え
 const onTimelineDrop = async (e: React.DragEvent, targetIndex: number) => {
     e.preventDefault();
-    stopTimelineAutoScroll(); // ★追加
+    stopTimelineAutoScroll(); 
     const sourceIndex = parseInt(e.dataTransfer.getData('text/plain'), 10);
     if (isNaN(sourceIndex) || sourceIndex === targetIndex) return;
 
-    // 1. 現在の表示用タイムラインをコピーして並び替える
-    const newTimeline = [...displayTimeline];
-    const sourceItem = newTimeline[sourceIndex];
-    if (!sourceItem || sourceItem.type !== 'spot') return;
+    const draggedItem = displayTimeline[sourceIndex];
+    if (!draggedItem || draggedItem.type !== 'spot') return;
 
-    // 配列から抜き取って挿入
-    const [movedItem] = newTimeline.splice(sourceIndex, 1);
-    newTimeline.splice(targetIndex, 0, movedItem);
+    // ▼▼▼ 修正: 既存のオブジェクト(時間情報込み)を維持して分離 ▼▼▼
+    const currentSpotsOnly = displayTimeline.filter(item => item.type === 'spot');
+    const currentTravelsOnly = displayTimeline.filter(item => item.type === 'travel');
 
-    // 2. 移動(travel)アイテムを正しい位置に再配置して再計算
-    const justSpots = newTimeline.filter(item => item.type === 'spot').map(item => item.spot);
-    const reconstructed: any[] = [];
-    justSpots.forEach((spot, i) => {
-        reconstructed.push({ type: 'spot', spot, stay_min: spot.stay_time || 60 });
-        if (i < justSpots.length - 1) {
-            reconstructed.push({ type: 'travel', duration_min: 30, transport_mode: 'car' });
+    // 1. スポットリスト内での移動元・移動先インデックスを特定
+    const sourceSpotIndex = currentSpotsOnly.findIndex(s => s === draggedItem);
+    
+    // displayTimeline上の targetIndex が、spotリスト上のどこに相当するか計算
+    let targetSpotIndex = 0;
+    for(let i=0; i<targetIndex; i++){
+        if(displayTimeline[i].type === 'spot' && i !== sourceIndex) targetSpotIndex++;
+    }
+
+    // 2. スポットの並び替え
+    const newSpotsOrder = [...currentSpotsOnly];
+    const [movedSpot] = newSpotsOrder.splice(sourceSpotIndex, 1);
+    newSpotsOrder.splice(targetSpotIndex, 0, movedSpot);
+
+    // 3. タイムライン再構築 (再計算なし)
+    const finalTimeline: any[] = [];
+    newSpotsOrder.forEach((spotItem, i) => {
+        finalTimeline.push(spotItem); // 既存のアイテムをそのまま使う
+        if (i < newSpotsOrder.length - 1) {
+            // 既存の移動アイテムがあればそれを使う
+            if (currentTravelsOnly[i]) {
+                finalTimeline.push(currentTravelsOnly[i]);
+            } else {
+                finalTimeline.push({ type: 'travel', duration_min: 30, transport_mode: 'car' });
+            }
         }
     });
 
-    // 時間を振り直す
-    const finalTimeline = calculateSimpleSchedule(reconstructed);
-
-    // ...既存のuseState
-  
-  
-
-    // 3. ローカルの State を即座に更新
+    // 4. 更新 (calculateSimpleScheduleを通さない)
     setDisplayTimeline(finalTimeline);
+    setDraggedTimelineIndex(null);
     
-    // 4. localStorage を即座に更新（これが重要！）
+    // 5. ローカルストレージ更新
     if (roomId && selectedConfirmDay > 0) {
         const storageKey = `rh_plan_${roomId}_day_${selectedConfirmDay}`;
         localStorage.setItem(storageKey, JSON.stringify({ 
@@ -635,7 +648,8 @@ const onTimelineDrop = async (e: React.DragEvent, targetIndex: number) => {
         }));
     }
 
-    // 5. DB (Supabase) の order カラムを一括更新
+    // 6. DB (Supabase) の order カラムを一括更新
+    const justSpots = newSpotsOrder.map(s => s.spot);
     for (let i = 0; i < justSpots.length; i++) {
         await supabase
             .from('spots')
@@ -652,8 +666,6 @@ const onTimelineDrop = async (e: React.DragEvent, targetIndex: number) => {
         });
         return [...next].sort((a, b) => (a.order || 0) - (b.order || 0));
     });
-
-    setDraggedTimelineIndex(null);
 };
 
   const handleDragStart = (e: React.TouchEvent | React.MouseEvent) => {
@@ -1051,11 +1063,14 @@ const [arrivalModalSpots, setArrivalModalSpots] = useState<any[]>([]); // ★追
 // page.tsx
 // page.tsx (該当のuseEffect)
 
-useEffect(() => {
+// page.tsx 870行目付近の useEffect
+
+// page.tsx 870行目付近
+
+  useEffect(() => {
     if (filterStatus === 'confirmed' && roomId) {
         const day = selectedConfirmDay === 0 ? 0 : selectedConfirmDay;
         
-        // Day0の場合は単純表示
         if (day === 0) {
              setDisplayTimeline(planSpots.filter(s => s.status === 'confirmed' && (s.day === 0 || !s.day)).map(s => ({ type: 'spot', spot: s })));
              return;
@@ -1064,76 +1079,100 @@ useEffect(() => {
         const storageKey = `rh_plan_${roomId}_day_${day}`;
         const savedPlan = localStorage.getItem(storageKey);
         let timeline: any[] = [];
+        let loadedFromStorage = false;
         
-        // ローカルストレージから復元
+        // 1. ローカルストレージから「最新の並び順と時間」を復元
         if (savedPlan) {
             try {
                 const data = JSON.parse(savedPlan);
-                if (data.timeline && Array.isArray(data.timeline)) { timeline = data.timeline; }
+                if (data.timeline && Array.isArray(data.timeline)) { 
+                    timeline = data.timeline; 
+                    loadedFromStorage = true;
+                }
             } catch(e) { console.error("Plan parse error", e); }
         }
 
-        // --- その日のスポット一覧を取得（最新のplanSpotsから） ---
-        let spotsInDay = planSpots.filter(s => s.status === 'confirmed' && s.day === day);
-
-        // 2日目以降なら前日の宿を追加
+        // 2. DBにある「この日の最新スポットデータ」を取得
+        let validSpotsInDB = planSpots.filter(s => s.status === 'confirmed' && s.day === day);
+        
+        // 前日の宿を含めるロジック
         if (day > 1) {
             const prevDayHotel = planSpots.find(s => 
                 s.status === 'confirmed' && 
                 s.day === day - 1 && 
                 (s.is_hotel || isHotel(s.name))
             );
-            if (prevDayHotel && !spotsInDay.some(s => s.id === prevDayHotel.id)) {
-                spotsInDay = [prevDayHotel, ...spotsInDay];
+            if (prevDayHotel && !validSpotsInDB.some(s => s.id === prevDayHotel.id)) {
+                validSpotsInDB.push(prevDayHotel);
             }
         }
 
-        // 並び順が変わったかチェック
-        const storageSpotIds = timeline.filter((t: any) => t.type === 'spot').map((t: any) => String(t.spot.id));
-        const currentSpotIds = spotsInDay.map(s => String(s.id));
-        const isOrderDifferent = JSON.stringify(storageSpotIds) !== JSON.stringify(currentSpotIds);
-
-        // ▼▼▼ ロジック修正箇所 ▼▼▼
-        if (timeline.length === 0 || isOrderDifferent) {
-             // 1. 初回ロード または 並び順が変わっている場合 → 作り直し
-             const newTimeline: any[] = [];
-             spotsInDay.forEach((spot, i) => {
+        // 3. マージ処理
+        if (!loadedFromStorage || timeline.length === 0) {
+            // A. 初回ロード時: DBのorder順で作成し、時間を計算する
+            validSpotsInDB.sort((a, b) => (a.order || 0) - (b.order || 0));
+            
+            const newTimeline: any[] = [];
+             validSpotsInDB.forEach((spot, i) => {
                  newTimeline.push({ type: 'spot', spot, stay_min: spot.stay_time || 60 });
-                 if (i < spotsInDay.length - 1) { 
+                 if (i < validSpotsInDB.length - 1) { 
                      newTimeline.push({ type: 'travel', duration_min: 30, transport_mode: 'car' }); 
                  }
              });
              timeline = calculateSimpleSchedule(newTimeline);
              
-             // ローカルストレージも更新
-             localStorage.setItem(storageKey, JSON.stringify({ timeline, updatedAt: Date.now() }));
         } else {
-             // 2. 並び順は同じだが、中身（メモや金額）が変わっている場合 → planSpotsの最新データで上書き
-             timeline = timeline.map(item => {
+            // B. 既に表示中の場合: ローカルの並び順・時間を「正」として維持する (★ここが修正点)
+            
+            // 削除されたスポットをタイムラインから消す
+            const validIds = new Set(validSpotsInDB.map(s => String(s.id)));
+            timeline = timeline.filter(item => {
+                if (item.type === 'spot') {
+                    return validIds.has(String(item.spot.id));
+                }
+                return true; 
+            });
+
+            // 新しく追加されたスポットがあれば末尾に追加
+            const currentTimelineIds = new Set(timeline.filter(t => t.type === 'spot').map(t => String(t.spot.id)));
+            const newSpots = validSpotsInDB.filter(s => !currentTimelineIds.has(String(s.id)));
+            
+            if (newSpots.length > 0) {
+                newSpots.forEach(s => {
+                    if (timeline.length > 0 && timeline[timeline.length - 1].type === 'spot') {
+                        timeline.push({ type: 'travel', duration_min: 30, transport_mode: 'car' });
+                    }
+                    timeline.push({ type: 'spot', spot: s, stay_min: s.stay_time || 60 });
+                });
+                // 新規追加時のみ再計算を行う
+                timeline = calculateSimpleSchedule(timeline);
+            }
+
+            // 中身のデータ（名前や画像、メモなど）だけ最新のDB情報で更新する
+            // ★重要: ここで calculateSimpleSchedule を呼ばないことで、手動変更した時間や並び順が維持されます
+            timeline = timeline.map(item => {
                  if (item.type === 'spot') {
-                     // planSpots (DB由来の最新データ) から同じIDのスポットを探す
-                     const freshSpot = spotsInDay.find(s => String(s.id) === String(item.spot.id));
+                     const freshSpot = validSpotsInDB.find(s => String(s.id) === String(item.spot.id));
                      if (freshSpot) {
                          return { 
                              ...item, 
                              spot: { 
-                                 ...item.spot,    // 既存のプロパティ（stay_minなど）を維持しつつ
-                                 ...freshSpot,    // 最新のDBデータで上書き（comment, link, priceなど）
-                                 image_url: freshSpot.image_url // 画像URLも最新に
+                                 ...item.spot,
+                                 ...freshSpot,
+                                 // 画像などは最新を反映
+                                 image_url: freshSpot.image_url 
                              }, 
                              image: freshSpot.image_url || item.image 
                          };
                      }
                  }
                  return item;
-             });
+            });
         }
-        // ▲▲▲ 修正ここまで ▲▲▲
 
         setDisplayTimeline(timeline);
     }
-}, [filterStatus, selectedConfirmDay, planSpots, roomId, currentTab]);
-
+  }, [filterStatus, selectedConfirmDay, planSpots, roomId, currentTab]);
   const fetchSpotImage = async (name: string) => {
       try {
           const res = await fetch(`${API_BASE_URL}/api/get_spot_image?query=${encodeURIComponent(name)}`);

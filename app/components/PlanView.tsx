@@ -6,7 +6,7 @@ import {
   Edit3, Train, Plane, Ship, Footprints, Zap, 
   Image as ImageIcon, Link as LinkIcon, Camera, Upload, 
   Trash2, PlusCircle, MapPinned, ArrowRight, ArrowLeft,
-  ChevronDown, ChevronUp, Layers, Banknote, ExternalLink, StickyNote
+  ChevronDown, ChevronUp, Layers, Banknote, ExternalLink, StickyNote,Bus // ← ★ここに追加
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
@@ -89,11 +89,14 @@ interface Props {
   currentUser?: string;
 }
 
+// components/PlanView.tsx (80行目付近)
 const TRANSPORT_MODES = [
   { id: 'car', icon: <Car size={16}/>, label: '車', googleMode: 'driving' },
   { id: 'train', icon: <Train size={16}/>, label: '電車', googleMode: 'transit' },
   { id: 'walk', icon: <Footprints size={16}/>, label: '徒歩', googleMode: 'walking' },
-  { id: 'shinkansen', icon: <Zap size={16}/>, label: '新幹線', googleMode: 'transit' },
+  // ▼▼▼ 修正: 新幹線(Zap) を バス(Bus) に変更 ▼▼▼
+  { id: 'bus', icon: <Bus size={16}/>, label: 'バス', googleMode: 'transit' },
+  // { id: 'shinkansen', icon: <Zap size={16}/>, label: '新幹線', googleMode: 'transit' }, // 元のコード
   { id: 'plane', icon: <Plane size={16}/>, label: '飛行機', googleMode: 'transit' },
   { id: 'ship', icon: <Ship size={16}/>, label: '船', googleMode: 'transit' },
 ];
@@ -586,7 +589,7 @@ export default function PlanView({
     });
 
     // ローカルStateの更新
-    setTimeline(calculateSchedule(reconstructedTimeline));
+    setTimeline(reconstructedTimeline); 
     setDraggedItemIndex(null);
 
     // 2. データベースと親コンポーネントの更新
@@ -612,10 +615,10 @@ export default function PlanView({
         fullSpotsList.sort((a, b) => (a.order || 0) - (b.order || 0));
         onUpdateSpots(fullSpotsList);
 
-        // LocalStorageも即座に更新 (Page.tsxが参照するキーを更新)
+        // LocalStorageも即座に更新
         const storageKey = `rh_plan_${roomId}_day_${selectedDay}`;
         localStorage.setItem(storageKey, JSON.stringify({ 
-            timeline: calculateSchedule(reconstructedTimeline), 
+            timeline: reconstructedTimeline, // ★修正: ここも calculateSchedule を外す
             updatedAt: Date.now() 
         }));
     }
@@ -626,7 +629,9 @@ const handleEditSave = async () => {
       
       const newTimeline = [...timeline];
       newTimeline[editItem.index] = editItem.data;
-      setTimeline(calculateSchedule(newTimeline));
+      setTimeline(newTimeline); // ★修正: 再計算せずに保存
+      
+      // ... (以下DB更新処理など)
 
       if (editItem.type === 'spot' && roomId) {
           const spotId = editItem.data.spot.id;
@@ -693,7 +698,7 @@ const handleArrivalChange = (index: number, newArrival: string) => {
   const handleTransportChange = (index: number, mode: string) => {
       const newTimeline = [...timeline];
       newTimeline[index].transport_mode = mode;
-      setTimeline(calculateSchedule(newTimeline));
+      setTimeline(newTimeline); // ★修正: 再計算せずに保存するだけにする
   };
 
   const toggleSpotInclusion = (spot: any, isAdding: boolean) => {
