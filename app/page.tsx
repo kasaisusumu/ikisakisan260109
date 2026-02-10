@@ -515,6 +515,7 @@ const rightEdgeGestureRef = useRef({
 });
 // ★追加: ズームUIの表示制御用
 const [showZoomUI, setShowZoomUI] = useState(false);
+const [zoomSide, setZoomSide] = useState<'right' | 'left'>('right');
 // ★追加: ツマミ（Knob）を直接DOM操作するためのRef（再レンダリング防止）
 const zoomKnobRef = useRef<HTMLDivElement>(null);
   const searchMarkersRef = useRef<mapboxgl.Marker[]>([]);
@@ -712,6 +713,8 @@ const timelineScrollInterval = useRef<NodeJS.Timeout | null>(null);
 // ▼▼▼ 追加: 住所からエリア（市町村）を抽出するヘルパー関数 ▼▼▼
 // ▼▼▼ 改善版: エリア抽出ロジック ▼▼▼
 
+// ▼▼▼ 修正: 住所抽出ロジックの改善 ▼▼▼
+
 const PREFECTURES = [
   "北海道", "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県",
   "茨城県", "栃木県", "群馬県", "埼玉県", "千葉県", "東京都", "神奈川県",
@@ -754,14 +757,12 @@ const extractCity = (spot: any) => {
     // 2. 正規表現で市町村を抽出
     
     // パターンA: 「〇〇市」 (政令指定都市も「京都市」などでまとめる)
-    // 住所の先頭から「市」が出てくるまでを取得
     const cityMatch = addressBody.match(/([^0-9\s,]{1,8}市)/);
     if (cityMatch) {
         return cityMatch[1];
     }
     
     // パターンB: 東京23区などの「〇〇区」
-    // (市が見つからなかった場合のみ検索)
     const wardMatch = addressBody.match(/([^0-9\s,]{1,8}区)/);
     if (wardMatch) return wardMatch[1];
     
@@ -769,21 +770,16 @@ const extractCity = (spot: any) => {
     const townMatch = addressBody.match(/([^0-9\s,]{1,8}[町村])/);
     if (townMatch) {
         const val = townMatch[1];
-        // "郡"が含まれていたら、その後ろを使う (例: 与謝郡伊根町 -> 伊根町)
+        // "郡"が含まれていたら、その後ろを使う
         if (val.includes("郡")) {
             return val.split("郡")[1];
         }
         return val;
     }
 
-    // 3. それでも取れない場合（海外や特殊な表記）
-    
-    // カンマ区切りの場合は先頭を使う（海外住所対応）
-    if (text.includes(",")) {
-        return text.split(",")[0].trim();
-    }
-    
-    // 何もなければ都道府県があればそれを返す（"その他"になるよりはマシ）
+    // 3. 抽出できなかった場合のフォールバック
+    // ★修正: カンマ区切りの先頭を安易に返さないように変更
+    // "NN" のような意味不明な文字列になるのを防ぐため、市町村が不明なら都道府県を返す
     if (pref !== "その他") return pref;
 
     return "その他";
@@ -833,6 +829,8 @@ const getSpotArea = (spot: any, mode: 'city' | 'prefecture') => {
   // 160行目付近（hasShownArrivalNotice の近く）
 const [arrivalModalSpots, setArrivalModalSpots] = useState<any[]>([]); // ★追加：モーダル用
   const [lastVisited, setLastVisited] = useState<Record<string, number>>({});
+  const [highlightThresholds, setHighlightThresholds] = useState<Record<string, number>>({});
+  const [isLastVisitedLoaded, setIsLastVisitedLoaded] = useState(false);
   const getContextKey = (status: string, day: number) => {
       if (status === 'hotel_candidate') return 'hotel_candidate';
       return `${status}_${day || 0}`;
@@ -872,37 +870,56 @@ const [arrivalModalSpots, setArrivalModalSpots] = useState<any[]>([]); // ★追
               const saved = localStorage.getItem(`rh_last_visited_${roomId}`);
               if (saved) setLastVisited(JSON.parse(saved));
           } catch(e) {}
+          setIsLastVisitedLoaded(true); // ロード完了
       }
   }, [roomId]);
   // ▼▼▼ 修正: 既読管理のロジック (リロード対策版) ▼▼▼
   // ▼▼▼ 修正: 既読管理のロジック (リロード対策版) ▼▼▼
-  useEffect(() => {
+ useEffect(() => {
       if (!roomId) return;
       if (filterStatus === 'all') return;
+      if (!isLastVisitedLoaded) return; // ロード前は実行しない（ハイライト消滅防止）
       
       let currentDay = 0;
       if (filterStatus === 'confirmed') currentDay = selectedConfirmDay;
       if (filterStatus === 'hotel_candidate') currentDay = selectedHotelDay;
-      // 候補リスト(candidate)の場合は currentDay = 0 のままでOK
 
       const key = getContextKey(filterStatus, currentDay);
-      
-      // 画面を表示した時点で「現在時刻」を記録して保存する
       const now = Date.now();
 
+      // 1. ハイライト用の基準時間を「画面を開いた瞬間」の状態で固定する
+      setHighlightThresholds(prev => {
+          // 既にこのキーの基準時間があれば更新しない（リロード直後などでちらつくのを防ぐ）
+          // タブを切り替えた時だけ更新したいが、useEffectは切り替え時に走るため、
+          // 単純に「現在のlastVisited（＝前回の閲覧時間）」をセットすればOK
+          return { ...prev, [key]: lastVisited[key] || 0 };
+      });
+
+      // 2. 次回訪問用に「既読（現在時刻）」として即座に保存する
       setLastVisited(prev => {
-          // 無限ループ防止: 既に直近(1秒以内)に更新済みなら何もしない
-          if (prev[key] && now - prev[key] < 1000) return prev;
+          if (prev[key] && now - prev[key] < 1000) return prev; // 短時間の連打防止
 
           const next = { ...prev, [key]: now };
-          // 即座にローカルストレージに保存
           localStorage.setItem(`rh_last_visited_${roomId}`, JSON.stringify(next));
           return next;
       });
       
-  }, [filterStatus, selectedConfirmDay, selectedHotelDay, roomId]); 
+  }, [filterStatus, selectedConfirmDay, selectedHotelDay, roomId, isLastVisitedLoaded]); 
   // ▲▲▲ 修正ここまで ▲▲▲
   // ▲▲▲ 修正ここまで ▲▲▲
+
+  // ▼▼▼ 追加: 黄色ハイライト判定用の関数 ▼▼▼
+  const isHighlighted = (spot: any) => {
+      const key = getContextKey(spot.status, spot.day);
+      
+      // ハイライト用の基準時間があればそれを使う。なければ通常の既読時間を使う。
+      // これにより、この画面にいる間はずっと「入室時の未読状態」で判定される。
+      const threshold = highlightThresholds[key] !== undefined ? highlightThresholds[key] : (lastVisited[key] || 0);
+      
+      const timeToCheck = new Date(spot.updated_at || spot.created_at).getTime();
+      return timeToCheck > threshold;
+  };
+  // ▲▲▲ 追加ここまで ▲▲▲
 
   const isNewSpot = (spot: any) => {
       const key = getContextKey(spot.status, spot.day);
@@ -1666,24 +1683,31 @@ const filteredSpots = useMemo(() => {
         const screenWidth = window.innerWidth;
         const edgeThreshold = 60; 
 
-        if (touch.clientX > screenWidth - edgeThreshold) {
+        // ▼▼▼ 修正: 右端(isRight) または 左端(isLeft) を判定 ▼▼▼
+        const isRight = touch.clientX > screenWidth - edgeThreshold;
+        const isLeft = touch.clientX < edgeThreshold;
+
+        if (isRight || isLeft) {
             rightEdgeGestureRef.current = {
                 isActive: true,
                 startY: touch.clientY,
                 startZoom: map.current?.getZoom() || 14
             };
             
-            // ★追加: UIを表示
+            // どちら側かをStateにセット
+            setZoomSide(isRight ? 'right' : 'left');
+
+            // UIを表示
             setShowZoomUI(true);
             
-            // ★追加: ツマミをタッチ位置へ移動
+            // ツマミをタッチ位置へ移動
             if (zoomKnobRef.current) {
                 zoomKnobRef.current.style.transform = `translateY(${touch.clientY}px)`;
             }
 
-            // (任意) 触覚フィードバック
             if (navigator.vibrate) navigator.vibrate(10);
         }
+        // ▲▲▲ 修正ここまで ▲▲▲
     };
 
     const onTouchMove = (e: TouchEvent) => {
@@ -3596,7 +3620,8 @@ const now = new Date().toISOString(); // ★現在時刻
                                                 const spot = item.spot;
                                                 const voteCount = spotVotes.filter((v: any) => String(v.spot_id) === String(spot.id) && v.vote_type === 'like').length;
                                                 const isSpotHotel = isHotel(spot.name) || spot.is_hotel;
-                                                const isNew = isNewSpot(spot);
+                                                // const isNew = isNewSpot(spot);
+                                                const isNew = isHighlighted(spot);
                                                 const visitOrder = displayTimeline.slice(0, idx + 1).filter(t => t.type === 'spot').length;
 
                                              return (
@@ -3881,8 +3906,8 @@ const now = new Date().toISOString(); // ★現在時刻
                                     {displaySpots.map((spot, idx) => {
                                         const voteCount = spotVotes.filter((v: any) => String(v.spot_id) === String(spot.id) && v.vote_type === 'like').length;
                                         const isSpotHotel = isHotel(spot.name) || spot.is_hotel;
-                                        const isNew = isNewSpot(spot);
-                                        
+                                        // const isNew = isNewSpot(spot);
+                                        const isNew = isHighlighted(spot);
                                         return (
                                             <div 
                                                // <div 
@@ -4046,37 +4071,50 @@ const now = new Date().toISOString(); // ★現在時刻
           </div>
         </div>
         {/* ズームインジケーターUI */}
+{/* ズームインジケーターUI (左右対応版) */}
 <div 
-    className={`fixed top-0 right-0 bottom-0 w-16 z-[60] pointer-events-none transition-opacity duration-300 flex justify-end ${
+    className={`fixed top-0 bottom-0 w-16 z-[60] pointer-events-none transition-opacity duration-300 flex ${
         showZoomUI ? 'opacity-100' : 'opacity-0'
+    } ${
+        zoomSide === 'right' ? 'right-0 justify-end' : 'left-0 justify-start' // ★左右で配置を反転
     }`}
 >
-    {/* 背景の黒い帯（フェードイン・アウト） */}
-    <div className="absolute right-0 top-0 bottom-0 w-12 bg-gradient-to-l from-black/40 to-transparent"></div>
+    {/* 背景の黒い帯 */}
+    <div className={`absolute top-0 bottom-0 w-12 from-black/40 to-transparent ${
+        zoomSide === 'right' ? 'right-0 bg-gradient-to-l' : 'left-0 bg-gradient-to-r' // ★グラデ向き反転
+    }`}></div>
 
     {/* 目盛り（Rail） */}
-    <div className="h-full w-2 border-r border-white/30 mr-4 flex flex-col justify-between py-12 opacity-50">
+    <div className={`h-full w-2 border-white/30 flex flex-col justify-between py-12 opacity-50 ${
+        zoomSide === 'right' ? 'border-r mr-4' : 'border-l ml-4' // ★線の位置反転
+    }`}>
         {Array.from({ length: 20 }).map((_, i) => (
-            <div key={i} className="w-1.5 h-px bg-white/50 self-end"></div>
+            <div key={i} className={`w-1.5 h-px bg-white/50 ${
+                zoomSide === 'right' ? 'self-end' : 'self-start' // ★目盛りの向き反転
+            }`}></div>
         ))}
     </div>
 
     {/* 動くツマミ（Knob） */}
     <div 
         ref={zoomKnobRef}
-        className="absolute top-0 right-2 w-auto h-0 flex items-center justify-end pr-2 will-change-transform"
-        
-        style={{ transform: 'translateY(0px)' }} // 初期値
+        className={`absolute top-0 w-auto h-0 flex items-center will-change-transform ${
+            zoomSide === 'right' ? 'right-2 justify-end pr-2' : 'left-2 justify-start pl-2' // ★ツマミ位置反転
+        }`}
+        style={{ transform: 'translateY(0px)' }}
     >
-        {/* 指の横に出るラベル */}
-        <div className="mr-3 bg-black/80 backdrop-blur text-white text-[10px] font-bold px-2 py-1 rounded-full shadow-lg">
+        {/* ラベル (右側のときは左に、左側のときは右に表示) */}
+        <div className={`bg-black/80 backdrop-blur text-white text-[10px] font-bold px-2 py-1 rounded-full shadow-lg ${
+            zoomSide === 'right' ? 'mr-3' : 'ml-3 order-last' // ★順序入れ替え
+        }`}>
             ZOOM
         </div>
 
         {/* ツマミ本体 */}
-        <div className="w-8 h-8 -mr-2 bg-white rounded-full shadow-[0_0_15px_rgba(255,255,255,0.6)] flex items-center justify-center relative">
+        <div className={`w-8 h-8 bg-white rounded-full shadow-[0_0_15px_rgba(255,255,255,0.6)] flex items-center justify-center relative ${
+            zoomSide === 'right' ? '-mr-2' : '-ml-2' // ★マージン反転
+        }`}>
             <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
-            {/* ピンガ（波紋）アニメーション */}
             <div className="absolute inset-0 rounded-full border border-white animate-ping opacity-50"></div>
         </div>
     </div>
