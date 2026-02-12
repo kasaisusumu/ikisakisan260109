@@ -8,7 +8,7 @@ import {
   Search, ExternalLink, MapPin, 
   X, TrendingUp, DollarSign,
   Star, Loader2, PenTool, Trash2, Plus, Calendar, Users, SlidersHorizontal, Link as LinkIcon, Download, ChevronUp, ChevronDown, Check, AlertTriangle, BedDouble,
-  Utensils, Globe, ArrowRight 
+  Utensils 
 } from 'lucide-react';
 
 // ==========================================
@@ -38,6 +38,32 @@ const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: numbe
     const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon/2) * Math.sin(dLon/2);
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
     return R * c;
+};
+
+// 円のポリゴンGeoJSONを生成する関数
+const createGeoJSONCircle = (center: [number, number], radiusInKm: number, points = 64) => {
+    const coords = { latitude: center[1], longitude: center[0] };
+    const km = radiusInKm;
+    const ret = [];
+    const distanceX = km / (111.320 * Math.cos(coords.latitude * Math.PI / 180));
+    const distanceY = km / 110.574;
+
+    for(let i=0; i<points; i++) {
+        const theta = (i / points) * (2 * Math.PI);
+        const x = distanceX * Math.cos(theta);
+        const y = distanceY * Math.sin(theta);
+        ret.push([coords.longitude + x, coords.latitude + y]);
+    }
+    ret.push(ret[0]);
+
+    return {
+        type: "Feature",
+        geometry: {
+            type: "Polygon",
+            coordinates: [ret]
+        },
+        properties: {}
+    };
 };
 
 export type AreaSearchParams = {
@@ -83,10 +109,8 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
   const [isExpanded, setIsExpanded] = useState(false); 
   const [selectedHotel, setSelectedHotel] = useState<any>(null);
   const [isDrawing, setIsDrawing] = useState(false);
-  
-  // ★変更: importUrl を directInput に変更（多目的化）
-  const [directInput, setDirectInput] = useState("");
-  const [isProcessingDirect, setIsProcessingDirect] = useState(false);
+  const [importUrl, setImportUrl] = useState("");
+  const [isImporting, setIsImporting] = useState(false);
   
   const [pendingHotel, setPendingHotel] = useState<any>(null);
   const [importedHotel, setImportedHotel] = useState<any>(null);
@@ -152,11 +176,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
   const hotelMarkersRef = useRef<mapboxgl.Marker[]>([]);
   const tempDrawCoords = useRef<number[][]>([]);
 
-  // 入力がURLかどうか判定
-  const isUrlInput = (text: string) => {
-      return /^https?:\/\//.test(text);
-  };
-
   const centerOfGravity = useMemo(() => {
     if (spots.length === 0) return { lng: 135.758767, lat: 34.985120, valid: false };
     let totalLat = 0, totalLng = 0, totalWeight = 0;
@@ -214,24 +233,33 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
       }
   }, [searchArea, isMapLoaded]);
 
-  // ズームジェスチャー
+  // ズームジェスチャーのロジック
   useEffect(() => {
     const container = mapContainer.current;
     if (!container) return;
 
     const onTouchStart = (e: TouchEvent) => {
         if (e.touches.length !== 1 || isDrawing) return;
+
         const touch = e.touches[0];
         const screenWidth = window.innerWidth;
         const edgeThreshold = 60; 
+
         if (touch.clientX > screenWidth - edgeThreshold) {
             rightEdgeGestureRef.current = {
                 isActive: true,
                 startY: touch.clientY,
                 startZoom: map.current?.getZoom() || 14
             };
+            
+            // UIを表示
             setShowZoomUI(true);
-            if (zoomKnobRef.current) zoomKnobRef.current.style.transform = `translateY(${touch.clientY}px)`;
+            
+            // ツマミをタッチ位置へ移動
+            if (zoomKnobRef.current) {
+                zoomKnobRef.current.style.transform = `translateY(${touch.clientY}px)`;
+            }
+
             if (navigator.vibrate) navigator.vibrate(10);
         }
     };
@@ -239,16 +267,23 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
     const onTouchMove = (e: TouchEvent) => {
         if (!rightEdgeGestureRef.current.isActive || !map.current) return;
         if (e.cancelable) e.preventDefault();
+
         const touch = e.touches[0];
         const deltaY = rightEdgeGestureRef.current.startY - touch.clientY;
         const sensitivity = 0.015; 
         const newZoom = rightEdgeGestureRef.current.startZoom + (deltaY * sensitivity);
+        
         map.current.setZoom(newZoom);
-        if (zoomKnobRef.current) zoomKnobRef.current.style.transform = `translateY(${touch.clientY}px)`;
+
+        // ツマミの位置を更新
+        if (zoomKnobRef.current) {
+            zoomKnobRef.current.style.transform = `translateY(${touch.clientY}px)`;
+        }
     };
 
     const onTouchEnd = () => {
         rightEdgeGestureRef.current.isActive = false;
+        // UIを非表示
         setShowZoomUI(false);
     };
 
@@ -272,7 +307,9 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
           next.add(hotel.id);
           return next;
       });
+
       setSelectedHotel(hotel);
+      
       if (map.current) {
           map.current.flyTo({ 
               center: hotel.coordinates, 
@@ -328,9 +365,15 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
     
     const otonaSu = conditions.adults || 2;
     const hotelId = hotel.id;
+
+    // ★ご指定のパラメータ文字列（順序・構成を完全に一致）
     const paramString = `f_syu=&f_teikei=&f_campaign=&f_flg=PLAN&f_otona_su=${otonaSu}&f_heya_su=1&f_s1=0&f_s2=0&f_y1=0&f_y2=0&f_y3=0&f_y4=0&f_kin=&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_kin2=&f_hak=&f_tel=&f_tscm_flg=&f_p_no=&f_custom_code=&f_search_type=&f_static=1&f_tel=&f_service=&f_rm_equip=&f_sort=minNo`;
 
-    if (hotelId) return `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotelId}?${paramString}`;
+    if (hotelId) {
+         return `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotelId}?${paramString}`;
+    }
+    
+    // フォールバック
     return `https://search.travel.rakuten.co.jp/ds/hotel/search?f_query=${encodeURIComponent(hotel.name)}&${paramString}`;
   };
 
@@ -342,9 +385,11 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
       hotelMarkersRef.current = [];
       hotelList.forEach(hotel => {
           const el = document.createElement('div');
+          
           const isActive = activeHotelId === hotel.id;
           const color = isActive ? '#EF4444' : '#3B82F6';
           const zIndex = isActive ? 99 : 5;
+
           const pricePerPerson = Math.round(hotel.price / Math.max(1, searchedAdults));
           const displayPrice = pricePerPerson >= 10000 
               ? `${(pricePerPerson/10000).toFixed(1)}万` 
@@ -402,8 +447,12 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                     const isViewed = viewedHotelIds.has(h.id);
 
                     let baseColor = "#3B82F6"; 
-                    if (isAdded || isViewed) baseColor = "#8B5CF6"; 
-                    if (isActive) baseColor = "#EF4444"; 
+                    if (isAdded || isViewed) {
+                        baseColor = "#8B5CF6"; 
+                    }
+                    if (isActive) {
+                        baseColor = "#EF4444"; 
+                    }
 
                     const reviewRatio = Math.min((h.review_count || 0) / maxReviews, 1);
                     const opacity = 0.3 + (reviewRatio * 0.7);
@@ -411,11 +460,18 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                     return (
                         <circle 
                             key={i} 
-                            cx={x} cy={y} r={isActive ? 8 : 4} 
-                            fill={baseColor} fillOpacity={opacity}
-                            stroke="white" strokeWidth={1.5}
+                            cx={x} 
+                            cy={y} 
+                            r={isActive ? 8 : 4} 
+                            fill={baseColor} 
+                            fillOpacity={opacity}
+                            stroke="white" 
+                            strokeWidth={1.5}
                             className="transition-all duration-300 cursor-pointer drop-shadow-sm hover:r-6" 
-                            onClick={(e) => { e.stopPropagation(); handleSelectHotel(h); }} 
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                handleSelectHotel(h);
+                            }} 
                         />
                     );
                 })}
@@ -436,6 +492,7 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
   const finishDrawing = () => {
       const coords = tempDrawCoords.current;
       if (coords.length < 3) return stopDrawing(); 
+      
       let minLng = 180, maxLng = -180, minLat = 90, maxLat = -90;
       coords.forEach(c => {
           if (c[0] < minLng) minLng = c[0]; if (c[0] > maxLng) maxLng = c[0];
@@ -443,22 +500,31 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
       });
       const centerLat = (minLat + maxLat) / 2;
       const centerLng = (minLng + maxLng) / 2;
+      
       let radiusKm = calculateDistance(centerLat, centerLng, maxLat, maxLng) * 1.1;
       if (radiusKm < 0.1) radiusKm = 0.5;
       if (radiusKm > 5.0) radiusKm = 5.0;
       
-      setSearchArea({ latitude: centerLat, longitude: centerLng, radius: Number(radiusKm.toFixed(2)), polygon: coords });
+      setSearchArea({ 
+          latitude: centerLat, 
+          longitude: centerLng, 
+          radius: Number(radiusKm.toFixed(2)),
+          polygon: coords 
+      });
       stopDrawing();
       setShowSettings(true);
   };
 
   const executeSearch = async () => {
     if (!searchArea) return alert("範囲を囲んでください");
+    
     setSearchedAdults(conditions.adults);
+
     setIsLoading(true); setHotels([]); setSelectedHotel(null); setActiveHotelId(null);
     setShowSettings(false); 
     try {
         const mealTypeParam = conditions.mealType === 'none' ? undefined : conditions.mealType;
+
         const body = {
             latitude: searchArea.latitude, 
             longitude: searchArea.longitude, 
@@ -470,6 +536,9 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
             adult_num: conditions.adults,
             meal_type: mealTypeParam
         };
+        
+        console.log("Searching with:", body); 
+
         const res = await fetch(`${API_BASE_URL}/api/search_hotels_vacant`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
         });
@@ -483,76 +552,34 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
             }
         }
         else {
+            // ▼▼▼ 修正: 見つからなかった場合、設定画面を再表示する ▼▼▼
             alert("条件に合う宿が見つかりませんでした。\n条件を変更して再検索してください。");
             setShowSettings(true);
+            // ▲▲▲ 修正ここまで ▲▲▲
         }
-    } catch (e) { alert("通信エラーが発生しました"); setShowSettings(true); } finally { setIsLoading(false); }
+    } catch (e) { 
+        alert("通信エラーが発生しました"); 
+        setShowSettings(true); 
+    } finally { 
+        setIsLoading(false); 
+    }
   };
 
-  // URL取り込み or 宿名検索 を振り分ける関数
-  const handleDirectAction = async () => {
-      if (!directInput) return;
-      setIsProcessingDirect(true);
-      setSearchedAdults(conditions.adults); // 検索時の人数を保存
-
+  const executeImport = async () => {
+      if (!importUrl) return;
+      setIsImporting(true);
       try {
-          if (isUrlInput(directInput)) {
-              // ★ URLならインポート処理
-              const res = await fetch(`${API_BASE_URL}/api/import_rakuten_hotel`, {
-                  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: directInput })
-              });
-              const data = await res.json();
-              if (data.spot) { 
-                  handleAddCandidate(data.spot); 
-                  setDirectInput(""); 
-                  setImportedHotel(data.spot);
-              } else {
-                  alert(data.error || "エラー");
-              }
-          } else {
-              // ★ URLでなければキーワード検索処理
-              setHotels([]); setSelectedHotel(null); setActiveHotelId(null);
-              
-              const mealTypeParam = conditions.mealType === 'none' ? undefined : conditions.mealType;
-              const body = {
-                  keyword: directInput,
-                  checkin_date: conditions.checkin, 
-                  checkout_date: conditions.checkout, 
-                  adult_num: conditions.adults,
-                  max_price: conditions.budgetMax >= 50000 ? undefined : conditions.budgetMax,
-                  meal_type: mealTypeParam
-              };
-
-              const res = await fetch(`${API_BASE_URL}/api/search_hotels_keyword`, {
-                  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
-              });
-              
-              const data = await res.json();
-              if (data.hotels?.length > 0) {
-                  setHotels(data.hotels);
-                  // 地図を検索結果に合わせる
-                  if (map.current) {
-                      const bounds = new mapboxgl.LngLatBounds();
-                      let hasValidCoords = false;
-                      data.hotels.forEach((h:any) => {
-                          if(h.coordinates) {
-                              bounds.extend(h.coordinates);
-                              hasValidCoords = true;
-                          }
-                      });
-                      if(hasValidCoords) map.current.fitBounds(bounds, { padding: 80, duration: 1500 });
-                  }
-              } else {
-                  alert("条件に合う宿が見つかりませんでした。");
-              }
+          const res = await fetch(`${API_BASE_URL}/api/import_rakuten_hotel`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: importUrl })
+          });
+          const data = await res.json();
+          if (data.spot) { 
+              handleAddCandidate(data.spot); 
+              setImportUrl(""); 
+              setImportedHotel(data.spot);
           }
-      } catch (e) { 
-          // バックエンドにエンドポイントがない場合のフォールバック（Vacant検索へ流すなど）も検討できますが、
-          // ここではエラー表示のみとします
-          alert("検索中にエラーが発生しました。"); 
-      } finally { 
-          setIsProcessingDirect(false); 
-      }
+          else alert(data.error || "エラー");
+      } catch (e) { alert("エラー"); } finally { setIsImporting(false); }
   };
 
   useEffect(() => {
@@ -565,13 +592,33 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
     });
     map.current.on('load', () => {
         if (!map.current) return;
+        
         setIsMapLoaded(true);
+
         map.current.addSource('draw-source', { type: 'geojson', data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } } });
         map.current.addLayer({ id: 'draw-line', type: 'line', source: 'draw-source', paint: { 'line-color': '#EF4444', 'line-width': 4, 'line-opacity': 0.8 } });
         
         map.current.addSource('search-area-source', { type: 'geojson', data: { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [] } } });
-        map.current.addLayer({ id: 'search-area-fill', type: 'fill', source: 'search-area-source', paint: { 'fill-color': '#EF4444', 'fill-opacity': 0.08 } });
-        map.current.addLayer({ id: 'search-area-line', type: 'line', source: 'search-area-source', paint: { 'line-color': '#EF4444', 'line-opacity': 0.4, 'line-width': 1, 'line-dasharray': [4, 2] } });
+        map.current.addLayer({
+            id: 'search-area-fill',
+            type: 'fill',
+            source: 'search-area-source',
+            paint: {
+                'fill-color': '#EF4444',
+                'fill-opacity': 0.08 
+            }
+        });
+        map.current.addLayer({
+            id: 'search-area-line',
+            type: 'line',
+            source: 'search-area-source',
+            paint: {
+                'line-color': '#EF4444',
+                'line-opacity': 0.4,
+                'line-width': 1,
+                'line-dasharray': [4, 2]
+            }
+        });
 
         map.current.setPadding({ top: 50, bottom: 250, left: 0, right: 0 });
     });
@@ -596,6 +643,7 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
       {/* 1. マップセクション */}
       <div className={`absolute inset-0 z-0 transition-all duration-500 ${hotels.length > 0 ? 'h-1/2' : 'h-full'}`}>
          <div ref={mapContainer} className="w-full h-full" style={{ touchAction: isDrawing ? 'none' : 'auto' }} />
+         
          {!selectedHotel && (
              <button 
                  onClick={isDrawing ? stopDrawing : startDrawing} 
@@ -633,56 +681,28 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                             </div>
                         </div>
 
-                        {/* ★修正: 直接検索・取り込み欄 */}
                         <div className="bg-blue-50/50 border border-blue-100 p-4 rounded-2xl shadow-sm flex items-start gap-3">
                             <div className="w-8 h-8 bg-blue-600 text-white rounded-full flex items-center justify-center font-bold text-sm shrink-0">2</div>
                             <div className="flex-1">
-                                <p className="text-sm font-bold text-blue-900">宿名で検索 / URL取込</p>
-                                <p className="text-[11px] text-blue-700/70 leading-normal mb-3">
-                                    宿名を入力して検索するか、楽天トラベルのURLを貼って直接追加できます。
-                                </p>
+                                <p className="text-sm font-bold text-blue-900">楽天トラベルから直接取り込む</p>
+                                <p className="text-[11px] text-blue-700/70 leading-normal mb-3">お気に入りの宿のURLを貼り付けるだけで、写真や詳細を自動でリストに追加できます。</p>
                                 
-                                <div className="flex gap-2 relative">
+                                <div className="flex gap-2">
                                     <input 
                                         type="text" 
-                                        value={directInput} 
-                                        onChange={(e) => setDirectInput(e.target.value)} 
-                                        // プレースホルダーを変更
-                                        placeholder="宿名 または URLを入力..." 
-                                        className="flex-1 bg-white border border-blue-200 rounded-xl pl-3 pr-10 py-2.5 text-xs outline-none focus:ring-2 focus:ring-blue-300 transition shadow-inner font-bold text-gray-700"
+                                        value={importUrl} 
+                                        onChange={(e) => setImportUrl(e.target.value)} 
+                                        placeholder="https://hotel.travel.rakuten.co.jp/..." 
+                                        className="flex-1 bg-white border border-blue-200 rounded-xl px-3 py-2.5 text-xs outline-none focus:ring-2 focus:ring-blue-300 transition shadow-inner"
                                     />
-                                    
-                                    {/* ★追加: 設定ボタンを入力欄の右端に配置 */}
-                                    <button
-                                        onClick={() => setShowSettings(true)}
-                                        className="absolute right-[60px] top-1/2 -translate-y-1/2 p-1.5 text-gray-400 hover:text-blue-600 transition"
-                                        title="検索条件を変更"
-                                    >
-                                        <SlidersHorizontal size={14} />
-                                    </button>
-
                                     <button 
-                                        onClick={handleDirectAction} 
-                                        disabled={isProcessingDirect || !directInput} 
-                                        className="bg-blue-600 text-white px-4 rounded-xl font-bold text-xs disabled:opacity-50 shadow-md active:scale-95 transition whitespace-nowrap min-w-[60px] flex items-center justify-center"
+                                        onClick={executeImport} 
+                                        disabled={isImporting || !importUrl} 
+                                        className="bg-blue-600 text-white px-4 rounded-xl font-bold text-xs disabled:opacity-50 shadow-md active:scale-95 transition"
                                     >
-                                        {isProcessingDirect ? <Loader2 size={16} className="animate-spin"/> : (
-                                            isUrlInput(directInput) ? <Download size={16}/> : <Search size={16}/>
-                                        )}
+                                        {isImporting ? <Loader2 size={16} className="animate-spin"/> : "追加"}
                                     </button>
                                 </div>
-                                {/* 条件表示（検索モード時のみ） */}
-                                {!isUrlInput(directInput) && (
-                                    <div className="mt-2 flex items-center gap-2 text-[10px] text-blue-600/70 font-bold bg-white/50 px-2 py-1 rounded-lg w-max border border-blue-100 cursor-pointer hover:bg-white transition" onClick={() => setShowSettings(true)}>
-                                        <Calendar size={10}/>
-                                        <span>{conditions.checkin} ~ {conditions.checkout}</span>
-                                        <span className="w-px h-3 bg-blue-200"></span>
-                                        <Users size={10}/>
-                                        <span>{conditions.adults}名</span>
-                                        <ArrowRight size={10}/>
-                                        <span className="underline">変更</span>
-                                    </div>
-                                )}
                             </div>
                         </div>
                     </div>
@@ -693,6 +713,7 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                             href={rakutenHomeUrl} 
                             target="_blank" 
                             rel="noopener noreferrer"
+                            // onClickでログ送信
                             onClick={() => logAffiliateClick("楽天トラベルトップ", "hotel_search_banner")}
                             className="w-full bg-[#BF0000] text-white py-4 rounded-2xl font-black text-center flex items-center justify-center gap-3 shadow-lg active:scale-95 transition-transform"
                         >
@@ -705,7 +726,7 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                       <div className="flex justify-between items-center">
                           <h3 className="text-xl font-black text-gray-800 flex items-center gap-2">
                               <TrendingUp size={22} className="text-blue-500"/> 
-                              検索結果 
+                              分析結果 
                               <span className="text-sm font-bold text-gray-500 ml-1">({hotels.length}件)</span>
                           </h3>
                           <button onClick={() => setShowSettings(true)} className="p-2 bg-slate-100 rounded-full text-gray-600"><SlidersHorizontal size={18}/></button>
@@ -738,6 +759,8 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
       {/* 詳細カード */}
       {selectedHotel && (
           <div className="absolute inset-x-0 bottom-0 h-auto max-h-[85dvh] z-[100] bg-white/90 backdrop-blur-xl rounded-t-[2.5rem] shadow-[0_-20px_60px_rgba(0,0,0,0.3)] border-t border-white/50 animate-in slide-in-from-bottom-10 duration-500 flex flex-col relative">
+              
+              {/* ▼▼▼ 閉じるボタンを画像外に配置 ▼▼▼ */}
               <button 
                   onClick={() => setSelectedHotel(null)} 
                   className="absolute top-5 right-6 p-2.5 bg-slate-100/80 hover:bg-slate-200/80 backdrop-blur-md rounded-full text-gray-500 transition-all active:scale-90 z-50 shadow-sm"
@@ -748,6 +771,7 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
               <div className="w-12 h-1.5 bg-gray-300/50 rounded-full mx-auto mt-3 mb-1 shrink-0" />
               
               <div className="flex-1 overflow-y-auto px-6 pb-8 overscroll-contain">
+                  {/* ▼▼▼ 修正: aspect-[4/3] に変更して写真の縦幅を確保 ▼▼▼ */}
                   <div className="relative w-full aspect-[4/3] rounded-[2rem] overflow-hidden shadow-xl mt-4 mb-5 group shrink-0">
                       {selectedHotel.image_url ? (
                           <img src={selectedHotel.image_url} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" alt=""/>
@@ -869,10 +893,10 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                           <label className="text-[10px] font-black text-gray-400 ml-1 uppercase flex items-center gap-2"><Utensils size={14}/> Meal Plan</label>
                           <div className="flex gap-2 overflow-x-auto no-scrollbar">
                               {[
-                                  { label: "2食付", value: 'half_board' }, 
+                                  { label: "2食付", value: 'half_board' }, // 1番目
                                   { label: "朝食付", value: 'breakfast' },
                                   { label: "素泊まり", value: 'room_only' },
-                                  { label: "指定なし", value: 'none' } 
+                                  { label: "指定なし", value: 'none' } // 最後
                               ].map((opt) => (
                                   <button
                                       key={opt.value}
@@ -985,7 +1009,7 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
           {/* 背景の黒い帯 */}
           <div className="absolute right-0 top-0 bottom-0 w-12 bg-gradient-to-l from-black/40 to-transparent"></div>
 
-          {/* 目盛り（Rail） */}\
+          {/* 目盛り（Rail） */}
           <div className="h-full w-2 border-r border-white/30 mr-4 flex flex-col justify-between py-12 opacity-50">
               {Array.from({ length: 20 }).map((_, i) => (
                   <div key={i} className="w-1.5 h-px bg-white/50 self-end"></div>
