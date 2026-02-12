@@ -3487,7 +3487,7 @@ const now = new Date().toISOString(); // ★現在時刻
 
                 <div className="p-4 bg-gray-50 border-t border-gray-100 shrink-0">
                   {selectedResult.is_saved ? (
-                      /* ▼▼▼ 修正: 保存済みの場合、追加ボタン（左）と削除ボタン（右）を表示 ▼▼▼ */
+                      /* ▼▼▼ 修正: 追加ボタン（左）と削除ボタン（右） ▼▼▼ */
                       <div className="flex gap-2">
                           <button 
                               onClick={() => { 
@@ -3497,7 +3497,10 @@ const now = new Date().toISOString(); // ★現在時刻
                                       coordinates: selectedResult.center || selectedResult.coordinates, 
                                       image_url: selectedResult.image_url,
                                       is_hotel: selectedResult.is_hotel,
-                                      status: 'candidate' 
+                                      // ★修正: 固定の 'candidate' ではなく、現在のステータスを引き継ぐ
+                                      status: selectedResult.status || 'candidate',
+                                      // ★追加: 日付も引き継ぐ（確定リストの場合、同じ日に2つ目を入れたいはずなので）
+                                      day: selectedResult.day || 0
                                   }); 
                               }} 
                               className="flex-1 bg-blue-600 text-white py-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 hover:bg-blue-700 transition active:scale-95 shadow-lg"
@@ -3513,8 +3516,9 @@ const now = new Date().toISOString(); // ★現在時刻
                               <Trash2 size={14}/> 削除
                           </button>
                       </div>
+                      /* ▲▲▲ 修正ここまで ▲▲▲ */
                   ) : (
-                     <button 
+                     <button
     onClick={() => { 
         addSpot({ 
             name: selectedResult.text, 
