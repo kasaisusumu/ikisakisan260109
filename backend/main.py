@@ -315,6 +315,10 @@ def extract_and_fix_address(raw_address: str) -> str:
         for k, v in PREF_NORMALIZER.items():
             if raw_address.startswith(k):
                 rest = raw_address[len(k):]
+                # ★追加: 県名と後続が一致する場合（例: 長野長野）、後続に市をつける
+                state_core = v.replace("都", "").replace("府", "").replace("県", "") # 北海道はそのまま
+                if rest == state_core:
+                    rest += "市"
                 return v + rest
         return raw_address
 
@@ -374,6 +378,16 @@ def get_clean_address(props: dict) -> str:
             elif state in ['京都', '大阪']: state += '府'
             elif state != '北海道': state += '県'
             
+        # ★追加: cityが県名と同じで「市」がない場合、市を付与する
+        # (例: state="長野県", city="長野" -> "長野市")
+        state_core = state
+        if state_core.endswith("都"): state_core = state_core[:-1]
+        elif state_core.endswith("府"): state_core = state_core[:-1]
+        elif state_core.endswith("県"): state_core = state_core[:-1]
+        
+        if city == state_core:
+             city += "市"
+
         address_parts = [state]
         if county and not city: address_parts.append(county)
         if city: address_parts.append(city)
