@@ -322,37 +322,43 @@ export default function PlanView({
   };
 
   // 同期処理
+ // PlanView.tsx 360行目付近
+
+  // ★修正: IDベースの同期処理。新規追加スポットを検知してタイムラインに追加
   useEffect(() => {
-      if (timeline.length === 0) return;
-
-      setTimeline(prev => prev.map(item => {
+      // 1. まずこの中で変数を定義する (宣言を最初にもってくる)
+      const activeDaySpots = spots.filter(s => s.status === 'confirmed' && s.day === selectedDay);
+      
+      const currentIds = new Set(timeline.filter(t => t.type === 'spot').map(t => String(t.spot.id)));
+      
+      const updatedTimeline = timeline.map(item => {
           if (item.type !== 'spot') return item;
-          
-          const freshSpot = spots.find(s => 
-              (s.id && String(s.id) === String(item.spot.id)) || 
-              s.name === item.spot.name
-          );
+          // IDのみで照合
+          const fresh = spots.find(s => String(s.id) === String(item.spot.id));
+          return fresh ? { 
+              ...item, 
+              spot: { ...item.spot, ...fresh }, 
+              image: fresh.image_url || item.image 
+          } : item;
+      });
 
-          if (freshSpot) {
-              return { 
-                  ...item, 
-                  spot: {
-                      ...item.spot,    
-                      ...freshSpot,
-                      cost: freshSpot.price || item.spot.cost,      
-                      comment: freshSpot.comment || item.spot.comment, 
-                      link: freshSpot.link || item.spot.link,       
-                      url: freshSpot.url || freshSpot.link || item.spot.url, 
-                      image_url: freshSpot.image_url || item.spot.image_url,
-                      reservation_status: freshSpot.reservation_status, // 同期
-                      reserved_by: freshSpot.reserved_by // 同期
-                  },
-                  image: freshSpot.image_url || item.image 
-              };
-          }
-          return item;
-      }));
-  }, [spots, timeline.length]);
+      // 2. 定義した activeDaySpots を使って新しいスポットを探す
+      const newSpots = activeDaySpots.filter(s => !currentIds.has(String(s.id)));
+      
+      if (newSpots.length > 0) {
+          const addedItems: any[] = [];
+          newSpots.forEach(s => {
+              if (updatedTimeline.length > 0 || addedItems.length > 0) {
+                  addedItems.push({ type: 'travel', duration_min: 30, transport_mode: 'car' });
+              }
+              addedItems.push({ type: 'spot', spot: s, stay_min: 60 });
+          });
+          setTimeline(calculateSchedule([...updatedTimeline, ...addedItems]));
+      } else {
+          setTimeline(updatedTimeline);
+      }
+      // timeline.length を依存配列に含めることで、削除時などの不整合を防ぎます
+  }, [spots, selectedDay, timeline.length]);
 
   // 予約状態更新ハンドラ
   const handleSpotUpdate = (updatedSpot: any) => {
@@ -388,22 +394,23 @@ export default function PlanView({
       return current;
   }, [spots, selectedDay, prevDayHotel]);
 
+// PlanView.tsx (108行目付近)
+
   const unusedSpots = useMemo(() => {
       const usedSpotIds = new Set<string>();
-      const usedSpotNames = new Set<string>();
+      // const usedSpotNames = new Set<string>(); // ★削除: 名前での管理はやめる
 
       timeline.forEach(item => {
-          if (item.type === 'spot') {
-              if (item.spot.id) usedSpotIds.add(String(item.spot.id));
-              if (item.spot.name) usedSpotNames.add(item.spot.name);
+          if (item.type === 'spot' && item.spot.id) {
+              usedSpotIds.add(String(item.spot.id));
           }
       });
 
       return activeDaySpots.filter(spot => {
           const id = spot.id ? String(spot.id) : null;
-          const name = spot.name;
-          if (id && usedSpotIds.has(id)) return false;
-          if (name && usedSpotNames.has(name)) return false;
+          // IDが存在し、かつ既に使われていれば除外する
+          if (id && usedSpotIds.has(String(id))) return false;
+          // ★修正: 名前 (name) による重複判定を削除
           return true;
       });
   }, [activeDaySpots, timeline]);
