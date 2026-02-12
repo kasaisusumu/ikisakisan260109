@@ -3487,9 +3487,32 @@ const now = new Date().toISOString(); // ★現在時刻
 
                 <div className="p-4 bg-gray-50 border-t border-gray-100 shrink-0">
                   {selectedResult.is_saved ? (
-                      <button onClick={() => removeSpot(selectedResult)} className="w-full bg-white text-red-500 border border-red-100 py-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 hover:bg-red-50 transition active:scale-95 shadow-sm">
-                          <Trash2 size={14}/> リストから削除
-                      </button>
+                      /* ▼▼▼ 修正: 保存済みの場合、追加ボタン（左）と削除ボタン（右）を表示 ▼▼▼ */
+                      <div className="flex gap-2">
+                          <button 
+                              onClick={() => { 
+                                  addSpot({ 
+                                      name: selectedResult.text, 
+                                      description: selectedResult.place_name, 
+                                      coordinates: selectedResult.center || selectedResult.coordinates, 
+                                      image_url: selectedResult.image_url,
+                                      is_hotel: selectedResult.is_hotel,
+                                      status: 'candidate' 
+                                  }); 
+                              }} 
+                              className="flex-1 bg-blue-600 text-white py-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 hover:bg-blue-700 transition active:scale-95 shadow-lg"
+                          >
+                              {/* 何か所目かを計算して表示 */}
+                              <Plus size={16}/> {planSpots.filter(s => s.name === selectedResult.text).length + 1}か所目として追加
+                          </button>
+                          
+                          <button 
+                              onClick={() => removeSpot(selectedResult)} 
+                              className="w-1/3 bg-white text-red-500 border border-red-100 py-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 hover:bg-red-50 transition active:scale-95 shadow-sm"
+                          >
+                              <Trash2 size={14}/> 削除
+                          </button>
+                      </div>
                   ) : (
                      <button 
     onClick={() => { 

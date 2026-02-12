@@ -227,7 +227,7 @@ def is_inside_polygon(lat, lng, poly_coords):
         j = i
     return inside
 
-# ▼▼▼ 修正: 都道府県名変換・補完マップ ▼▼▼
+# ▼▼▼ 都道府県名変換・補完マップ ▼▼▼
 # 漢字(接尾辞なし/あり)・ローマ字 -> 正しい都道府県名(漢字)
 PREF_NORMALIZER = {
     # 北海道・東北
@@ -286,37 +286,73 @@ PREF_NORMALIZER = {
     "沖縄": "沖縄県", "Okinawa": "沖縄県"
 }
 
-# ▼▼▼ 修正: 住所整形用ヘルパー関数 (強制補完ロジック追加) ▼▼▼
+# ▼▼▼ 修正: 住所整形ロジック (分割・正規化・結合) ▼▼▼
+
+def extract_and_fix_address(raw_address: str) -> str:
+    """
+    住所文字列から都道府県と市町村を正しく分離・整形する。
+    例: "長野長野市..." -> "長野県長野市..."
+    例: "NaganoNagano-shi" -> "長野県長野市"
+    """
+    if not raw_address: return ""
+
+    # 1. 区切り文字("市", "区", "郡", "町", "村")の位置を探す
+    # 最も手前に来る区切り文字を採用する
+    delimiters = ["市", "区", "郡", "町", "村"]
+    split_index = -1
+    found_delimiter = ""
+
+    for d in delimiters:
+        idx = raw_address.find(d)
+        if idx != -1:
+            if split_index == -1 or idx < split_index:
+                split_index = idx
+                found_delimiter = d
+    
+    # 区切り文字が見つからない場合、そのまま返すか、辞書マッチを試みる
+    if split_index == -1:
+        # 救済: 先頭が辞書のキーと一致するか
+        for k, v in PREF_NORMALIZER.items():
+            if raw_address.startswith(k):
+                rest = raw_address[len(k):]
+                return v + rest
+        return raw_address
+
+    # 2. 区切り文字の前にある文字列を取得 (これが "長野長野" や "NaganoNagano" になっている可能性がある)
+    # ただし、単純に前から見ていって、PREF_NORMALIZERのキーにヒットする場所で切るのが確実
+    
+    # 区切り文字までの部分文字列
+    prefix_area = raw_address[:split_index + len(found_delimiter)] # "長野長野市"
+    rest_area = raw_address[split_index + len(found_delimiter):]   # "..."
+
+    # 3. 前から順に都道府県名を見つける
+    detected_state = ""
+    detected_state_raw = ""
+    
+    for k, v in PREF_NORMALIZER.items():
+        if prefix_area.startswith(k):
+            # 長いマッチを優先したいが、PREF_NORMALIZERはほぼ県名かローマ字なので先頭一致でOK
+            detected_state = v
+            detected_state_raw = k
+            break
+    
+    if detected_state:
+        # 都道府県名が見つかった場合
+        # 残りの部分を取得 (prefix_area から detected_state_raw を取り除く)
+        # 例: prefix_area="長野長野市", k="長野" -> remainder="長野市"
+        remainder = prefix_area[len(detected_state_raw):]
+        
+        # 結合: 正規化された県名 + 残りの部分 + その後の住所
+        return detected_state + remainder + rest_area
+    
+    # 見つからなかった場合
+    return raw_address
+
 def get_clean_address(props: dict) -> str:
     """Geoapifyのプロパティから綺麗な日本語住所を生成する"""
     state = props.get('state', '')
-    
-    # 1. 無効なstateのクリーニング
-    if not state or state in ['NN', 'Other', 'Others', 'その他', 'JP', 'Japan']:
-        state = ''
-    
-    formatted = props.get("formatted", "")
-    
-    # 2. stateが空の場合、または英字の場合、formattedから都道府県名を強制的に探す
-    #    (例: formatted="Nagano, Nagano-shi..." -> state="長野県")
-    if not state or all(ord(c) < 128 for c in state):
-        for key, val in PREF_NORMALIZER.items():
-            # フォーマット内に県名キーが含まれていればそれを採用
-            if key in formatted:
-                state = val
-                break
-    
-    # 3. stateの正規化 (ローマ字や「長野」→「長野県」への変換)
-    if state in PREF_NORMALIZER:
-        state = PREF_NORMALIZER[state]
-    else:
-        # マップになくても、接尾辞がなければ補完を試みる
-        if state and not any(state.endswith(s) for s in ['都', '道', '府', '県']):
-            if state == '東京': state += '都'
-            elif state in ['京都', '大阪']: state += '府'
-            elif state != '北海道': state += '県'
+    if state in ['NN', 'Other', 'Others', 'その他', 'JP', 'Japan']: state = ''
 
-    # 4. 市区町村・郡・区の取得
     city = props.get('city', '') or props.get('town', '') or props.get('village', '') or props.get('municipality', '')
     if city in ['NN', 'Other', 'Others', 'その他']: city = ''
     
@@ -325,20 +361,32 @@ def get_clean_address(props: dict) -> str:
     
     ward = props.get('suburb', '') or props.get('district', '') 
     if ward in ['NN', 'Other', 'Others', 'その他']: ward = ''
+    
+    formatted = props.get("formatted", "")
 
-    # 5. 日本の住所形式で結合
-    address_parts = []
-    if state: address_parts.append(state)
-    if county and not city: address_parts.append(county)
-    if city: address_parts.append(city)
-    if ward: address_parts.append(ward)
-
-    # 6. 生成
-    if address_parts:
+    # 1. パーツが揃っている場合はパーツから組み立てる (これが一番綺麗)
+    if state and (city or county or ward):
+        # stateの正規化
+        if state in PREF_NORMALIZER:
+            state = PREF_NORMALIZER[state]
+        elif not any(state.endswith(s) for s in ['都', '道', '府', '県']):
+            if state == '東京': state += '都'
+            elif state in ['京都', '大阪']: state += '府'
+            elif state != '北海道': state += '県'
+            
+        address_parts = [state]
+        if county and not city: address_parts.append(county)
+        if city: address_parts.append(city)
+        if ward: address_parts.append(ward)
+        
         return "".join(address_parts)
 
-    # 7. フォールバック
-    return formatted.replace("NN", "").replace(" ,", "").strip(", ")
+    # 2. パーツが足りない場合、formatted から抽出・整形ロジックを走らせる
+    # NNなどのゴミを除去
+    clean_formatted = formatted.replace("NN", "").replace(" ,", "").replace(", ", "").strip()
+    
+    # 強制抽出ロジック ("長野長野市" -> "長野県長野市")
+    return extract_and_fix_address(clean_formatted)
 
 async def fetch_with_retry(client, url, params=None, headers=None, retries=5, initial_timeout=10.0):
     current_timeout = initial_timeout
@@ -469,46 +517,34 @@ async def fetch_spot_coordinates(client, target_name: str, search_query: str):
                     result_name = props.get("name", "")
                     if not result_name or not result_name.strip(): continue
 
-                    formatted_addr = props.get("formatted", "")
-                    def normalize(s): return s.replace(" ", "").replace("　", "")
-                    n_target = normalize(target_name)
-                    n_result = normalize(result_name)
+                    # ▼▼▼ 修正: get_clean_address を使用 ▼▼▼
+                    desc = get_clean_address(props)
+                    if not desc: desc = "住所不明"
+
+                    state = props.get("state", "")
+                    city = props.get("city", "") or props.get("town", "")
                     
-                    if len(n_target) == 0: continue
-                    is_contained = (n_target in n_result) or (n_result in n_target)
-                    common_chars = sum(1 for c in n_target if c in n_result)
-                    match_ratio = common_chars / len(n_target) if len(n_target) > 0 else 0
-                    is_match = is_contained or match_ratio >= 0.5
+                    wiki_query = f"{result_name} {state}".strip()
+                    if len(wiki_query) < len(result_name) + 2:
+                            wiki_query = search_query
 
-                    if is_match:
-                        # ▼▼▼ 修正: get_clean_address を使用 ▼▼▼
-                        desc = get_clean_address(props)
-                        if not desc: desc = "住所不明"
+                    try:
+                        wiki_info = await fetch_wikipedia_info(client, wiki_query, target_name=result_name)
+                        image_url = wiki_info.get("image_url")
+                        if wiki_info.get("summary"):
+                            wiki_summary = wiki_info["summary"]
+                    except:
+                        pass
 
-                        state = props.get("state", "")
-                        city = props.get("city", "") or props.get("town", "")
-                        
-                        wiki_query = f"{result_name} {state}".strip()
-                        if len(wiki_query) < len(result_name) + 2:
-                             wiki_query = search_query
-
-                        try:
-                            wiki_info = await fetch_wikipedia_info(client, wiki_query, target_name=result_name)
-                            image_url = wiki_info.get("image_url")
-                            if wiki_info.get("summary"):
-                                wiki_summary = wiki_info["summary"]
-                        except:
-                            pass
-
-                        result_data = {
-                            "name": result_name, 
-                            "description": desc, 
-                            "coordinates": feat["geometry"]["coordinates"],
-                            "image_url": image_url,
-                            "comment": wiki_summary or "" 
-                        }
-                        set_cache(cache_key, result_data)
-                        return result_data
+                    result_data = {
+                        "name": result_name, 
+                        "description": desc, 
+                        "coordinates": feat["geometry"]["coordinates"],
+                        "image_url": image_url,
+                        "comment": wiki_summary or "" 
+                    }
+                    set_cache(cache_key, result_data)
+                    return result_data
     except Exception as e:
         print(f"Coord fetch failed for {target_name}: {e}")
     
