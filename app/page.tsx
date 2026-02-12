@@ -2082,10 +2082,10 @@ const loadRoomData = async (id: string) => {
 // 即時反映（楽観的UI）対応版の addSpot
   const addSpot = async (spot: any) => {
     // 重複チェック
-    if (planSpots.some(s => s.name === spot.name && s.room_id === roomId)) {
-      alert("このスポットは既に追加されています");
-      return;
-    }
+    //if (planSpots.some(s => s.name === spot.name && s.room_id === roomId)) {
+      //alert("このスポットは既に追加されています");
+      //return;
+    //}
 const now = new Date().toISOString(); // ★現在時刻
     // データベースに送るデータを作成
     const newSpotPayload = {
