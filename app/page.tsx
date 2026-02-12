@@ -3314,11 +3314,12 @@ const now = new Date().toISOString(); // ★現在時刻
                               <CalendarCheck size={14}/> 予約状況
                           </span>
                           <ReservationButton 
-                              spot={selectedResult} 
-                              roomId={roomId!} 
-                              onUpdate={handleSpotUpdate} 
-                              currentUser={userName}
-                          />
+    spot={selectedResult} 
+    roomId={roomId!} 
+    onUpdate={handleSpotUpdate} 
+    currentUser={userName}
+    allParticipants={allParticipants} // ★追加
+/>
                       </div>
                   )}
                   {/* ★★★ 追加ここまで ★★★ */}
@@ -3487,7 +3488,7 @@ const now = new Date().toISOString(); // ★現在時刻
 
                 <div className="p-4 bg-gray-50 border-t border-gray-100 shrink-0">
                   {selectedResult.is_saved ? (
-                      /* ▼▼▼ 修正: 保存済みの場合、追加ボタン（左）と削除ボタン（右）を表示 ▼▼▼ */
+                      /* ▼▼▼ 修正: 追加ボタン（左）と削除ボタン（右） ▼▼▼ */
                       <div className="flex gap-2">
                           <button 
                               onClick={() => { 
@@ -3497,7 +3498,10 @@ const now = new Date().toISOString(); // ★現在時刻
                                       coordinates: selectedResult.center || selectedResult.coordinates, 
                                       image_url: selectedResult.image_url,
                                       is_hotel: selectedResult.is_hotel,
-                                      status: 'candidate' 
+                                      // ★修正: 固定の 'candidate' ではなく、現在のステータスを引き継ぐ
+                                      status: selectedResult.status || 'candidate',
+                                      // ★追加: 日付も引き継ぐ（確定リストの場合、同じ日に2つ目を入れたいはずなので）
+                                      day: selectedResult.day || 0
                                   }); 
                               }} 
                               className="flex-1 bg-blue-600 text-white py-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 hover:bg-blue-700 transition active:scale-95 shadow-lg"
@@ -3513,8 +3517,9 @@ const now = new Date().toISOString(); // ★現在時刻
                               <Trash2 size={14}/> 削除
                           </button>
                       </div>
+                      /* ▲▲▲ 修正ここまで ▲▲▲ */
                   ) : (
-                     <button 
+                     <button
     onClick={() => { 
         addSpot({ 
             name: selectedResult.text, 
@@ -3903,12 +3908,12 @@ const now = new Date().toISOString(); // ★現在時刻
         {/* ★★★ ここに追加: 宿なら予約ボタンを表示 ★★★ */}
         {isSpotHotel && (
             <ReservationButton 
-                spot={spot} 
-                roomId={roomId!} 
-                onUpdate={handleSpotUpdate} 
-                currentUser={userName}
-                compact={true}
-            />
+    spot={selectedResult} 
+    roomId={roomId!} 
+    onUpdate={handleSpotUpdate} 
+    currentUser={userName}
+    allParticipants={allParticipants} // ★追加
+/>
         )}
         
         {voteCount > 0 && <span className="flex items-center gap-0.5 text-[9px] font-bold text-blue-500 bg-blue-50 px-1 py-0.5 rounded ml-1 shrink-0"><ThumbsUp size={8}/> {voteCount}</span>}
@@ -4149,12 +4154,12 @@ const now = new Date().toISOString(); // ★現在時刻
         {/* ★★★ ここに追加: 宿なら予約ボタンを表示 ★★★ */}
         {isSpotHotel && (
             <ReservationButton 
-                spot={spot} 
-                roomId={roomId!} 
-                onUpdate={handleSpotUpdate} 
-                currentUser={userName}
-                compact={true}
-            />
+    spot={selectedResult} 
+    roomId={roomId!} 
+    onUpdate={handleSpotUpdate} 
+    currentUser={userName}
+    allParticipants={allParticipants} // ★追加
+/>
         )}
 
         <div className="flex gap-1 shrink-0 ml-1">
@@ -4354,7 +4359,22 @@ const now = new Date().toISOString(); // ★現在時刻
 // --- 予約管理ボタンコンポーネント (改良版) ---
 // --- 予約管理ボタンコンポーネント (確認フロー付き) ---
 // --- 予約管理ボタンコンポーネント (確認フロー・担当者選択機能付き) ---
-const ReservationButton = ({ spot, roomId, onUpdate, currentUser, compact = false }: { spot: any, roomId: string, onUpdate: (s: any) => void, currentUser?: string, compact?: boolean }) => {
+// --- 予約管理ボタンコンポーネント (確認フロー・担当者選択機能付き) ---
+const ReservationButton = ({ 
+    spot, 
+    roomId, 
+    onUpdate, 
+    currentUser, 
+    compact = false,
+    allParticipants = [] // ★追加: 参加者リストを受け取る
+}: { 
+    spot: any, 
+    roomId: string, 
+    onUpdate: (s: any) => void, 
+    currentUser?: string, 
+    compact?: boolean,
+    allParticipants?: string[]
+}) => {
     const [showModal, setShowModal] = useState(false);
     const [nameInput, setNameInput] = useState("");
     const [isUpdating, setIsUpdating] = useState(false);
@@ -4365,9 +4385,15 @@ const ReservationButton = ({ spot, roomId, onUpdate, currentUser, compact = fals
     const handleOpen = (e: React.MouseEvent) => {
         e.stopPropagation();
         // 名前入力の初期値: 既に予約者がいればその人、いなければ自分
-        setNameInput(spot.reserved_by || currentUser || "Guest");
+        setNameInput(spot.reserved_by || currentUser || "");
         setViewMode('default');
         setShowModal(true);
+    };
+
+    // ★追加: 閉じる処理を共通化
+    const handleClose = (e?: React.MouseEvent) => {
+        if (e) e.stopPropagation();
+        setShowModal(false);
     };
 
     const handleUpdateStatus = async (status: 'reserved' | 'unreserved') => {
@@ -4404,26 +4430,49 @@ const ReservationButton = ({ spot, roomId, onUpdate, currentUser, compact = fals
                     </h3>
                     
                     <div className="mb-6">
-                        <label className="text-xs font-bold text-gray-500 mb-1 block">予約担当者 (変更可能)</label>
+                        <label className="text-xs font-bold text-gray-500 mb-2 block">予約担当者を選択</label>
+                        
+                        {/* ★追加: 参加者選択ボタン */}
+                        <div className="flex flex-wrap gap-2 mb-3">
+                            {allParticipants.map(name => (
+                                <button
+                                    key={name}
+                                    onClick={(e) => { e.stopPropagation(); setNameInput(name); }}
+                                    className={`px-3 py-1.5 rounded-full text-xs font-bold transition border flex items-center gap-1 ${
+                                        nameInput === name 
+                                        ? 'bg-blue-600 text-white border-blue-600 shadow-md' 
+                                        : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                                    }`}
+                                >
+                                    <User size={12} />
+                                    {name}
+                                </button>
+                            ))}
+                        </div>
+
                         <div className="relative">
                             <User size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"/>
                             <input 
                                 type="text" 
                                 value={nameInput}
+                                onClick={(e) => e.stopPropagation()}
                                 onChange={(e) => setNameInput(e.target.value)}
                                 className="w-full bg-gray-50 border border-gray-200 rounded-xl py-3 pl-10 pr-3 text-base font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition"
-                                placeholder="名前を入力"
+                                placeholder="または名前を入力"
                             />
                         </div>
                         <p className="text-[10px] text-gray-400 mt-1 ml-1">※実際に予約サイトでの手続きを済ませてから押してください</p>
                     </div>
 
                     <div className="flex gap-3">
-                        <button onClick={() => setShowModal(false)} className="flex-1 bg-gray-100 text-gray-500 font-bold py-3 rounded-xl hover:bg-gray-200 transition">
+                        <button 
+                            onClick={handleClose} 
+                            className="flex-1 bg-gray-100 text-gray-500 font-bold py-3 rounded-xl hover:bg-gray-200 transition"
+                        >
                             キャンセル
                         </button>
                         <button 
-                            onClick={() => handleUpdateStatus('reserved')}
+                            onClick={(e) => { e.stopPropagation(); handleUpdateStatus('reserved'); }}
                             disabled={!nameInput.trim() || isUpdating}
                             className="flex-1 bg-green-600 text-white font-bold py-3 rounded-xl hover:bg-green-700 transition flex items-center justify-center gap-2 shadow-md shadow-green-200"
                         >
@@ -4448,11 +4497,14 @@ const ReservationButton = ({ spot, roomId, onUpdate, currentUser, compact = fals
                         <span className="text-xs text-gray-400">※実際の予約キャンセルは宿への連絡が必要です。</span>
                     </p>
                     <div className="flex gap-3">
-                        <button onClick={() => setViewMode('default')} className="flex-1 bg-gray-100 text-gray-500 font-bold py-3 rounded-xl hover:bg-gray-200 transition">
+                        <button 
+                            onClick={(e) => { e.stopPropagation(); setViewMode('default'); }} 
+                            className="flex-1 bg-gray-100 text-gray-500 font-bold py-3 rounded-xl hover:bg-gray-200 transition"
+                        >
                             いいえ
                         </button>
                         <button 
-                            onClick={() => handleUpdateStatus('unreserved')}
+                            onClick={(e) => { e.stopPropagation(); handleUpdateStatus('unreserved'); }}
                             disabled={isUpdating}
                             className="flex-1 bg-red-500 text-white font-bold py-3 rounded-xl hover:bg-red-600 transition flex items-center justify-center gap-2 shadow-md shadow-red-200"
                         >
@@ -4480,12 +4532,15 @@ const ReservationButton = ({ spot, roomId, onUpdate, currentUser, compact = fals
 
                 <div className="space-y-3">
                     <button 
-                        onClick={() => setViewMode('confirm_cancel')}
+                        onClick={(e) => { e.stopPropagation(); setViewMode('confirm_cancel'); }}
                         className="w-full bg-white border-2 border-red-100 text-red-500 font-bold py-3 rounded-xl hover:bg-red-50 transition flex items-center justify-center gap-2"
                     >
                         未予約に戻す
                     </button>
-                    <button onClick={() => setShowModal(false)} className="w-full text-gray-400 font-bold py-2 text-sm hover:text-gray-600">
+                    <button 
+                        onClick={handleClose} 
+                        className="w-full text-gray-400 font-bold py-2 text-sm hover:text-gray-600"
+                    >
                         閉じる
                     </button>
                 </div>
@@ -4510,8 +4565,14 @@ const ReservationButton = ({ spot, roomId, onUpdate, currentUser, compact = fals
             </button>
 
             {showModal && (
-                <div className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={(e) => e.stopPropagation()}>
-                    <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm animate-in zoom-in-95" onClick={(e) => e.stopPropagation()}>
+                <div 
+                    className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" 
+                    onClick={handleClose} // ★修正: 背景クリックで閉じるように変更
+                >
+                    <div 
+                        className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm animate-in zoom-in-95" 
+                        onClick={(e) => e.stopPropagation()} // 中身クリックは閉じない
+                    >
                         {renderModalContent()}
                     </div>
                 </div>
