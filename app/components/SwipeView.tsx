@@ -74,8 +74,8 @@ export default function SwipeView({
   const [currentTipIndex, setCurrentTipIndex] = useState(0);
   const listEndRef = useRef<HTMLDivElement>(null);
   
-  const [tempLikedSpots, setTempLikedSpots] = useState<any[]>([]);
-  const [showConfirmModal, setShowConfirmModal] = useState(false);
+ // const [tempLikedSpots, setTempLikedSpots] = useState<any[]>([]);
+  //const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
 
   const isSuggestionMode = candidates && candidates.length > 0;
@@ -137,11 +137,7 @@ export default function SwipeView({
   }, [spots, votedSpotIds, currentUser, candidates, isSuggestionMode]);
 
   // 表示するカード(activeSpots)がなくなったら、保存確認モーダルを表示
-  useEffect(() => {
-      if (isSuggestionMode && activeSpots.length === 0 && tempLikedSpots.length > 0) {
-          setShowConfirmModal(true);
-      }
-  }, [activeSpots.length, isSuggestionMode, tempLikedSpots.length]);
+  
 
   useEffect(() => {
     document.body.style.overflow = 'hidden';
@@ -368,7 +364,7 @@ export default function SwipeView({
 
     if (isSuggestionMode) {
         if (direction === 'right') {
-            setTempLikedSpots(prev => [...prev, spot]);
+           //  setTempLikedSpots(prev => [...prev, spot]);
             if (onLike) onLike(spot); 
         } else if (onNope) {
             onNope(spot);
@@ -387,33 +383,7 @@ export default function SwipeView({
     if (direction === 'right') await supabase.rpc('increment_votes', { spot_id: spot.id });
   };
 
-  const handleConfirmAddSpots = async () => {
-      setIsVerifying(true);
-      try {
-          for (const spot of tempLikedSpots) {
-              const newSpot = { 
-                  room_id: roomId, 
-                  name: spot.name, 
-                  description: spot.description, 
-                  coordinates: spot.coordinates, 
-                  order: spots.length, 
-                  added_by: currentUser || 'AI', 
-                  votes: 0,
-                  image_url: spot.image_url,
-                  is_hotel: spot.is_hotel || false,
-                  status: 'candidate', 
-                  day: 0
-              };
-              await supabase.from('spots').insert([newSpot]);
-          }
-          setTempLikedSpots([]);
-          setShowConfirmModal(false);
-      } catch (e) {
-          alert("保存エラー");
-      } finally {
-          setIsVerifying(false);
-      }
-  };
+  
 
   const sortedDisplayCandidates = useMemo(() => {
       const pendingNames = detectedCandidates.filter(name => !foundSpots.some(s => s.name === name));
@@ -432,7 +402,7 @@ export default function SwipeView({
         style={{ touchAction: 'none' }} 
     >
       {/* 1. 初期状態 */}
-      {activeSpots.length === 0 && !isSearching && !showConfirmModal && (
+    {activeSpots.length === 0 && !isSearching && (
           <div className="w-full max-w-md p-8 text-center animate-in fade-in zoom-in duration-300">
               <div className="mb-6 flex justify-center">
                   <div className="w-20 h-20 bg-blue-50 text-blue-500 rounded-full flex items-center justify-center shadow-inner">
@@ -446,14 +416,7 @@ export default function SwipeView({
                   {isSuggestionMode ? "右スワイプした場所を確認しましょう" : "地名やテーマを入力して\nAIに新しいプランを相談しよう"}
               </p>
               
-              {tempLikedSpots.length > 0 && (
-                  <button 
-                      onClick={() => setShowConfirmModal(true)}
-                      className="w-full bg-green-600 text-white py-4 rounded-xl font-bold shadow-md hover:bg-green-700 transition flex items-center justify-center gap-2 mb-4 animate-bounce"
-                  >
-                      <CheckCircle size={20}/> 選択した{tempLikedSpots.length}件を保存する
-                  </button>
-              )}
+              
 
               <div className="relative w-full mb-4">
                     <input 
@@ -566,41 +529,10 @@ export default function SwipeView({
           </div>
       )}
 
-      {/* 3. 確認モーダル */}
-      {showConfirmModal && (
-          <div className="absolute inset-0 z-[250] bg-white/90 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in">
-              <div className="bg-white w-full max-w-sm rounded-3xl p-8 shadow-2xl space-y-6 border border-gray-100">
-                  <div className="text-center">
-                      <div className="w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-4"><CheckCircle size={32}/></div>
-                      <h3 className="text-2xl font-black text-gray-800">チェック完了！</h3>
-                      <p className="text-gray-500">以下の{tempLikedSpots.length}件をプランに追加します。</p>
-                  </div>
-                  
-                  <div className="max-h-48 overflow-y-auto bg-gray-50 rounded-xl p-3 space-y-2 border border-gray-100">
-                      {tempLikedSpots.map((spot, i) => (
-                          <div key={i} className="flex items-center gap-3 p-3 bg-white rounded-lg shadow-sm">
-                              <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center font-bold text-xs shrink-0">{i+1}</div>
-                              <span className="text-sm font-bold text-gray-700 truncate">{spot.name}</span>
-                          </div>
-                      ))}
-                  </div>
-
-                  <div className="space-y-3">
-                      <button 
-                          onClick={handleConfirmAddSpots} 
-                          disabled={isVerifying}
-                          className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold text-lg hover:bg-blue-500 transition disabled:opacity-70 flex items-center justify-center gap-2 shadow-lg shadow-blue-200"
-                      >
-                          {isVerifying ? <><Loader2 className="animate-spin"/> 保存中...</> : "確定して追加する"}
-                      </button>
-                      <button onClick={() => { setShowConfirmModal(false); setTempLikedSpots([]); }} className="w-full text-gray-400 font-bold py-2 hover:text-gray-600">キャンセル</button>
-                  </div>
-              </div>
-          </div>
-      )}
+     
 
       {/* 4. スワイプカード */}
-      {activeSpots.length > 0 && areImagesReady && !showConfirmModal && !isSearching && (
+      {activeSpots.length > 0 && areImagesReady && !isSearching && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center animate-in zoom-in duration-300">
             <div className="absolute top-6 z-[2000] pointer-events-none animate-in fade-in slide-in-from-top-2 duration-500">
                 <div className="bg-black/40 backdrop-blur-md text-white px-5 py-2 rounded-full text-xs font-black tracking-widest shadow-lg border border-white/10 flex items-center gap-2">
