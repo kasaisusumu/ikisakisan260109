@@ -1262,7 +1262,7 @@ useEffect(() => {
 
  // ... (前略)
 
-  const getAffiliateUrl = (spot: any) => {
+ const getAffiliateUrl = (spot: any) => {
       // 日付パース
       const parseLocalYMD = (ymd: string) => {
           if (!ymd) return null;
@@ -1271,7 +1271,7 @@ useEffect(() => {
           return new Date(parts[0], parts[1] - 1, parts[2]);
       };
 
-      // 1. 基準日 (startDate優先)
+      // 1. 基準日
       let targetDate = new Date();
       targetDate.setDate(targetDate.getDate() + 30);
 
@@ -1286,55 +1286,47 @@ useEffect(() => {
           targetDate.setDate(targetDate.getDate() + (dayNum - 1));
       }
 
-      // 3. チェックアウト日 (1泊)
+      // 3. チェックアウト日
       const checkOutDate = new Date(targetDate);
       checkOutDate.setDate(targetDate.getDate() + 1);
 
-      // 4. パラメータ生成
+      // 4. パラメータ用変数
       const y1 = targetDate.getFullYear();
       const m1 = targetDate.getMonth() + 1;
       const d1 = targetDate.getDate();
       const y2 = checkOutDate.getFullYear();
       const m2 = checkOutDate.getMonth() + 1;
       const d2 = checkOutDate.getDate();
-      const pad = (n: number) => n.toString().padStart(2, '0');
 
-      // ★追加: URLから楽天IDを抽出するヘルパー
+      // ★ご指定のパラメータ文字列（順序・構成を完全に一致）
+      const paramString = `f_camp_id=5644483&f_syu=&f_teikei=&f_campaign=&f_flg=PLAN&f_otona_su=${adultNum}&f_heya_su=1&f_s1=0&f_s2=0&f_y1=0&f_y2=0&f_y3=0&f_y4=0&f_kin=&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_kin2=&f_hak=&f_tel=&f_tscm_flg=&f_p_no=&f_custom_code=&f_search_type=&f_static=1&f_tel=&f_service=&f_rm_equip=&f_sort=minNo`;
+
+      // 5. 楽天IDの抽出ロジック（強化版）
       const extractRakutenId = (url: string) => {
           if (!url) return null;
-          const match = url.match(/hotelinfo\/plan\/(\d+)/) || url.match(/HOTEL\/(\d+)/);
+          // plan/数字, HOTEL/数字, no=数字 などのパターンに対応
+          const match = url.match(/hotelinfo\/plan\/(\d+)/) || url.match(/HOTEL\/(\d+)/) || url.match(/no=(\d+)/);
           return match ? match[1] : null;
       };
 
-      let targetUrl = "";
       let hotelId = null;
-
-      // IDの特定（保存済みURLから抽出、または未保存スポットのIDを使用）
-      if (spot.url && spot.url.includes('rakuten')) {
+      
+      // 保存されたURLからIDを探す
+      if (spot.url) {
           hotelId = extractRakutenId(spot.url);
       }
+      // spot.id 自体が数値（楽天ID）の場合
       if (!hotelId && spot.id && /^\d+$/.test(String(spot.id))) {
           hotelId = spot.id;
       }
 
-      // URL生成
+      // ★ IDがある場合（これが本命）
       if (hotelId) {
-          // IDが判明している場合 -> 日付・人数付きプラン一覧へ
-          targetUrl = `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotelId}?f_teikei=&f_heya_su=1&f_otona_su=${adultNum}&f_nen1=${y1}&f_tuki1=${pad(m1)}&f_hi1=${pad(d1)}&f_nen2=${y2}&f_tuki2=${pad(m2)}&f_hi2=${pad(d2)}&f_sort=min_charge`;
-      } else if (spot.url && spot.url.includes('rakuten.co.jp')) {
-          // ID不明だが楽天URLがある場合 -> そのまま
-          targetUrl = spot.url;
-      } else {
-          // フォールバック検索
-          targetUrl = `https://search.travel.rakuten.co.jp/ds/hotel/search?f_query=${encodeURIComponent(spot.name)}&f_teikei=&f_heya_su=1&f_otona_su=${adultNum}&f_nen1=${y1}&f_tuki1=${pad(m1)}&f_hi1=${pad(d1)}&f_nen2=${y2}&f_tuki2=${pad(m2)}&f_hi2=${pad(d2)}&f_sort=min_charge`;
-      }
-
-      // ★修正: アフィリエイトリンクに変換して返す
-      //if (RAKUTEN_AFFILIATE_ID) {
-        //  return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent(targetUrl)}&m=${encodeURIComponent(targetUrl)}`;
-      //}
-
-      return targetUrl;
+          return `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotelId}?${paramString}`;
+      } 
+      
+      // IDがどうしても不明な場合のみ検索URLにする（ただし後ろのパラメータ順序は合わせる）
+      return `https://search.travel.rakuten.co.jp/ds/hotel/search?f_query=${encodeURIComponent(spot.name)}&${paramString}`;
   };
 
  // page.tsx 690行目付近の allParticipants を以下に書き換え
@@ -3164,7 +3156,7 @@ const now = new Date().toISOString(); // ★現在時刻
 
                 <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-white overscroll-contain">
                   
-                  {selectedResult.is_saved && selectedResult.id && (
+                 {selectedResult.is_saved && selectedResult.id && (
                       <div className="bg-white p-3 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between">
                           <span className="text-xs font-bold text-gray-500 flex items-center gap-1">
                               <Calendar size={14}/> 日程・グループ
@@ -3176,9 +3168,21 @@ const now = new Date().toISOString(); // ★現在時刻
                                   className="appearance-none bg-gray-50 border border-gray-200 text-gray-800 text-xs font-bold py-2 pl-3 pr-8 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-100"
                               >
                                   <option value={0}>未定 (Day 0)</option>
-                                  {Array.from({ length: travelDays }).map((_, i) => (
-                                      <option key={i + 1} value={i + 1}>Day {i + 1}</option>
-                                  ))}
+                                  {Array.from({ length: travelDays }).map((_, i) => {
+                                      const dayNum = i + 1;
+                                      // ★修正: ホテル判定
+                                      const isSpotHotel = isHotel(selectedResult.text) || selectedResult.is_hotel;
+                                      
+                                      // ホテルの場合、最終日（帰る日）は宿泊開始できないので除外
+                                      if (isSpotHotel && dayNum === travelDays) return null;
+                                      
+                                      // ホテルの場合は「Day 1 - 2」形式、それ以外は「Day 1」
+                                      const label = isSpotHotel ? `Day ${dayNum} - ${dayNum + 1}` : `Day ${dayNum}`;
+                                      
+                                      return (
+                                          <option key={dayNum} value={dayNum}>{label}</option>
+                                      );
+                                  })}
                               </select>
                               <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-500">
                                   <ChevronDown size={12} />

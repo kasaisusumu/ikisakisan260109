@@ -6,7 +6,7 @@ import {
   Edit3, Train, Plane, Ship, Footprints, Zap, 
   Image as ImageIcon, Link as LinkIcon, Camera, Upload, 
   Trash2, PlusCircle, MapPinned, ArrowRight, ArrowLeft,
-  ChevronDown, ChevronUp, Layers, Banknote, ExternalLink, StickyNote,Bus // ← ★ここに追加
+  ChevronDown, ChevronUp, Layers, Banknote, ExternalLink, StickyNote, Bus
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
@@ -85,18 +85,14 @@ interface Props {
   onScreenshotClosed?: () => void;
   startDate?: string;
   adultNum?: number;
-  // ★追加
   currentUser?: string;
 }
 
-// components/PlanView.tsx (80行目付近)
 const TRANSPORT_MODES = [
   { id: 'car', icon: <Car size={16}/>, label: '車', googleMode: 'driving' },
   { id: 'train', icon: <Train size={16}/>, label: '電車', googleMode: 'transit' },
   { id: 'walk', icon: <Footprints size={16}/>, label: '徒歩', googleMode: 'walking' },
-  // ▼▼▼ 修正: 新幹線(Zap) を バス(Bus) に変更 ▼▼▼
   { id: 'bus', icon: <Bus size={16}/>, label: 'バス', googleMode: 'transit' },
-  // { id: 'shinkansen', icon: <Zap size={16}/>, label: '新幹線', googleMode: 'transit' }, // 元のコード
   { id: 'plane', icon: <Plane size={16}/>, label: '飛行機', googleMode: 'transit' },
   { id: 'ship', icon: <Ship size={16}/>, label: '船', googleMode: 'transit' },
 ];
@@ -105,13 +101,9 @@ export default function PlanView({
     spots, onRemove, onUpdateSpots, roomId, travelDays = 1, 
     autoShowScreenshot, onScreenshotClosed,
     startDate, adultNum = 2,
-
-    // ★追加: ここに currentUser を追加します
     currentUser
-    
 }: Props) {  
 
-    // ▼▼▼ 追加: この関数定義が抜けていました ▼▼▼
   const logAffiliateClick = async (spotName: string) => {
       if (!roomId) return;
       await supabase.from('affiliate_logs').insert({
@@ -121,12 +113,10 @@ export default function PlanView({
           source_view: 'plan_timeline'
       });
   };
-  // ▲▲▲ 追加ここまで ▲▲▲
   
   const captureRef = useRef<HTMLDivElement>(null); 
   const scrollContainerRef = useRef<HTMLDivElement>(null); 
   
-  // ★追加: リストコンテナへの参照と、スクロール制御用のRef
   const listRef = useRef<HTMLDivElement>(null);
   const scrollInterval = useRef<NodeJS.Timeout | null>(null);
 
@@ -162,12 +152,15 @@ export default function PlanView({
       if (onScreenshotClosed) onScreenshotClosed();
   };
 
+  // タイムラインデータの同期処理
+  // 親コンポーネント(spots)から最新情報（特にID、画像、コメント等）を反映させる
   useEffect(() => {
       if (timeline.length === 0) return;
 
       setTimeline(prev => prev.map(item => {
           if (item.type !== 'spot') return item;
           
+          // 親のspotsから、IDまたは名前で該当する最新スポットを探す
           const freshSpot = spots.find(s => 
               (s.id && String(s.id) === String(item.spot.id)) || 
               s.name === item.spot.name
@@ -175,6 +168,7 @@ export default function PlanView({
 
           if (freshSpot) {
               const needsUpdate = 
+                  item.spot.id !== freshSpot.id || // IDが変わった場合（仮ID→本IDなど）も更新
                   item.spot.comment !== freshSpot.comment ||
                   item.spot.link !== freshSpot.link ||
                   item.spot.cost !== freshSpot.price ||
@@ -185,7 +179,7 @@ export default function PlanView({
                       ...item, 
                       spot: {
                           ...item.spot,    
-                          ...freshSpot,    
+                          ...freshSpot, // ここでIDも含めて最新情報で上書きされる
                           cost: freshSpot.price,      
                           comment: freshSpot.comment, 
                           link: freshSpot.link,       
@@ -243,72 +237,71 @@ export default function PlanView({
       });
   }, [activeDaySpots, timeline]);
 
-  // 日付計算ヘルパー
-  const parseLocalYMD = (ymd: string) => {
-      if (!ymd) return null;
-      const parts = ymd.split('-').map(Number);
-      if (parts.length !== 3) return null;
-      return new Date(parts[0], parts[1] - 1, parts[2]);
-  };
+ const getAffiliateUrl = (hotel: any) => {
+      // 日付パース
+      const parseLocalYMD = (ymd: string) => {
+          if (!ymd) return null;
+          const parts = ymd.split('-').map(Number);
+          if (parts.length !== 3) return null;
+          return new Date(parts[0], parts[1] - 1, parts[2]);
+      };
 
-  const getAffiliateUrl = (hotel: any) => {
-    // 1. 基準日の決定
-    let targetDate = new Date();
-    targetDate.setDate(targetDate.getDate() + 30);
+      // 1. 基準日
+      let targetDate = new Date();
+      targetDate.setDate(targetDate.getDate() + 30);
 
-    if (startDate) {
-        const parsedStart = parseLocalYMD(startDate);
-        if (parsedStart) targetDate = parsedStart;
-    }
+      if (startDate) {
+          const parsedStart = parseLocalYMD(startDate);
+          if (parsedStart) targetDate = parsedStart;
+      }
 
-    // 2. Dayによる日付加算
-    const dayOffset = Math.max(0, selectedDay - 1);
-    targetDate.setDate(targetDate.getDate() + dayOffset);
+      // 2. Dayによる日付加算
+      const dayNum = Number(hotel.day || selectedDay);
+      if (!isNaN(dayNum) && dayNum > 0) {
+          targetDate.setDate(targetDate.getDate() + (dayNum - 1));
+      }
 
-    // 3. チェックアウト日
-    const checkOutDate = new Date(targetDate);
-    checkOutDate.setDate(targetDate.getDate() + 1);
+      // 3. チェックアウト日
+      const checkOutDate = new Date(targetDate);
+      checkOutDate.setDate(targetDate.getDate() + 1);
 
-    // 4. パラメータ生成
-    const y1 = targetDate.getFullYear();
-    const m1 = targetDate.getMonth() + 1;
-    const d1 = targetDate.getDate();
-    const y2 = checkOutDate.getFullYear();
-    const m2 = checkOutDate.getMonth() + 1;
-    const d2 = checkOutDate.getDate();
-    const pad = (n: number) => n.toString().padStart(2, '0');
+      // 4. パラメータ用変数
+      const y1 = targetDate.getFullYear();
+      const m1 = targetDate.getMonth() + 1;
+      const d1 = targetDate.getDate();
+      const y2 = checkOutDate.getFullYear();
+      const m2 = checkOutDate.getMonth() + 1;
+      const d2 = checkOutDate.getDate();
 
-    // ★追加: URLから楽天IDを抽出するヘルパー
-    const extractRakutenId = (url: string) => {
-        if (!url) return null;
-        const match = url.match(/hotelinfo\/plan\/(\d+)/) || url.match(/HOTEL\/(\d+)/);
-        return match ? match[1] : null;
-    };
+      // ★ご指定のパラメータ文字列（順序・構成を完全に一致）
+      const paramString = `f_camp_id=5644483&f_syu=&f_teikei=&f_campaign=&f_flg=PLAN&f_otona_su=${adultNum}&f_heya_su=1&f_s1=0&f_s2=0&f_y1=0&f_y2=0&f_y3=0&f_y4=0&f_kin=&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_kin2=&f_hak=&f_tel=&f_tscm_flg=&f_p_no=&f_custom_code=&f_search_type=&f_static=1&f_tel=&f_service=&f_rm_equip=&f_sort=minNo`;
 
-    let targetUrl = "";
-    let hotelId = null;
+      // 5. 楽天IDの抽出ロジック（強化版）
+      const extractRakutenId = (url: string) => {
+          if (!url) return null;
+          // plan/数字, HOTEL/数字, no=数字 などのパターンに対応
+          const match = url.match(/hotelinfo\/plan\/(\d+)/) || url.match(/HOTEL\/(\d+)/) || url.match(/no=(\d+)/);
+          return match ? match[1] : null;
+      };
 
-    if (hotel.url && hotel.url.includes('rakuten')) {
-        hotelId = extractRakutenId(hotel.url);
-    }
-    if (!hotelId && hotel.id && /^\d+$/.test(String(hotel.id))) {
-        hotelId = hotel.id;
-    }
+      let hotelId = null;
+      
+      // 保存されたURLからIDを探す
+      if (hotel.url) {
+          hotelId = extractRakutenId(hotel.url);
+      }
+      // spot.id 自体が数値（楽天ID）の場合
+      if (!hotelId && hotel.id && /^\d+$/.test(String(hotel.id))) {
+          hotelId = hotel.id;
+      }
 
-    if (hotelId) {
-        targetUrl = `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotelId}?f_teikei=&f_heya_su=1&f_otona_su=${adultNum}&f_nen1=${y1}&f_tuki1=${pad(m1)}&f_hi1=${pad(d1)}&f_nen2=${y2}&f_tuki2=${pad(m2)}&f_hi2=${pad(d2)}&f_sort=min_charge`;
-    } else if (hotel.url && hotel.url.includes('rakuten.co.jp')) {
-        targetUrl = hotel.url;
-    } else {
-        targetUrl = `https://search.travel.rakuten.co.jp/ds/hotel/search?f_query=${encodeURIComponent(hotel.name)}&f_teikei=&f_heya_su=1&f_otona_su=${adultNum}&f_nen1=${y1}&f_tuki1=${pad(m1)}&f_hi1=${pad(d1)}&f_nen2=${y2}&f_tuki2=${pad(m2)}&f_hi2=${pad(d2)}&f_sort=min_charge`;
-    }
-
-    // ★修正: アフィリエイトリンクに変換して返す
-   // if (RAKUTEN_AFFILIATE_ID) {
-     //   return `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent(targetUrl)}&m=${encodeURIComponent(targetUrl)}`;
-    //}
-
-    return targetUrl;
+      // ★ IDがある場合（これが本命）
+      if (hotelId) {
+          return `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotelId}?${paramString}`;
+      } 
+      
+      // IDがどうしても不明な場合のみ検索URLにする（ただし後ろのパラメータ順序は合わせる）
+      return `https://search.travel.rakuten.co.jp/ds/hotel/search?f_query=${encodeURIComponent(hotel.name)}&${paramString}`;
   };
 
   const getDirectionsUrl = (index: number) => {
@@ -498,18 +491,18 @@ export default function PlanView({
     } catch (e: any) { alert(`エラー: ${e.message}`); } finally { setIsProcessing(false); }
   };
 
-  // --- ★追加: 自動スクロール制御関数 ---
+  // --- 自動スクロール制御関数 ---
   const startAutoScroll = (direction: 'up' | 'down', container: HTMLDivElement) => {
-    if (scrollInterval.current) return; // すでにスクロール中なら何もしない
+    if (scrollInterval.current) return; 
     
     scrollInterval.current = setInterval(() => {
-        const speed = 15; // スクロール速度 (ピクセル/tick)
+        const speed = 15; 
         if (direction === 'up') {
             container.scrollTop -= speed;
         } else {
             container.scrollTop += speed;
         }
-    }, 16); // 60fps程度
+    }, 16); 
   };
 
   const stopAutoScroll = () => {
@@ -527,10 +520,9 @@ export default function PlanView({
 
   const onDragEnd = (e: React.DragEvent) => { 
       setDraggedItemIndex(null); 
-      stopAutoScroll(); // ドラッグ終了時にスクロール停止
+      stopAutoScroll(); 
   };
   
-  // ★変更: onDragOverで自動スクロールをトリガー
   const onDragOver = (e: React.DragEvent) => { 
       e.preventDefault(); 
       e.dataTransfer.dropEffect = "move"; 
@@ -540,21 +532,21 @@ export default function PlanView({
 
       const { top, bottom } = container.getBoundingClientRect();
       const mouseY = e.clientY;
-      const threshold = 100; // 端から100px以内ならスクロール開始
+      const threshold = 100; 
 
       if (mouseY < top + threshold) {
           startAutoScroll('up', container);
       } else if (mouseY > bottom - threshold) {
           startAutoScroll('down', container);
       } else {
-          stopAutoScroll(); // 範囲外なら停止
+          stopAutoScroll(); 
       }
   };
   
   const onDrop = async (e: React.DragEvent, targetTimelineIndex: number) => {
     e.preventDefault();
     e.stopPropagation(); 
-    stopAutoScroll(); // ドロップ時にスクロール停止
+    stopAutoScroll(); 
 
     const rawIndex = e.dataTransfer.getData('text/plain');
     const sourceIndex = parseInt(rawIndex, 10);
@@ -588,37 +580,29 @@ export default function PlanView({
         }
     });
 
-    // ローカルStateの更新
     setTimeline(reconstructedTimeline); 
     setDraggedItemIndex(null);
 
     // 2. データベースと親コンポーネントの更新
     if (roomId) {
-        // 並び替えられたスポットのリスト抽出
         const activeSpots = newSpotsOrder.map(item => item.spot);
-        const fullSpotsList = [...spots]; // 親から渡された全スポット
+        const fullSpotsList = [...spots]; 
 
-        // orderの更新
         activeSpots.forEach((s, idx) => {
-            // DB更新
-            supabase.from('spots').update({ order: idx }).eq('id', s.id).then();
+            if (s.id) supabase.from('spots').update({ order: idx }).eq('id', s.id).then();
             
-            // ローカルリスト内での更新
-            const target = fullSpotsList.find(fs => fs.id === s.id);
+            const target = fullSpotsList.find(fs => (fs.id && String(fs.id) === String(s.id)) || fs.name === s.name);
             if (target) {
                 target.order = idx;
             }
         });
 
-        // 親コンポーネント(Page.tsx)へ通知
-        // 順番通りにソートして渡す
         fullSpotsList.sort((a, b) => (a.order || 0) - (b.order || 0));
         onUpdateSpots(fullSpotsList);
 
-        // LocalStorageも即座に更新
         const storageKey = `rh_plan_${roomId}_day_${selectedDay}`;
         localStorage.setItem(storageKey, JSON.stringify({ 
-            timeline: reconstructedTimeline, // ★修正: ここも calculateSchedule を外す
+            timeline: reconstructedTimeline, 
             updatedAt: Date.now() 
         }));
     }
@@ -629,10 +613,8 @@ const handleEditSave = async () => {
       
       const newTimeline = [...timeline];
       newTimeline[editItem.index] = editItem.data;
-      setTimeline(newTimeline); // ★修正: 再計算せずに保存
+      setTimeline(newTimeline); 
       
-      // ... (以下DB更新処理など)
-
       if (editItem.type === 'spot' && roomId) {
           const spotId = editItem.data.spot.id;
           
@@ -698,7 +680,7 @@ const handleArrivalChange = (index: number, newArrival: string) => {
   const handleTransportChange = (index: number, mode: string) => {
       const newTimeline = [...timeline];
       newTimeline[index].transport_mode = mode;
-      setTimeline(newTimeline); // ★修正: 再計算せずに保存するだけにする
+      setTimeline(newTimeline); 
   };
 
   const toggleSpotInclusion = (spot: any, isAdding: boolean) => {
@@ -973,7 +955,6 @@ const handleArrivalChange = (index: number, newArrival: string) => {
           </div>
       )}
 
-      {/* ★変更: ref={listRef} を追加 */}
       <div 
         ref={listRef}
         className="flex-1 overflow-y-auto relative bg-gray-50 pb-20 custom-scrollbar min-h-0"
@@ -1067,8 +1048,6 @@ const handleArrivalChange = (index: number, newArrival: string) => {
                                 <span className="text-lg leading-none">{String(spotCounter).padStart(2, '0')}</span>
                               </div>
                               
-                              
-
                               <div className="bg-white border border-gray-200 rounded-xl overflow-hidden hover:border-indigo-400 hover:shadow-md transition-all cursor-grab active:cursor-grabbing" onClick={() => setEditItem({index: i, type: 'spot', data: item})}>
                                 <div className="flex min-h-[6rem]">
                                     <div className="w-24 bg-gray-100 shrink-0 relative border-r border-gray-100">
@@ -1092,24 +1071,18 @@ const handleArrivalChange = (index: number, newArrival: string) => {
                                                 <h3 className="font-bold text-gray-800 text-sm line-clamp-1">{item.spot.name}</h3>
                                                 <button onClick={(e) => { e.stopPropagation(); toggleSpotInclusion(item.spot, false); }} className="text-gray-400 hover:text-red-500 p-1"><MinusCircle size={16}/></button>
                                             </div>
-                                           {/* 修正箇所：スポットの到着・出発時間入力部分 */}
-                                           {/* --- PlanView.tsx 1250行目付近: 到着時間入力エリア --- */}
-
+                                           
 <div className="flex items-center gap-2 text-xs font-bold text-indigo-500 font-mono bg-indigo-50 w-max px-2 py-0.5 rounded" onClick={(e) => e.stopPropagation()}>
     {(() => {
-        // ▼▼▼ 追加: 前のスポットからの時間の整合性チェック ▼▼▼
         let isArrivalInconsistent = false;
-        // 2つ前の要素(前のスポット)と、1つ前の要素(移動)を取得
         const prevTravel = timeline[i - 1];
         const prevSpot = timeline[i - 2];
         
-        // 前のスポットの出発時間 と 移動時間 がある場合のみ計算
         if (prevTravel && prevTravel.type === 'travel' && prevSpot && prevSpot.type === 'spot' && prevSpot.departure && item.arrival) {
             const [pH, pM] = prevSpot.departure.split(':').map(Number);
             const [cH, cM] = item.arrival.split(':').map(Number);
             const travelMin = prevTravel.duration_min || 0;
             
-            // 分単位に変換して比較 (24時間表記のループを考慮して 1440 で割った余り)
             const expectedMin = (pH * 60 + pM + travelMin) % 1440;
             const currentMin = (cH * 60 + cM) % 1440;
             
@@ -1117,7 +1090,6 @@ const handleArrivalChange = (index: number, newArrival: string) => {
                 isArrivalInconsistent = true;
             }
         }
-        // ▲▲▲ 追加ここまで ▲▲▲
 
         return (
             <input 
@@ -1126,8 +1098,8 @@ const handleArrivalChange = (index: number, newArrival: string) => {
                 onChange={(e) => handleArrivalChange(i, e.target.value)}
                 className={`bg-transparent font-bold text-xs font-mono w-[36px] text-center focus:outline-none border-b border-transparent focus:border-indigo-300 p-0 ${
                     isArrivalInconsistent 
-                    ? "text-red-500 underline decoration-red-500 decoration-wavy" // 不整合なら赤＋波線
-                    : "text-indigo-600" // 通常時はインディゴ
+                    ? "text-red-500 underline decoration-red-500 decoration-wavy" 
+                    : "text-indigo-600"
                 }`}
             />
         );
@@ -1144,15 +1116,11 @@ const handleArrivalChange = (index: number, newArrival: string) => {
 </div>
                                         </div>
 
-                                       {/* --- PlanView.tsx の type==='spot' 内の下部エリア --- */}
                                         <div className="flex flex-col gap-1.5 mt-2">
-                                            {/* タグエリア (時間、金額、リンク) */}
                                             <div className="flex flex-wrap gap-1.5 items-center">
                                                 {!item.is_overnight && (
                                                     <div className="flex items-center gap-1 bg-gray-50 px-2 py-1 rounded border border-gray-200" onClick={(e) => e.stopPropagation()}>
                                                         <Clock size={10} className="text-gray-500"/>
-                                                        {/* ★修正箇所：滞在時間を自動計算して表示に変更 */}
-                                                        {/* 滞在時間表示 (自動計算 + 警告スタイル) */}
 <span className="text-xs font-bold">
     {(() => {
         if (!item.arrival || !item.departure) return <span className="text-gray-700">0分</span>;
@@ -1161,7 +1129,6 @@ const handleArrivalChange = (index: number, newArrival: string) => {
         const [eH, eM] = item.departure.split(':').map(Number);
         const diff = (eH * 60 + eM) - (sH * 60 + sM);
         
-        // ★判定: マイナスの場合は警告扱い
         const isInvalid = diff < 0;
 
         const abs = Math.abs(diff);
@@ -1177,8 +1144,8 @@ const handleArrivalChange = (index: number, newArrival: string) => {
         return (
             <span className={
                 isInvalid 
-                ? "text-red-500 underline decoration-red-500 decoration-wavy" // 赤文字＋波線
-                : "text-gray-700" // 通常
+                ? "text-red-500 underline decoration-red-500 decoration-wavy" 
+                : "text-gray-700" 
             }>
                 {text}
             </span>
@@ -1188,7 +1155,6 @@ const handleArrivalChange = (index: number, newArrival: string) => {
                                                     </div>
                                                 )}
 
-                                                {/* 金額タグ */}
                                                 {item.spot.cost && (
                                                     <div className="flex items-center gap-1 bg-yellow-50 px-2 py-1 rounded border border-yellow-100 text-[10px] font-bold text-yellow-700">
                                                         <Banknote size={10}/>
@@ -1196,7 +1162,6 @@ const handleArrivalChange = (index: number, newArrival: string) => {
                                                     </div>
                                                 )}
 
-                                                {/* リンクタグ (ユーザー追加リンク) */}
                                                 {item.spot.link && (
                                                     <a 
                                                         href={item.spot.link} 
@@ -1209,12 +1174,10 @@ const handleArrivalChange = (index: number, newArrival: string) => {
                                                     </a>
                                                 )}
 
-                                                {/* 楽天アフィリエイトリンク (宿の場合) */}
                                                 {item.spot.is_hotel && (
                                                     <a 
                                                         href={getAffiliateUrl(item.spot)} 
                                                         target="_blank" 
-                                                        // ★追加: onClickでログ送信
                                                         onClick={(e)=> {
                                                             e.stopPropagation();
                                                             logAffiliateClick(item.spot.name);
@@ -1226,7 +1189,6 @@ const handleArrivalChange = (index: number, newArrival: string) => {
                                                 )}
                                             </div>
 
-                                            {/* メモ表示エリア (あれば表示) */}
                                             {item.spot.comment && (
                                                 <div className="text-[10px] text-gray-600 bg-gray-50 p-2 rounded border border-gray-100 w-full whitespace-pre-wrap flex items-start gap-1">
                                                     <StickyNote size={10} className="shrink-0 mt-0.5 text-gray-400"/>

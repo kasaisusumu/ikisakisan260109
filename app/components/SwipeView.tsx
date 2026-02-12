@@ -36,6 +36,9 @@ interface Props {
   isLoadingMore?: boolean;
   onSearchOnMap?: (keyword: string) => void;
   allParticipants?: string[]; 
+  // ★追加: 日付と人数を受け取れるようにする
+  startDate?: string;
+  adultNum?: number;
 }
 
 const UD_COLORS = [
@@ -48,7 +51,10 @@ export default function SwipeView({
   spots, spotVotes = [], currentUser = "", roomId = "",
   candidates = [], onLike, onNope, onReceiveCandidates,
   onPreview, isLoadingMore, onSearchOnMap,
-  allParticipants = [] 
+  allParticipants = [],
+  // ★追加: デフォルト値を設定して受け取る
+  startDate, 
+  adultNum = 2
 }: Props) {
   
   const [lastDirection, setLastDirection] = useState<string>();
@@ -130,14 +136,12 @@ export default function SwipeView({
       .filter(s => s.id && !votedSpotIds.has(String(s.id))); 
   }, [spots, votedSpotIds, currentUser, candidates, isSuggestionMode]);
 
-  // ▼▼▼ 修正: 表示するカード(activeSpots)がなくなったら、保存確認モーダルを表示 ▼▼▼
+  // 表示するカード(activeSpots)がなくなったら、保存確認モーダルを表示
   useEffect(() => {
-      // 以前は candidates.length === 0 を見ていたため、propが更新されない限り発火しなかった
       if (isSuggestionMode && activeSpots.length === 0 && tempLikedSpots.length > 0) {
           setShowConfirmModal(true);
       }
   }, [activeSpots.length, isSuggestionMode, tempLikedSpots.length]);
-  // ▲▲▲ 修正ここまで ▲▲▲
 
   useEffect(() => {
     document.body.style.overflow = 'hidden';
@@ -261,32 +265,71 @@ export default function SwipeView({
   };
 
   const getAffiliateUrl = (spot: any) => {
-    const adultNum = 2; // デフォルト値
-    let targetUrl = "";
+      // 日付パース
+      const parseLocalYMD = (ymd: string) => {
+          if (!ymd) return null;
+          const parts = ymd.split('-').map(Number);
+          if (parts.length !== 3) return null;
+          return new Date(parts[0], parts[1] - 1, parts[2]);
+      };
 
-    if (spot.url && spot.url.includes('rakuten.co.jp')) { 
-        targetUrl = spot.url; 
-    }
-    else if (spot.id && /^\d+$/.test(String(spot.id))) {
-        const today = new Date();
-        const nextMonth = new Date(today);
-        nextMonth.setDate(today.getDate() + 30);
-        const y1 = nextMonth.getFullYear();
-        const m1 = nextMonth.getMonth() + 1;
-        const d1 = nextMonth.getDate();
-        const nextDay = new Date(nextMonth);
-        nextDay.setDate(nextMonth.getDate() + 1);
-        const y2 = nextDay.getFullYear();
-        const m2 = nextDay.getMonth() + 1;
-        const d2 = nextDay.getDate();
+      // 1. 基準日
+      let targetDate = new Date();
+      targetDate.setDate(targetDate.getDate() + 30);
 
-        targetUrl = `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${spot.id}?f_teikei=&f_heya_su=1&f_otona_su=${adultNum}&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_sort=min_charge`;
-    }
-    else {
-        const queryName = spot.name || "";
-        targetUrl = spot.url || `https://search.travel.rakuten.co.jp/ds/hotel/search?f_teikei=&f_query=${encodeURIComponent(queryName)}&f_sort=min_charge`;
-    }
-    return targetUrl;
+      // ★修正: startDate, adultNum はPropsから受け取ったものを使用
+      if (startDate) {
+          const parsedStart = parseLocalYMD(startDate);
+          if (parsedStart) targetDate = parsedStart;
+      }
+
+      // 2. Dayによる日付加算
+      const dayNum = Number(spot.day);
+      if (!isNaN(dayNum) && dayNum > 0) {
+          targetDate.setDate(targetDate.getDate() + (dayNum - 1));
+      }
+
+      // 3. チェックアウト日
+      const checkOutDate = new Date(targetDate);
+      checkOutDate.setDate(targetDate.getDate() + 1);
+
+      // 4. パラメータ用変数
+      const y1 = targetDate.getFullYear();
+      const m1 = targetDate.getMonth() + 1;
+      const d1 = targetDate.getDate();
+      const y2 = checkOutDate.getFullYear();
+      const m2 = checkOutDate.getMonth() + 1;
+      const d2 = checkOutDate.getDate();
+
+      // ★ご指定のパラメータ文字列（順序・構成を完全に一致）
+      const paramString = `f_camp_id=5644483&f_syu=&f_teikei=&f_campaign=&f_flg=PLAN&f_otona_su=${adultNum}&f_heya_su=1&f_s1=0&f_s2=0&f_y1=0&f_y2=0&f_y3=0&f_y4=0&f_kin=&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_kin2=&f_hak=&f_tel=&f_tscm_flg=&f_p_no=&f_custom_code=&f_search_type=&f_static=1&f_tel=&f_service=&f_rm_equip=&f_sort=minNo`;
+
+      // 5. 楽天IDの抽出ロジック（強化版）
+      const extractRakutenId = (url: string) => {
+          if (!url) return null;
+          // plan/数字, HOTEL/数字, no=数字 などのパターンに対応
+          const match = url.match(/hotelinfo\/plan\/(\d+)/) || url.match(/HOTEL\/(\d+)/) || url.match(/no=(\d+)/);
+          return match ? match[1] : null;
+      };
+
+      let hotelId = null;
+      
+      // 保存されたURLからIDを探す
+      if (spot.url) {
+          hotelId = extractRakutenId(spot.url);
+      }
+      // spot.id 自体が数値（楽天ID）の場合
+      if (!hotelId && spot.id && /^\d+$/.test(String(spot.id))) {
+          hotelId = spot.id;
+      }
+
+      // ★ IDがある場合（これが本命）
+      if (hotelId) {
+          return `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotelId}?${paramString}`;
+      } 
+      
+      // IDがどうしても不明な場合のみ検索URLにする（ただし後ろのパラメータ順序は合わせる）
+      return `https://search.travel.rakuten.co.jp/ds/hotel/search?f_query=${encodeURIComponent(spot.name)}&${paramString}`;
   };
   
   const getInstagramTag = (query: string) => encodeURIComponent(query.replace(/[\s\(\)（）「」、。]/g, ''));
@@ -403,7 +446,6 @@ export default function SwipeView({
                   {isSuggestionMode ? "右スワイプした場所を確認しましょう" : "地名やテーマを入力して\nAIに新しいプランを相談しよう"}
               </p>
               
-              {/* ▼▼▼ 追加: 「まだ保存されていない候補」がある場合に手動保存ボタンを表示 ▼▼▼ */}
               {tempLikedSpots.length > 0 && (
                   <button 
                       onClick={() => setShowConfirmModal(true)}
@@ -412,7 +454,6 @@ export default function SwipeView({
                       <CheckCircle size={20}/> 選択した{tempLikedSpots.length}件を保存する
                   </button>
               )}
-              {/* ▲▲▲ 追加ここまで ▲▲▲ */}
 
               <div className="relative w-full mb-4">
                     <input 
@@ -561,7 +602,6 @@ export default function SwipeView({
       {/* 4. スワイプカード */}
       {activeSpots.length > 0 && areImagesReady && !showConfirmModal && !isSearching && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center animate-in zoom-in duration-300">
-        {/* ▼▼▼ 修正: z-indexをカード(1000~)より高い値(2000)に変更して最前面に表示 ▼▼▼ */}
             <div className="absolute top-6 z-[2000] pointer-events-none animate-in fade-in slide-in-from-top-2 duration-500">
                 <div className="bg-black/40 backdrop-blur-md text-white px-5 py-2 rounded-full text-xs font-black tracking-widest shadow-lg border border-white/10 flex items-center gap-2">
                     <span className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></span>
