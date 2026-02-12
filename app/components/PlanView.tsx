@@ -6,11 +6,13 @@ import {
   Edit3, Train, Plane, Ship, Footprints, Zap, 
   Image as ImageIcon, Link as LinkIcon, Camera, Upload, 
   Trash2, PlusCircle, MapPinned, ArrowRight, ArrowLeft,
-  ChevronDown, ChevronUp, Layers, Banknote, ExternalLink, StickyNote, Bus
+  ChevronDown, ChevronUp, Layers, Banknote, ExternalLink, StickyNote, Bus,
+  CalendarCheck, CalendarX, User, AlertCircle,Check,
+   CheckCircle // ←これらが必要です
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
-// html2canvasの型定義回避のためのダミー宣言
+// html2canvas回避
 declare global {
     interface Window {
         html2canvas: any;
@@ -18,9 +20,8 @@ declare global {
 }
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-const RAKUTEN_AFFILIATE_ID = "4fcc24e4.174bb117.4fcc24e5.5b178353"; 
 
-// --- 画像表示用コンポーネント ---
+// --- 画像コンポーネント ---
 const SpotImage = ({ src, alt, className }: { src?: string | null, alt: string, className?: string }) => {
     const [isLoading, setIsLoading] = useState(true);
     const [hasError, setHasError] = useState(false);
@@ -69,9 +70,178 @@ const SpotImage = ({ src, alt, className }: { src?: string | null, alt: string, 
                 onError={handleError}
                 className={`w-full h-full object-cover transition-opacity duration-300 ${isLoading ? 'opacity-0' : 'opacity-100'}`}
                 draggable={false} 
-                crossOrigin="anonymous" // CORS対策
+                crossOrigin="anonymous"
             />
         </div>
+    );
+};
+
+// --- 予約管理ボタンコンポーネント ---
+// --- 予約管理ボタンコンポーネント (確認フロー付き) ---
+// --- 予約管理ボタンコンポーネント (確認フロー・担当者選択機能付き) ---
+const ReservationButton = ({ spot, roomId, onUpdate, currentUser, compact = false }: { spot: any, roomId: string, onUpdate: (s: any) => void, currentUser?: string, compact?: boolean }) => {
+    const [showModal, setShowModal] = useState(false);
+    const [nameInput, setNameInput] = useState("");
+    const [isUpdating, setIsUpdating] = useState(false);
+    const [viewMode, setViewMode] = useState<'default' | 'confirm_cancel'>('default');
+
+    const isReserved = spot.reservation_status === 'reserved';
+
+    const handleOpen = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        // 名前入力の初期値: 既に予約者がいればその人、いなければ自分
+        setNameInput(spot.reserved_by || currentUser || "Guest");
+        setViewMode('default');
+        setShowModal(true);
+    };
+
+    const handleUpdateStatus = async (status: 'reserved' | 'unreserved') => {
+        if (!spot.id) return;
+        setIsUpdating(true);
+        try {
+            const updates = {
+                reservation_status: status,
+                reserved_by: status === 'reserved' ? nameInput : null
+            };
+            
+            // DB更新
+            if (!String(spot.id).startsWith('spot-') && !String(spot.id).startsWith('ai-')) {
+                await supabase.from('spots').update(updates).eq('id', spot.id);
+            }
+            
+            onUpdate({ ...spot, ...updates });
+            setShowModal(false);
+        } catch (e) {
+            alert("更新エラーが発生しました");
+        } finally {
+            setIsUpdating(false);
+        }
+    };
+
+    // モーダル内のコンテンツ切り替え
+    const renderModalContent = () => {
+        // A. まだ予約していない場合 → 予約確認・担当者入力
+        if (!isReserved) {
+            return (
+                <>
+                    <h3 className="font-bold text-gray-800 mb-4 flex items-center gap-2 text-lg">
+                        <span className="text-2xl">🏨</span> 予約完了にしますか？
+                    </h3>
+                    
+                    <div className="mb-6">
+                        <label className="text-xs font-bold text-gray-500 mb-1 block">予約担当者 (変更可能)</label>
+                        <div className="relative">
+                            <User size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"/>
+                            <input 
+                                type="text" 
+                                value={nameInput}
+                                onChange={(e) => setNameInput(e.target.value)}
+                                className="w-full bg-gray-50 border border-gray-200 rounded-xl py-3 pl-10 pr-3 text-base font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition"
+                                placeholder="名前を入力"
+                            />
+                        </div>
+                        <p className="text-[10px] text-gray-400 mt-1 ml-1">※実際に予約サイトでの手続きを済ませてから押してください</p>
+                    </div>
+
+                    <div className="flex gap-3">
+                        <button onClick={() => setShowModal(false)} className="flex-1 bg-gray-100 text-gray-500 font-bold py-3 rounded-xl hover:bg-gray-200 transition">
+                            キャンセル
+                        </button>
+                        <button 
+                            onClick={() => handleUpdateStatus('reserved')}
+                            disabled={!nameInput.trim() || isUpdating}
+                            className="flex-1 bg-green-600 text-white font-bold py-3 rounded-xl hover:bg-green-700 transition flex items-center justify-center gap-2 shadow-md shadow-green-200"
+                        >
+                            {isUpdating ? <Loader2 className="animate-spin"/> : <Check size={18}/>}
+                            はい
+                        </button>
+                    </div>
+                </>
+            );
+        }
+
+        // B. 既に予約済みの場合
+        // B-1. 未予約に戻す確認画面
+        if (viewMode === 'confirm_cancel') {
+            return (
+                <>
+                    <h3 className="font-bold text-gray-800 mb-4 flex items-center gap-2 text-lg text-red-600">
+                        <AlertCircle size={24}/> 未予約に戻しますか？
+                    </h3>
+                    <p className="text-sm text-gray-600 mb-6 font-medium">
+                        ステータスを「未予約」に戻します。<br/>
+                        <span className="text-xs text-gray-400">※実際の予約キャンセルは宿への連絡が必要です。</span>
+                    </p>
+                    <div className="flex gap-3">
+                        <button onClick={() => setViewMode('default')} className="flex-1 bg-gray-100 text-gray-500 font-bold py-3 rounded-xl hover:bg-gray-200 transition">
+                            いいえ
+                        </button>
+                        <button 
+                            onClick={() => handleUpdateStatus('unreserved')}
+                            disabled={isUpdating}
+                            className="flex-1 bg-red-500 text-white font-bold py-3 rounded-xl hover:bg-red-600 transition flex items-center justify-center gap-2 shadow-md shadow-red-200"
+                        >
+                            {isUpdating ? <Loader2 className="animate-spin"/> : <Trash2 size={18}/>}
+                            はい
+                        </button>
+                    </div>
+                </>
+            );
+        }
+
+        // B-2. 予約詳細画面 (デフォルト)
+        return (
+            <>
+                <div className="text-center mb-6">
+                    <div className="w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-3">
+                        <Check size={32} strokeWidth={4}/>
+                    </div>
+                    <h3 className="font-black text-xl text-gray-800">予約済み</h3>
+                    <div className="mt-2 inline-flex items-center gap-2 bg-gray-50 px-4 py-2 rounded-full border border-gray-100">
+                        <User size={14} className="text-gray-400"/>
+                        <span className="text-sm font-bold text-gray-700">{spot.reserved_by}</span>
+                    </div>
+                </div>
+
+                <div className="space-y-3">
+                    <button 
+                        onClick={() => setViewMode('confirm_cancel')}
+                        className="w-full bg-white border-2 border-red-100 text-red-500 font-bold py-3 rounded-xl hover:bg-red-50 transition flex items-center justify-center gap-2"
+                    >
+                        未予約に戻す
+                    </button>
+                    <button onClick={() => setShowModal(false)} className="w-full text-gray-400 font-bold py-2 text-sm hover:text-gray-600">
+                        閉じる
+                    </button>
+                </div>
+            </>
+        );
+    };
+
+    return (
+        <>
+            <button 
+                onClick={handleOpen}
+                className={`flex items-center justify-center gap-1.5 rounded-lg font-bold shadow-sm transition-all border shrink-0 z-20 ${
+                    compact ? "px-2 py-1 text-[9px]" : "px-3 py-1.5 text-[10px]"
+                } ${
+                    isReserved 
+                    ? "bg-green-500 text-white border-green-600 hover:bg-green-600 shadow-green-200" 
+                    : "bg-white text-red-500 border-red-200 hover:bg-red-50"
+                }`}
+            >
+                {isReserved ? <Check size={compact ? 12 : 14} strokeWidth={3}/> : <AlertCircle size={compact ? 12 : 14}/>}
+                <span>{isReserved ? "予約済" : "未予約！"}</span>
+            </button>
+
+            {showModal && (
+                <div className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={(e) => e.stopPropagation()}>
+                    <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm animate-in zoom-in-95" onClick={(e) => e.stopPropagation()}>
+                        {renderModalContent()}
+                    </div>
+                </div>
+            )}
+        </>
     );
 };
 
@@ -116,7 +286,6 @@ export default function PlanView({
   
   const captureRef = useRef<HTMLDivElement>(null); 
   const scrollContainerRef = useRef<HTMLDivElement>(null); 
-  
   const listRef = useRef<HTMLDivElement>(null);
   const scrollInterval = useRef<NodeJS.Timeout | null>(null);
 
@@ -152,47 +321,49 @@ export default function PlanView({
       if (onScreenshotClosed) onScreenshotClosed();
   };
 
-  // タイムラインデータの同期処理
-  // 親コンポーネント(spots)から最新情報（特にID、画像、コメント等）を反映させる
+  // 同期処理
   useEffect(() => {
       if (timeline.length === 0) return;
 
       setTimeline(prev => prev.map(item => {
           if (item.type !== 'spot') return item;
           
-          // 親のspotsから、IDまたは名前で該当する最新スポットを探す
           const freshSpot = spots.find(s => 
               (s.id && String(s.id) === String(item.spot.id)) || 
               s.name === item.spot.name
           );
 
           if (freshSpot) {
-              const needsUpdate = 
-                  item.spot.id !== freshSpot.id || // IDが変わった場合（仮ID→本IDなど）も更新
-                  item.spot.comment !== freshSpot.comment ||
-                  item.spot.link !== freshSpot.link ||
-                  item.spot.cost !== freshSpot.price ||
-                  item.image !== (freshSpot.image_url || item.image);
-
-              if (needsUpdate) {
-                  return { 
-                      ...item, 
-                      spot: {
-                          ...item.spot,    
-                          ...freshSpot, // ここでIDも含めて最新情報で上書きされる
-                          cost: freshSpot.price,      
-                          comment: freshSpot.comment, 
-                          link: freshSpot.link,       
-                          url: freshSpot.link, 
-                          image_url: freshSpot.image_url
-                      },
-                      image: freshSpot.image_url || item.image 
-                  };
-              }
+              return { 
+                  ...item, 
+                  spot: {
+                      ...item.spot,    
+                      ...freshSpot,
+                      cost: freshSpot.price || item.spot.cost,      
+                      comment: freshSpot.comment || item.spot.comment, 
+                      link: freshSpot.link || item.spot.link,       
+                      url: freshSpot.url || freshSpot.link || item.spot.url, 
+                      image_url: freshSpot.image_url || item.spot.image_url,
+                      reservation_status: freshSpot.reservation_status, // 同期
+                      reserved_by: freshSpot.reserved_by // 同期
+                  },
+                  image: freshSpot.image_url || item.image 
+              };
           }
           return item;
       }));
   }, [spots, timeline.length]);
+
+  // 予約状態更新ハンドラ
+  const handleSpotUpdate = (updatedSpot: any) => {
+      const newSpots = spots.map(s => {
+          if ((s.id && String(s.id) === String(updatedSpot.id)) || s.name === updatedSpot.name) {
+              return { ...s, ...updatedSpot };
+          }
+          return s;
+      });
+      onUpdateSpots(newSpots);
+  };
 
   const prevDayHotel = useMemo(() => {
       if (selectedDay <= 1) return null;
@@ -237,8 +408,7 @@ export default function PlanView({
       });
   }, [activeDaySpots, timeline]);
 
- const getAffiliateUrl = (hotel: any) => {
-      // 日付パース
+  const getAffiliateUrl = (hotel: any) => {
       const parseLocalYMD = (ymd: string) => {
           if (!ymd) return null;
           const parts = ymd.split('-').map(Number);
@@ -246,7 +416,6 @@ export default function PlanView({
           return new Date(parts[0], parts[1] - 1, parts[2]);
       };
 
-      // 1. 基準日
       let targetDate = new Date();
       targetDate.setDate(targetDate.getDate() + 30);
 
@@ -255,17 +424,14 @@ export default function PlanView({
           if (parsedStart) targetDate = parsedStart;
       }
 
-      // 2. Dayによる日付加算
       const dayNum = Number(hotel.day || selectedDay);
       if (!isNaN(dayNum) && dayNum > 0) {
           targetDate.setDate(targetDate.getDate() + (dayNum - 1));
       }
 
-      // 3. チェックアウト日
       const checkOutDate = new Date(targetDate);
       checkOutDate.setDate(targetDate.getDate() + 1);
 
-      // 4. パラメータ用変数
       const y1 = targetDate.getFullYear();
       const m1 = targetDate.getMonth() + 1;
       const d1 = targetDate.getDate();
@@ -273,34 +439,22 @@ export default function PlanView({
       const m2 = checkOutDate.getMonth() + 1;
       const d2 = checkOutDate.getDate();
 
-      // ★ご指定のパラメータ文字列（順序・構成を完全に一致）
-      const paramString = `f_camp_id=5644483&f_syu=&f_teikei=&f_campaign=&f_flg=PLAN&f_otona_su=${adultNum}&f_heya_su=1&f_s1=0&f_s2=0&f_y1=0&f_y2=0&f_y3=0&f_y4=0&f_kin=&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_kin2=&f_hak=&f_tel=&f_tscm_flg=&f_p_no=&f_custom_code=&f_search_type=&f_static=1&f_tel=&f_service=&f_rm_equip=&f_sort=minNo`;
+      const paramString = `f_syu=&f_teikei=&f_campaign=&f_flg=PLAN&f_otona_su=${adultNum}&f_heya_su=1&f_s1=0&f_s2=0&f_y1=0&f_y2=0&f_y3=0&f_y4=0&f_kin=&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_kin2=&f_hak=&f_tel=&f_tscm_flg=&f_p_no=&f_custom_code=&f_search_type=&f_static=1&f_tel=&f_service=&f_rm_equip=&f_sort=minNo`;
 
-      // 5. 楽天IDの抽出ロジック（強化版）
       const extractRakutenId = (url: string) => {
           if (!url) return null;
-          // plan/数字, HOTEL/数字, no=数字 などのパターンに対応
           const match = url.match(/hotelinfo\/plan\/(\d+)/) || url.match(/HOTEL\/(\d+)/) || url.match(/no=(\d+)/);
           return match ? match[1] : null;
       };
 
       let hotelId = null;
-      
-      // 保存されたURLからIDを探す
-      if (hotel.url) {
-          hotelId = extractRakutenId(hotel.url);
-      }
-      // spot.id 自体が数値（楽天ID）の場合
-      if (!hotelId && hotel.id && /^\d+$/.test(String(hotel.id))) {
-          hotelId = hotel.id;
-      }
+      if (hotel.url) hotelId = extractRakutenId(hotel.url);
+      if (!hotelId && hotel.id && /^\d+$/.test(String(hotel.id))) hotelId = hotel.id;
 
-      // ★ IDがある場合（これが本命）
       if (hotelId) {
           return `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotelId}?${paramString}`;
       } 
       
-      // IDがどうしても不明な場合のみ検索URLにする（ただし後ろのパラメータ順序は合わせる）
       return `https://search.travel.rakuten.co.jp/ds/hotel/search?f_query=${encodeURIComponent(hotel.name)}&${paramString}`;
   };
 
@@ -315,12 +469,9 @@ export default function PlanView({
           const date = new Date();
           date.setHours(hours, minutes, 0, 0);
 
-          if (date.getTime() < Date.now()) {
-              date.setDate(date.getDate() + 1);
-          }
-
+          if (date.getTime() < Date.now()) date.setDate(date.getDate() + 1);
           const timestamp = Math.floor(date.getTime() / 1000);
-          return `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(prevSpot)}&destination=${encodeURIComponent(nextSpot)}&travelmode=${mode}&departure_time=${timestamp}`;
+          return `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(prevSpot)}&destination=${encodeURIComponent(nextSpot)}&travelmode=${mode}`;
       }
       return null;
   };
@@ -346,9 +497,7 @@ export default function PlanView({
               newItem.arrival = currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
               
               let stayTime = item.stay_min;
-              if (stayTime === undefined || stayTime === null) {
-                  stayTime = item.spot.stay_time || 60;
-              }
+              if (stayTime === undefined || stayTime === null) stayTime = item.spot.stay_time || 60;
 
               if (item.spot.is_hotel) {
                   const nextMorning = new Date(currentTime);
@@ -369,9 +518,7 @@ export default function PlanView({
   };
 
   useEffect(() => {
-      if (timeline.length > 0) {
-          setTimeline(calculateSchedule(timeline));
-      }
+      if (timeline.length > 0) setTimeline(calculateSchedule(timeline));
   }, [startTime]);
 
   const fetchSpotImage = async (name: string) => {
@@ -458,7 +605,6 @@ export default function PlanView({
               !(s.id && String(s.id) === String(prevDayHotel.id)) && s.name !== prevDayHotel.name
           );
           others.sort((a, b) => (b.votes || 0) - (a.votes || 0));
-          
           targetSpots = [prevDayHotel, ...others];
       } else {
           targetSpots.sort((a, b) => (b.votes || 0) - (a.votes || 0));
@@ -491,17 +637,12 @@ export default function PlanView({
     } catch (e: any) { alert(`エラー: ${e.message}`); } finally { setIsProcessing(false); }
   };
 
-  // --- 自動スクロール制御関数 ---
   const startAutoScroll = (direction: 'up' | 'down', container: HTMLDivElement) => {
     if (scrollInterval.current) return; 
-    
     scrollInterval.current = setInterval(() => {
         const speed = 15; 
-        if (direction === 'up') {
-            container.scrollTop -= speed;
-        } else {
-            container.scrollTop += speed;
-        }
+        if (direction === 'up') container.scrollTop -= speed;
+        else container.scrollTop += speed;
     }, 16); 
   };
 
@@ -529,18 +670,13 @@ export default function PlanView({
 
       const container = listRef.current;
       if (!container) return;
-
       const { top, bottom } = container.getBoundingClientRect();
       const mouseY = e.clientY;
       const threshold = 100; 
 
-      if (mouseY < top + threshold) {
-          startAutoScroll('up', container);
-      } else if (mouseY > bottom - threshold) {
-          startAutoScroll('down', container);
-      } else {
-          stopAutoScroll(); 
-      }
+      if (mouseY < top + threshold) startAutoScroll('up', container);
+      else if (mouseY > bottom - threshold) startAutoScroll('down', container);
+      else stopAutoScroll(); 
   };
   
   const onDrop = async (e: React.DragEvent, targetTimelineIndex: number) => {
@@ -556,7 +692,6 @@ export default function PlanView({
     const draggedItem = timeline[effectiveSourceIndex];
     if (!draggedItem || draggedItem.type !== 'spot') return; 
 
-    // 1. ローカルのタイムラインを並び替え
     const currentSpotsOnly = timeline.filter(item => item.type === 'spot');
     const currentTravelsOnly = timeline.filter(item => item.type === 'travel');
     const draggedSpotIndex = currentSpotsOnly.findIndex(s => s.spot.name === draggedItem.spot.name);
@@ -583,7 +718,6 @@ export default function PlanView({
     setTimeline(reconstructedTimeline); 
     setDraggedItemIndex(null);
 
-    // 2. データベースと親コンポーネントの更新
     if (roomId) {
         const activeSpots = newSpotsOrder.map(item => item.spot);
         const fullSpotsList = [...spots]; 
@@ -608,7 +742,7 @@ export default function PlanView({
     }
   };
 
-const handleEditSave = async () => {
+  const handleEditSave = async () => {
       if (!editItem) return;
       
       const newTimeline = [...timeline];
@@ -647,7 +781,7 @@ const handleEditSave = async () => {
       setEditItem(null);
   };
 
-const handleTimeChange = (index: number, value: string) => {
+  const handleTimeChange = (index: number, value: string) => {
     const val = value === '' ? 0 : parseInt(value, 10);
     if (isNaN(val)) return;
     
@@ -659,23 +793,23 @@ const handleTimeChange = (index: number, value: string) => {
         if(newTimeline[index].spot) newTimeline[index].spot.stay_time = val;
     }
     setTimeline(newTimeline);
-};
+  };
 
-const handleDepartureChange = (index: number, newDeparture: string) => {
+  const handleDepartureChange = (index: number, newDeparture: string) => {
     const newTimeline = [...timeline];
     if (newTimeline[index]) {
         newTimeline[index].departure = newDeparture;
         setTimeline(newTimeline);
     }
-};
+  };
 
-const handleArrivalChange = (index: number, newArrival: string) => {
+  const handleArrivalChange = (index: number, newArrival: string) => {
     const newTimeline = [...timeline];
     if (newTimeline[index]) {
         newTimeline[index].arrival = newArrival;
         setTimeline(newTimeline);
     }
-};
+  };
 
   const handleTransportChange = (index: number, mode: string) => {
       const newTimeline = [...timeline];
@@ -834,7 +968,7 @@ const handleArrivalChange = (index: number, newArrival: string) => {
           <div className="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
               <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl animate-in zoom-in-95 duration-200 flex flex-col max-h-[70vh] mb-16">
                   
-                  {/* ヘッダー (固定) */}
+                  {/* ヘッダー */}
                   <div className="flex justify-between items-center border-b border-gray-100 p-4 shrink-0">
                       <h3 className="font-bold text-gray-800 flex items-center gap-2">
                           <Edit3 size={16}/> {editItem.type === 'spot' ? 'スポット詳細を編集' : '移動詳細を編集'}
@@ -842,9 +976,8 @@ const handleArrivalChange = (index: number, newArrival: string) => {
                       <button onClick={() => setEditItem(null)} className="p-2 bg-gray-100 rounded-full hover:bg-gray-200 text-gray-500"><X size={16}/></button>
                   </div>
                   
-                  {/* コンテンツ (スクロール可能) */}
+                  {/* コンテンツ */}
                   <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                    {/* --- スポット編集モード --- */}
                     {editItem.type === 'spot' && (
                         <>
                             <div>
@@ -888,7 +1021,6 @@ const handleArrivalChange = (index: number, newArrival: string) => {
                         </>
                     )}
 
-                    {/* --- 移動編集モード --- */}
                     {editItem.type === 'travel' && (
                         <>
                             <div className="grid grid-cols-2 gap-3">
@@ -927,7 +1059,7 @@ const handleArrivalChange = (index: number, newArrival: string) => {
                             </div>
 
                             <div>
-                                <label className="text-xs font-bold text-gray-500 mb-1 block">移動メモ (乗り場・便名など)</label>
+                                <label className="text-xs font-bold text-gray-500 mb-1 block">移動メモ</label>
                                 <textarea 
                                     value={editItem.data.note || ''} 
                                     onChange={(e) => setEditItem({...editItem, data: {...editItem.data, note: e.target.value}})} 
@@ -935,7 +1067,7 @@ const handleArrivalChange = (index: number, newArrival: string) => {
                                 />
                             </div>
                             <div>
-                                <label className="text-xs font-bold text-gray-500 mb-1 block">参考URL (時刻表など)</label>
+                                <label className="text-xs font-bold text-gray-500 mb-1 block">参考URL</label>
                                 <input 
                                     type="text" 
                                     value={editItem.data.url || ''} 
@@ -947,7 +1079,7 @@ const handleArrivalChange = (index: number, newArrival: string) => {
                     )}
                   </div>
 
-                  {/* フッター (固定) */}
+                  {/* フッター */}
                   <div className="p-4 border-t border-gray-100 shrink-0">
                       <button onClick={handleEditSave} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition shadow-lg shadow-indigo-200">変更を保存</button>
                   </div>
@@ -1072,86 +1204,43 @@ const handleArrivalChange = (index: number, newArrival: string) => {
                                                 <button onClick={(e) => { e.stopPropagation(); toggleSpotInclusion(item.spot, false); }} className="text-gray-400 hover:text-red-500 p-1"><MinusCircle size={16}/></button>
                                             </div>
                                            
-<div className="flex items-center gap-2 text-xs font-bold text-indigo-500 font-mono bg-indigo-50 w-max px-2 py-0.5 rounded" onClick={(e) => e.stopPropagation()}>
-    {(() => {
-        let isArrivalInconsistent = false;
-        const prevTravel = timeline[i - 1];
-        const prevSpot = timeline[i - 2];
-        
-        if (prevTravel && prevTravel.type === 'travel' && prevSpot && prevSpot.type === 'spot' && prevSpot.departure && item.arrival) {
-            const [pH, pM] = prevSpot.departure.split(':').map(Number);
-            const [cH, cM] = item.arrival.split(':').map(Number);
-            const travelMin = prevTravel.duration_min || 0;
-            
-            const expectedMin = (pH * 60 + pM + travelMin) % 1440;
-            const currentMin = (cH * 60 + cM) % 1440;
-            
-            if (expectedMin !== currentMin) {
-                isArrivalInconsistent = true;
-            }
-        }
-
-        return (
-            <input 
-                type="time" 
-                value={item.arrival || ""} 
-                onChange={(e) => handleArrivalChange(i, e.target.value)}
-                className={`bg-transparent font-bold text-xs font-mono w-[36px] text-center focus:outline-none border-b border-transparent focus:border-indigo-300 p-0 ${
-                    isArrivalInconsistent 
-                    ? "text-red-500 underline decoration-red-500 decoration-wavy" 
-                    : "text-indigo-600"
-                }`}
-            />
-        );
-    })()}
-    
-    <ArrowRight size={10} className="text-indigo-300"/>
-    
-    <input 
-        type="time" 
-        value={item.departure || ""} 
-        onChange={(e) => handleDepartureChange(i, e.target.value)}
-        className="bg-transparent text-indigo-600 font-bold text-xs font-mono w-[36px] text-center focus:outline-none border-b border-transparent focus:border-indigo-300 p-0"
-    />
-</div>
+                                            <div className="flex items-center gap-2 text-xs font-bold text-indigo-500 font-mono bg-indigo-50 w-max px-2 py-0.5 rounded" onClick={(e) => e.stopPropagation()}>
+                                                {/* 到着・出発時間入力欄 (略) */}
+                                                <input 
+                                                    type="time" 
+                                                    value={item.arrival || ""} 
+                                                    onChange={(e) => handleArrivalChange(i, e.target.value)}
+                                                    className="bg-transparent font-bold text-xs font-mono w-[36px] text-center focus:outline-none border-b border-transparent focus:border-indigo-300 p-0 text-indigo-600"
+                                                />
+                                                <ArrowRight size={10} className="text-indigo-300"/>
+                                                <input 
+                                                    type="time" 
+                                                    value={item.departure || ""} 
+                                                    onChange={(e) => handleDepartureChange(i, e.target.value)}
+                                                    className="bg-transparent text-indigo-600 font-bold text-xs font-mono w-[36px] text-center focus:outline-none border-b border-transparent focus:border-indigo-300 p-0"
+                                                />
+                                            </div>
                                         </div>
 
                                         <div className="flex flex-col gap-1.5 mt-2">
                                             <div className="flex flex-wrap gap-1.5 items-center">
+                                                
+                                                {/* ★★★ 予約管理ボタン（ホテルのみ） ★★★ */}
+                                                {item.spot.is_hotel && (
+                                                    <div onClick={(e) => e.stopPropagation()}>
+                                                        <ReservationButton 
+                                                            spot={item.spot} 
+                                                            roomId={roomId} 
+                                                            onUpdate={handleSpotUpdate} 
+                                                            currentUser={currentUser}
+                                                        />
+                                                    </div>
+                                                )}
+
                                                 {!item.is_overnight && (
                                                     <div className="flex items-center gap-1 bg-gray-50 px-2 py-1 rounded border border-gray-200" onClick={(e) => e.stopPropagation()}>
                                                         <Clock size={10} className="text-gray-500"/>
-<span className="text-xs font-bold">
-    {(() => {
-        if (!item.arrival || !item.departure) return <span className="text-gray-700">0分</span>;
-        
-        const [sH, sM] = item.arrival.split(':').map(Number);
-        const [eH, eM] = item.departure.split(':').map(Number);
-        const diff = (eH * 60 + eM) - (sH * 60 + sM);
-        
-        const isInvalid = diff < 0;
-
-        const abs = Math.abs(diff);
-        const h = Math.floor(abs / 60);
-        const m = abs % 60;
-        const sign = isInvalid ? "-" : "";
-        
-        let text = `${sign}${m}分`;
-        if (h > 0) {
-            text = `${sign}${h}時間${m > 0 ? m + "分" : ""}`;
-        }
-        
-        return (
-            <span className={
-                isInvalid 
-                ? "text-red-500 underline decoration-red-500 decoration-wavy" 
-                : "text-gray-700" 
-            }>
-                {text}
-            </span>
-        );
-    })()}
-</span>
+                                                        <span className="text-xs font-bold text-gray-700">{item.stay_min}分</span>
                                                     </div>
                                                 )}
 
@@ -1232,7 +1321,6 @@ const handleArrivalChange = (index: number, newArrival: string) => {
                                             {activeTransportMenuIndex === i && (
                                                 <>
                                                     <div className="fixed inset-0 z-40" onClick={(e) => { e.stopPropagation(); setActiveTransportMenuIndex(null); }} />
-                                                    
                                                     <div className="absolute top-full left-0 mt-2 bg-white shadow-xl rounded-xl border border-gray-100 p-2 z-50 flex flex-wrap gap-1 w-[180px] animate-in fade-in zoom-in-95">
                                                         {TRANSPORT_MODES.map((m) => (
                                                             <button

@@ -367,7 +367,7 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
     const hotelId = hotel.id;
 
     // ★ご指定のパラメータ文字列（順序・構成を完全に一致）
-    const paramString = `f_camp_id=5644483&f_syu=&f_teikei=&f_campaign=&f_flg=PLAN&f_otona_su=${otonaSu}&f_heya_su=1&f_s1=0&f_s2=0&f_y1=0&f_y2=0&f_y3=0&f_y4=0&f_kin=&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_kin2=&f_hak=&f_tel=&f_tscm_flg=&f_p_no=&f_custom_code=&f_search_type=&f_static=1&f_tel=&f_service=&f_rm_equip=&f_sort=minNo`;
+    const paramString = `f_syu=&f_teikei=&f_campaign=&f_flg=PLAN&f_otona_su=${otonaSu}&f_heya_su=1&f_s1=0&f_s2=0&f_y1=0&f_y2=0&f_y3=0&f_y4=0&f_kin=&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_kin2=&f_hak=&f_tel=&f_tscm_flg=&f_p_no=&f_custom_code=&f_search_type=&f_static=1&f_tel=&f_service=&f_rm_equip=&f_sort=minNo`;
 
     if (hotelId) {
          return `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotelId}?${paramString}`;

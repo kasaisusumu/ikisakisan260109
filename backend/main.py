@@ -227,6 +227,119 @@ def is_inside_polygon(lat, lng, poly_coords):
         j = i
     return inside
 
+# ▼▼▼ 修正: 都道府県名変換・補完マップ ▼▼▼
+# 漢字(接尾辞なし/あり)・ローマ字 -> 正しい都道府県名(漢字)
+PREF_NORMALIZER = {
+    # 北海道・東北
+    "北海道": "北海道", "Hokkaido": "北海道",
+    "青森": "青森県", "Aomori": "青森県",
+    "岩手": "岩手県", "Iwate": "岩手県",
+    "宮城": "宮城県", "Miyagi": "宮城県",
+    "秋田": "秋田県", "Akita": "秋田県",
+    "山形": "山形県", "Yamagata": "山形県",
+    "福島": "福島県", "Fukushima": "福島県",
+    # 関東
+    "茨城": "茨城県", "Ibaraki": "茨城県",
+    "栃木": "栃木県", "Tochigi": "栃木県",
+    "群馬": "群馬県", "Gunma": "群馬県",
+    "埼玉": "埼玉県", "Saitama": "埼玉県",
+    "千葉": "千葉県", "Chiba": "千葉県",
+    "東京": "東京都", "Tokyo": "東京都",
+    "神奈川": "神奈川県", "Kanagawa": "神奈川県",
+    # 中部
+    "新潟": "新潟県", "Niigata": "新潟県",
+    "富山": "富山県", "Toyama": "富山県",
+    "石川": "石川県", "Ishikawa": "石川県",
+    "福井": "福井県", "Fukui": "福井県",
+    "山梨": "山梨県", "Yamanashi": "山梨県",
+    "長野": "長野県", "Nagano": "長野県",
+    "岐阜": "岐阜県", "Gifu": "岐阜県",
+    "静岡": "静岡県", "Shizuoka": "静岡県",
+    "愛知": "愛知県", "Aichi": "愛知県",
+    # 近畿
+    "三重": "三重県", "Mie": "三重県",
+    "滋賀": "滋賀県", "Shiga": "滋賀県",
+    "京都": "京都府", "Kyoto": "京都府",
+    "大阪": "大阪府", "Osaka": "大阪府",
+    "兵庫": "兵庫県", "Hyogo": "兵庫県",
+    "奈良": "奈良県", "Nara": "奈良県",
+    "和歌山": "和歌山県", "Wakayama": "和歌山県",
+    # 中国
+    "鳥取": "鳥取県", "Tottori": "鳥取県",
+    "島根": "島根県", "Shimane": "島根県",
+    "岡山": "岡山県", "Okayama": "岡山県",
+    "広島": "広島県", "Hiroshima": "広島県",
+    "山口": "山口県", "Yamaguchi": "山口県",
+    # 四国
+    "徳島": "徳島県", "Tokushima": "徳島県",
+    "香川": "香川県", "Kagawa": "香川県",
+    "愛媛": "愛媛県", "Ehime": "愛媛県",
+    "高知": "高知県", "Kochi": "高知県",
+    # 九州・沖縄
+    "福岡": "福岡県", "Fukuoka": "福岡県",
+    "佐賀": "佐賀県", "Saga": "佐賀県",
+    "長崎": "長崎県", "Nagasaki": "長崎県",
+    "熊本": "熊本県", "Kumamoto": "熊本県",
+    "大分": "大分県", "Oita": "大分県",
+    "宮崎": "宮崎県", "Miyazaki": "宮崎県",
+    "鹿児島": "鹿児島県", "Kagoshima": "鹿児島県",
+    "沖縄": "沖縄県", "Okinawa": "沖縄県"
+}
+
+# ▼▼▼ 修正: 住所整形用ヘルパー関数 (強制補完ロジック追加) ▼▼▼
+def get_clean_address(props: dict) -> str:
+    """Geoapifyのプロパティから綺麗な日本語住所を生成する"""
+    state = props.get('state', '')
+    
+    # 1. 無効なstateのクリーニング
+    if not state or state in ['NN', 'Other', 'Others', 'その他', 'JP', 'Japan']:
+        state = ''
+    
+    formatted = props.get("formatted", "")
+    
+    # 2. stateが空の場合、または英字の場合、formattedから都道府県名を強制的に探す
+    #    (例: formatted="Nagano, Nagano-shi..." -> state="長野県")
+    if not state or all(ord(c) < 128 for c in state):
+        for key, val in PREF_NORMALIZER.items():
+            # フォーマット内に県名キーが含まれていればそれを採用
+            if key in formatted:
+                state = val
+                break
+    
+    # 3. stateの正規化 (ローマ字や「長野」→「長野県」への変換)
+    if state in PREF_NORMALIZER:
+        state = PREF_NORMALIZER[state]
+    else:
+        # マップになくても、接尾辞がなければ補完を試みる
+        if state and not any(state.endswith(s) for s in ['都', '道', '府', '県']):
+            if state == '東京': state += '都'
+            elif state in ['京都', '大阪']: state += '府'
+            elif state != '北海道': state += '県'
+
+    # 4. 市区町村・郡・区の取得
+    city = props.get('city', '') or props.get('town', '') or props.get('village', '') or props.get('municipality', '')
+    if city in ['NN', 'Other', 'Others', 'その他']: city = ''
+    
+    county = props.get('county', '') 
+    if county in ['NN', 'Other', 'Others', 'その他']: county = ''
+    
+    ward = props.get('suburb', '') or props.get('district', '') 
+    if ward in ['NN', 'Other', 'Others', 'その他']: ward = ''
+
+    # 5. 日本の住所形式で結合
+    address_parts = []
+    if state: address_parts.append(state)
+    if county and not city: address_parts.append(county)
+    if city: address_parts.append(city)
+    if ward: address_parts.append(ward)
+
+    # 6. 生成
+    if address_parts:
+        return "".join(address_parts)
+
+    # 7. フォールバック
+    return formatted.replace("NN", "").replace(" ,", "").strip(", ")
+
 async def fetch_with_retry(client, url, params=None, headers=None, retries=5, initial_timeout=10.0):
     current_timeout = initial_timeout
     wait_time = 1.0
@@ -368,7 +481,8 @@ async def fetch_spot_coordinates(client, target_name: str, search_query: str):
                     is_match = is_contained or match_ratio >= 0.5
 
                     if is_match:
-                        desc = formatted_addr.replace(result_name, "").strip(", ")
+                        # ▼▼▼ 修正: get_clean_address を使用 ▼▼▼
+                        desc = get_clean_address(props)
                         if not desc: desc = "住所不明"
 
                         state = props.get("state", "")
@@ -432,9 +546,8 @@ async def fetch_spot_by_coordinates(client, lat: float, lng: float, fallback_nam
                 if not result_name:
                     result_name = fallback_name
 
-                formatted_addr = props.get("formatted", "")
-                
-                desc = formatted_addr.replace(result_name, "").strip(", ")
+                # ▼▼▼ 修正: get_clean_address を使用 ▼▼▼
+                desc = get_clean_address(props)
                 desc = re.sub(r'〒\d{3}-\d{4}', '', desc).strip()
                 if not desc: desc = "住所不明"
 
@@ -514,7 +627,8 @@ async def nearby_spots(req: NearbyRequest):
                     coords = geometry["coordinates"]
                     if not isinstance(coords, list) or len(coords) != 2: continue
 
-                    formatted = props.get("formatted", "")
+                    # ▼▼▼ 修正: get_clean_address を使用 ▼▼▼
+                    formatted = get_clean_address(props)
                     
                     categories_list = props.get("categories", [])
                     cat_str = "スポット"

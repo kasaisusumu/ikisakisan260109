@@ -16,7 +16,8 @@ import {
   PenTool, Loader2, Clock, ThumbsUp, Link as LinkIcon, MessageSquare,
   Save, XCircle, Edit3, ArrowRight, Maximize,
   Car, Train, Footprints, Zap, Plane, Ship, Camera, Globe, ArrowLeftCircle, Database,
-  Banknote, ExternalLink as ExternalLinkIcon, StickyNote, Check,Sparkles,Bus // ← ★ここに追加
+  Banknote, ExternalLink as ExternalLinkIcon, StickyNote, Sparkles,Bus,
+  CalendarCheck, CalendarX, User, AlertCircle, Check // ← ★これらを追加 // ← ★ここに追加
 } from 'lucide-react';
 
 import BottomNav from './components/BottomNav';
@@ -716,6 +717,8 @@ const onTimelineDrop = async (e: React.DragEvent, targetIndex: number) => {
   const [notification, setNotification] = useState<{ text: string, color: string } | null>(null);
   const [expandedImage, setExpandedImage] = useState<string | null>(null);
   const attemptedImageFetch = useRef<Set<string>>(new Set());
+  // ▼▼▼ 追加: 住所の再取得を試みたスポットIDを記録するRef ▼▼▼
+  const attemptedAddressFetch = useRef<Set<string>>(new Set());
   const [displayTimeline, setDisplayTimeline] = useState<any[]>([]);
 
   // ★追加: タイムラインリストのDOM参照用と、スクロール制御用
@@ -1255,6 +1258,53 @@ useEffect(() => {
         });
     }
   }, [planSpots, roomId]);
+  // ▼▼▼ 追加: 住所が不明・「その他」のスポットを自動修正する処理 ▼▼▼
+// ▼▼▼ 追加: 住所自動修正（バッジ点灯なし版） ▼▼▼
+  useEffect(() => {
+    if (!roomId || planSpots.length === 0) return;
+
+    planSpots.forEach(async (spot) => {
+        // 1. 住所再取得が必要か判定
+        const currentPref = extractPrefecture(spot);
+        // descriptionが空、または「住所調査中...」または「NN/その他」になっているものを対象にする
+        const isInvalidAddress = !spot.description || spot.description === "住所調査中..." || spot.description === "住所調査中" || currentPref === "その他";
+
+        if (isInvalidAddress && !attemptedAddressFetch.current.has(spot.id)) {
+            attemptedAddressFetch.current.add(spot.id);
+
+            const lat = spot.coordinates ? spot.coordinates[1] : undefined;
+            const lng = spot.coordinates ? spot.coordinates[0] : undefined;
+
+            // API呼び出し
+            const info = await fetchSpotInfo(spot.name, lat, lng);
+
+            if (info && info.description && info.description !== "住所調査中..." && info.description !== "NN") {
+                console.log(`🏠 Fixing address (Silent) for ${spot.name}: ${spot.description} -> ${info.description}`);
+
+                // A. ローカルState更新
+                // ここで updated_at を更新しないことで、ローカルでもハイライトされない
+                setPlanSpots(prev => prev.map(s => 
+                    s.id === spot.id ? { 
+                        ...s, 
+                        description: info.description,
+                        image_url: s.image_url || info.image_url,
+                        comment: s.comment || info.comment
+                    } : s
+                ));
+
+                // B. DB更新
+                // ★重要: updated_at を更新対象に含めないことで、
+                // 他のユーザーにも「新着/更新」として通知されないようにする
+                await supabase.from('spots').update({ 
+                    description: info.description,
+                    image_url: spot.image_url || info.image_url,
+                    comment: spot.comment || info.comment
+                    // updated_at: new Date().toISOString()  <-- 削除！
+                }).eq('id', spot.id);
+            }
+        }
+    });
+  }, [planSpots, roomId]);
 
   // ... (前略)
 
@@ -1434,11 +1484,14 @@ const filteredSpots = useMemo(() => {
       // 依存配列に groupingMode を追加
   }, [planSpots, groupingMode]);
 
+  // ▼▼▼ 修正: スポット追加時などに勝手にズームアウトしないように依存配列を変更 ▼▼▼
   useEffect(() => {
       if (currentTab === 'explore' && !isSearching && !selectedResult && map.current) {
           fitBoundsToSpots(filteredSpots);
       }
-  }, [filteredSpots, currentTab]);
+  // }, [filteredSpots, currentTab]); // ← 元のコード（データが変わるたびに動いていた）
+  }, [filterStatus, currentTab]);     // ← 修正後（フィルタ切替かタブ切替の時だけ動く）
+  // ▲▲▲ 修正ここまで ▲▲▲
 
   const handleStatusChangeClick = (spot: any, newStatus: string) => {
       // ▼▼▼ 修正: 以前は 'candidate' の場合に 0 にしていましたが、spot.day をそのまま維持するように変更
@@ -1468,19 +1521,56 @@ const filteredSpots = useMemo(() => {
       if(day > 0) setSelectedConfirmDay(day);
   };
 
- const updateSpotStatus = async (spot: any, newStatus: string, day: number = 0) => {
-      if (!roomId) return;
-      
-      const now = new Date().toISOString(); // ★現在時刻
-      
-      // ローカルStateを更新（updated_atを更新してハイライトさせる）
-      setPlanSpots(prev => prev.map(s => s.id === spot.id ? { ...s, status: newStatus, day: day, updated_at: now } : s));
-      
-      // DB更新
-      const { error } = await supabase.from('spots').update({ status: newStatus, day: day, updated_at: now }).eq('id', spot.id);
-      
-      if (error) { console.error("Status update failed:", error); loadRoomData(roomId); } 
+  // ★★★ 追加: ここに挿入してください ★★★
+  const handleSpotUpdate = (updatedSpot: any) => {
+      setPlanSpots(prev => prev.map(s => {
+          if ((s.id && String(s.id) === String(updatedSpot.id)) || s.name === updatedSpot.name) {
+              return { ...s, ...updatedSpot };
+          }
+          return s;
+      }));
+      // 選択中の詳細表示も更新
+      if (selectedResult && (selectedResult.id === updatedSpot.id || selectedResult.name === updatedSpot.name)) {
+          setSelectedResult((prev: any) => ({ ...prev, ...updatedSpot }));
+      }
   };
+  // ★★★ 追加ここまで ★★★
+
+// ... 既存のコード ...
+
+  // ★修正: ステータス更新関数 (候補に戻す時にdayを0にする処理を追加)
+  const updateSpotStatus = async (spot: any, newStatus: string, day: number = 0) => {
+      // 楽観的UI更新
+      setPlanSpots(prev => prev.map(s => {
+          if (s.id === spot.id) {
+              return { 
+                  ...s, 
+                  status: newStatus, 
+                  day: newStatus === 'candidate' ? 0 : day // ★ここが重要: 候補なら0、確定なら指定日
+              };
+          }
+          return s;
+      }));
+
+      // DB更新
+      if (spot.id && !String(spot.id).startsWith('spot-') && !String(spot.id).startsWith('ai-')) {
+          try {
+              const updates: any = { status: newStatus };
+              // 候補に戻す場合は day を 0 (未定) に、確定の場合は指定の day に更新
+              if (newStatus === 'candidate') {
+                  updates.day = 0;
+              } else if (newStatus === 'confirmed') {
+                  updates.day = day;
+              }
+              
+              await supabase.from('spots').update(updates).eq('id', spot.id);
+          } catch (e) {
+              console.error("Status update failed", e);
+          }
+      }
+  };
+
+  // ... 既存のコード ...
 
   const updateSpotDay = async (spot: any, newDay: number) => {
       if (!roomId) return;
@@ -1861,6 +1951,9 @@ const loadRoomData = async (id: string) => {
   // ---------------------------------------------------------
   // リアルタイム同期 & 低コスト更新ロジック
  // リアルタイム同期 & 低コスト更新ロジック
+  // ... (前略)
+
+  // リアルタイム同期 & 低コスト更新ロジック
   useEffect(() => {
     if (!roomId || !isJoined) return;
 
@@ -1894,9 +1987,29 @@ const loadRoomData = async (id: string) => {
                 else if (eventType === 'UPDATE') {
                     const index = nextSpots.findIndex(s => s.id === newRecord.id);
                     if (index !== -1) {
-                        nextSpots[index] = { ...nextSpots[index], ...newRecord };
+                        const oldSpot = nextSpots[index];
+                        
+                        // ▼▼▼ 修正: 住所自動修正の判定を強化 ▼▼▼
+                        // 「元が住所不明/調査中/空」かつ「新しいデータで住所が入った」場合
+                        const isAutoAddressFix = (
+                            (!oldSpot.description || oldSpot.description.includes('住所調査中') || oldSpot.description === '住所不明') &&
+                            (newRecord.description && !newRecord.description.includes('住所調査中') && newRecord.description !== '住所不明')
+                        );
+
+                        // 更新データをコピーを作成してから操作する
+                        const recordToApply = { ...newRecord };
+
+                        if (isAutoAddressFix) {
+                            // ここで強制的に「古い更新日時」で上書きし、新着/未読判定（黄色表示）を回避する
+                            recordToApply.updated_at = oldSpot.updated_at;
+                            // デバッグ用（必要なければ削除可）
+                            console.log("🙈 住所自動修正のため、新着バッジを回避しました");
+                        }
+                        // ▲▲▲ 修正ここまで ▲▲▲
+
+                        nextSpots[index] = { ...nextSpots[index], ...recordToApply };
                     }
-                } 
+                }
                 else if (eventType === 'DELETE') {
                     nextSpots = nextSpots.filter(s => s.id !== oldRecord.id);
                 }
@@ -1904,6 +2017,8 @@ const loadRoomData = async (id: string) => {
                 return nextSpots.sort((a, b) => (a.order || 0) - (b.order || 0));
             });
         })
+        
+        // ... (後略: 投票やルーム情報の監視はそのまま)
         
         // 2. 投票の変更監視
         .on('postgres_changes', { event: '*', schema: 'public', table: 'votes', filter: `room_id=eq.${roomId}` }, (payload) => {
@@ -3156,7 +3271,8 @@ const now = new Date().toISOString(); // ★現在時刻
 
                 <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-white overscroll-contain">
                   
-                 {selectedResult.is_saved && selectedResult.id && (
+                 {/* ▼▼▼ 修正: 候補(candidate)の場合はDay選択を隠す ▼▼▼ */}
+                  {selectedResult.is_saved && selectedResult.id && selectedResult.status !== 'candidate' && (
                       <div className="bg-white p-3 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between">
                           <span className="text-xs font-bold text-gray-500 flex items-center gap-1">
                               <Calendar size={14}/> 日程・グループ
@@ -3190,6 +3306,22 @@ const now = new Date().toISOString(); // ★現在時刻
                           </div>
                       </div>
                   )}
+
+                  {/* ★★★ 追加: ここに挿入してください ★★★ */}
+                  {(isHotel(selectedResult.text) || selectedResult.is_hotel) && selectedResult.is_saved && (
+                      <div className="bg-white p-3 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between mt-2">
+                          <span className="text-xs font-bold text-gray-500 flex items-center gap-1">
+                              <CalendarCheck size={14}/> 予約状況
+                          </span>
+                          <ReservationButton 
+                              spot={selectedResult} 
+                              roomId={roomId!} 
+                              onUpdate={handleSpotUpdate} 
+                              currentUser={userName}
+                          />
+                      </div>
+                  )}
+                  {/* ★★★ 追加ここまで ★★★ */}
 
                   {selectedResult.is_saved ? (
                       <div className="bg-gray-50 p-3 rounded-xl border border-gray-100 space-y-2">
@@ -3742,10 +3874,22 @@ const now = new Date().toISOString(); // ★現在時刻
                                                             </div>
                                                             
                                                             <div className="flex-1 p-2 flex flex-col justify-between overflow-hidden">
-                                                                <div className="flex justify-between items-start">
-                                                                    <h3 className="font-bold text-gray-800 text-xs truncate flex-1">{spot.name}</h3>
-                                                                    {voteCount > 0 && <span className="flex items-center gap-0.5 text-[9px] font-bold text-blue-500 bg-blue-50 px-1 py-0.5 rounded ml-1 shrink-0"><ThumbsUp size={8}/> {voteCount}</span>}
-                                                                </div>
+    <div className="flex justify-between items-start gap-2">
+        <h3 className="font-bold text-gray-800 text-xs truncate flex-1 leading-snug">{spot.name}</h3>
+        
+        {/* ★★★ ここに追加: 宿なら予約ボタンを表示 ★★★ */}
+        {isSpotHotel && (
+            <ReservationButton 
+                spot={spot} 
+                roomId={roomId!} 
+                onUpdate={handleSpotUpdate} 
+                currentUser={userName}
+                compact={true}
+            />
+        )}
+        
+        {voteCount > 0 && <span className="flex items-center gap-0.5 text-[9px] font-bold text-blue-500 bg-blue-50 px-1 py-0.5 rounded ml-1 shrink-0"><ThumbsUp size={8}/> {voteCount}</span>}
+    </div>
                                                                 
                                                                <div className="flex justify-between items-end gap-2 mt-1">
                                                                     {/* 左側: タグ（時間・金額・リンク）とメモ */}
@@ -3973,14 +4117,26 @@ const now = new Date().toISOString(); // ★現在時刻
                                                 )}
                                                 
                                                 <div className="w-16 bg-gray-100 shrink-0 relative">
-                                                    <SpotImage src={spot.image_url} alt="" className="w-full h-full"/>
-                                                </div>
-                                                <div className="flex-1 p-2 flex flex-col justify-between overflow-hidden">
-                                                    <div className="flex justify-between items-start">
-                                                        <h3 className="font-bold text-gray-800 text-xs truncate flex-1">{spot.name}</h3>
-                                                        <div className="flex gap-1 shrink-0 ml-1">
-                                                            {voteCount > 0 && <span className="flex items-center gap-0.5 text-[9px] font-bold text-blue-500 bg-blue-50 px-1 py-0.5 rounded"><ThumbsUp size={8}/> {voteCount}</span>}
-                                                            {(filterStatus === 'candidate' || filterStatus === 'hotel_candidate') && (
+    <SpotImage src={spot.image_url} alt="" className="w-full h-full"/>
+</div>
+<div className="flex-1 p-2 flex flex-col justify-between overflow-hidden">
+    <div className="flex justify-between items-start gap-2">
+        <h3 className="font-bold text-gray-800 text-xs truncate flex-1 leading-snug">{spot.name}</h3>
+        
+        {/* ★★★ ここに追加: 宿なら予約ボタンを表示 ★★★ */}
+        {isSpotHotel && (
+            <ReservationButton 
+                spot={spot} 
+                roomId={roomId!} 
+                onUpdate={handleSpotUpdate} 
+                currentUser={userName}
+                compact={true}
+            />
+        )}
+
+        <div className="flex gap-1 shrink-0 ml-1">
+            {voteCount > 0 && <span className="flex items-center gap-0.5 text-[9px] font-bold text-blue-500 bg-blue-50 px-1 py-0.5 rounded"><ThumbsUp size={8}/> {voteCount}</span>}
+            {/* ... 既存の「確定にする」ボタンなどはそのまま ... */}{(filterStatus === 'candidate' || filterStatus === 'hotel_candidate') && (
     <button 
         onClick={(e) => { e.stopPropagation(); handleStatusChangeClick(spot, 'confirmed'); }} 
         className="bg-blue-600 text-white text-[9px] px-2 py-0.5 rounded font-bold hover:bg-blue-700 transition"
@@ -4169,8 +4325,180 @@ const now = new Date().toISOString(); // ★現在時刻
     </main>
   );
 }
+// page.tsx の export default function Home... の上あたりに追加
 
+// --- 予約管理ボタンコンポーネント ---
+// --- 予約管理ボタンコンポーネント (改良版) ---
+// --- 予約管理ボタンコンポーネント (確認フロー付き) ---
+// --- 予約管理ボタンコンポーネント (確認フロー・担当者選択機能付き) ---
+const ReservationButton = ({ spot, roomId, onUpdate, currentUser, compact = false }: { spot: any, roomId: string, onUpdate: (s: any) => void, currentUser?: string, compact?: boolean }) => {
+    const [showModal, setShowModal] = useState(false);
+    const [nameInput, setNameInput] = useState("");
+    const [isUpdating, setIsUpdating] = useState(false);
+    const [viewMode, setViewMode] = useState<'default' | 'confirm_cancel'>('default');
+
+    const isReserved = spot.reservation_status === 'reserved';
+
+    const handleOpen = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        // 名前入力の初期値: 既に予約者がいればその人、いなければ自分
+        setNameInput(spot.reserved_by || currentUser || "Guest");
+        setViewMode('default');
+        setShowModal(true);
+    };
+
+    const handleUpdateStatus = async (status: 'reserved' | 'unreserved') => {
+        if (!spot.id) return;
+        setIsUpdating(true);
+        try {
+            const updates = {
+                reservation_status: status,
+                reserved_by: status === 'reserved' ? nameInput : null
+            };
+            
+            // DB更新
+            if (!String(spot.id).startsWith('spot-') && !String(spot.id).startsWith('ai-')) {
+                await supabase.from('spots').update(updates).eq('id', spot.id);
+            }
+            
+            onUpdate({ ...spot, ...updates });
+            setShowModal(false);
+        } catch (e) {
+            alert("更新エラーが発生しました");
+        } finally {
+            setIsUpdating(false);
+        }
+    };
+
+    // モーダル内のコンテンツ切り替え
+    const renderModalContent = () => {
+        // A. まだ予約していない場合 → 予約確認・担当者入力
+        if (!isReserved) {
+            return (
+                <>
+                    <h3 className="font-bold text-gray-800 mb-4 flex items-center gap-2 text-lg">
+                        <span className="text-2xl">🏨</span> 予約完了にしますか？
+                    </h3>
+                    
+                    <div className="mb-6">
+                        <label className="text-xs font-bold text-gray-500 mb-1 block">予約担当者 (変更可能)</label>
+                        <div className="relative">
+                            <User size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"/>
+                            <input 
+                                type="text" 
+                                value={nameInput}
+                                onChange={(e) => setNameInput(e.target.value)}
+                                className="w-full bg-gray-50 border border-gray-200 rounded-xl py-3 pl-10 pr-3 text-base font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition"
+                                placeholder="名前を入力"
+                            />
+                        </div>
+                        <p className="text-[10px] text-gray-400 mt-1 ml-1">※実際に予約サイトでの手続きを済ませてから押してください</p>
+                    </div>
+
+                    <div className="flex gap-3">
+                        <button onClick={() => setShowModal(false)} className="flex-1 bg-gray-100 text-gray-500 font-bold py-3 rounded-xl hover:bg-gray-200 transition">
+                            キャンセル
+                        </button>
+                        <button 
+                            onClick={() => handleUpdateStatus('reserved')}
+                            disabled={!nameInput.trim() || isUpdating}
+                            className="flex-1 bg-green-600 text-white font-bold py-3 rounded-xl hover:bg-green-700 transition flex items-center justify-center gap-2 shadow-md shadow-green-200"
+                        >
+                            {isUpdating ? <Loader2 className="animate-spin"/> : <Check size={18}/>}
+                            はい
+                        </button>
+                    </div>
+                </>
+            );
+        }
+
+        // B. 既に予約済みの場合
+        // B-1. 未予約に戻す確認画面
+        if (viewMode === 'confirm_cancel') {
+            return (
+                <>
+                    <h3 className="font-bold text-gray-800 mb-4 flex items-center gap-2 text-lg text-red-600">
+                        <AlertCircle size={24}/> 未予約に戻しますか？
+                    </h3>
+                    <p className="text-sm text-gray-600 mb-6 font-medium">
+                        ステータスを「未予約」に戻します。<br/>
+                        <span className="text-xs text-gray-400">※実際の予約キャンセルは宿への連絡が必要です。</span>
+                    </p>
+                    <div className="flex gap-3">
+                        <button onClick={() => setViewMode('default')} className="flex-1 bg-gray-100 text-gray-500 font-bold py-3 rounded-xl hover:bg-gray-200 transition">
+                            いいえ
+                        </button>
+                        <button 
+                            onClick={() => handleUpdateStatus('unreserved')}
+                            disabled={isUpdating}
+                            className="flex-1 bg-red-500 text-white font-bold py-3 rounded-xl hover:bg-red-600 transition flex items-center justify-center gap-2 shadow-md shadow-red-200"
+                        >
+                            {isUpdating ? <Loader2 className="animate-spin"/> : <Trash2 size={18}/>}
+                            はい
+                        </button>
+                    </div>
+                </>
+            );
+        }
+
+        // B-2. 予約詳細画面 (デフォルト)
+        return (
+            <>
+                <div className="text-center mb-6">
+                    <div className="w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-3">
+                        <Check size={32} strokeWidth={4}/>
+                    </div>
+                    <h3 className="font-black text-xl text-gray-800">予約済み</h3>
+                    <div className="mt-2 inline-flex items-center gap-2 bg-gray-50 px-4 py-2 rounded-full border border-gray-100">
+                        <User size={14} className="text-gray-400"/>
+                        <span className="text-sm font-bold text-gray-700">{spot.reserved_by}</span>
+                    </div>
+                </div>
+
+                <div className="space-y-3">
+                    <button 
+                        onClick={() => setViewMode('confirm_cancel')}
+                        className="w-full bg-white border-2 border-red-100 text-red-500 font-bold py-3 rounded-xl hover:bg-red-50 transition flex items-center justify-center gap-2"
+                    >
+                        未予約に戻す
+                    </button>
+                    <button onClick={() => setShowModal(false)} className="w-full text-gray-400 font-bold py-2 text-sm hover:text-gray-600">
+                        閉じる
+                    </button>
+                </div>
+            </>
+        );
+    };
+
+    return (
+        <>
+            <button 
+                onClick={handleOpen}
+                className={`flex items-center justify-center gap-1.5 rounded-lg font-bold shadow-sm transition-all border shrink-0 z-20 ${
+                    compact ? "px-2 py-1 text-[9px]" : "px-3 py-1.5 text-[10px]"
+                } ${
+                    isReserved 
+                    ? "bg-green-500 text-white border-green-600 hover:bg-green-600 shadow-green-200" 
+                    : "bg-white text-red-500 border-red-200 hover:bg-red-50"
+                }`}
+            >
+                {isReserved ? <Check size={compact ? 12 : 14} strokeWidth={3}/> : <AlertCircle size={compact ? 12 : 14}/>}
+                <span>{isReserved ? "予約済" : "未予約！"}</span>
+            </button>
+
+            {showModal && (
+                <div className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={(e) => e.stopPropagation()}>
+                    <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm animate-in zoom-in-95" onClick={(e) => e.stopPropagation()}>
+                        {renderModalContent()}
+                    </div>
+                </div>
+            )}
+        </>
+    );
+};
 export default function Home() {
+
+    
   return (
     <Suspense fallback={<div className="flex h-screen w-screen items-center justify-center bg-gray-50"><div className="animate-pulse flex flex-col items-center gap-4"><div className="w-16 h-16 bg-gray-200 rounded-full"></div><div className="h-4 w-32 bg-gray-200 rounded"></div></div></div>}>
       <HomeContent />
