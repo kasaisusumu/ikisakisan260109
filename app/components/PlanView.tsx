@@ -7,8 +7,7 @@ import {
   Image as ImageIcon, Link as LinkIcon, Camera, Upload, 
   Trash2, PlusCircle, MapPinned, ArrowRight, ArrowLeft,
   ChevronDown, ChevronUp, Layers, Banknote, ExternalLink, StickyNote, Bus,
-  CalendarCheck, CalendarX, User, AlertCircle,Check,
-   CheckCircle // ←これらが必要です
+  CalendarCheck, CalendarX, User, AlertCircle, Check,RotateCcw // ★追加
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
@@ -77,11 +76,6 @@ const SpotImage = ({ src, alt, className }: { src?: string | null, alt: string, 
 };
 
 // --- 予約管理ボタンコンポーネント ---
-// --- 予約管理ボタンコンポーネント (確認フロー付き) ---
-// --- 予約管理ボタンコンポーネント (確認フロー・担当者選択機能付き) ---
-// 予約管理ボタンコンポーネント (修正版: イベント伝播阻止を追加)
-// page.tsx & PlanView.tsx の ReservationButton をこれに置き換えてください
-
 const ReservationButton = ({ spot, roomId, onUpdate, currentUser, compact = false }: { spot: any, roomId: string, onUpdate: (s: any) => void, currentUser?: string, compact?: boolean }) => {
     const [showModal, setShowModal] = useState(false);
     const [nameInput, setNameInput] = useState("");
@@ -121,12 +115,10 @@ const ReservationButton = ({ spot, roomId, onUpdate, currentUser, compact = fals
         }
     };
 
-    // ★追加: ドラッグ操作の干渉を防ぐためのイベントハンドラ
     const stopPropagation = (e: React.UIEvent) => {
         e.stopPropagation();
     };
     
-    // ★追加: ドラッグ開始自体を防ぐ
     const preventDrag = (e: React.DragEvent) => {
         e.preventDefault();
         e.stopPropagation();
@@ -246,7 +238,6 @@ const ReservationButton = ({ spot, roomId, onUpdate, currentUser, compact = fals
             <button 
                 type="button"
                 onClick={handleOpen}
-                // ★重要: ここでドラッグ開始イベントを潰すことで、クリックが正常に動作します
                 onMouseDown={stopPropagation}
                 onTouchStart={stopPropagation}
                 onDragStart={preventDrag}
@@ -266,7 +257,6 @@ const ReservationButton = ({ spot, roomId, onUpdate, currentUser, compact = fals
                 <div 
                     className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 cursor-default" 
                     onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                    // ★重要: モーダル全体でもドラッグ干渉を防ぐ
                     onMouseDown={stopPropagation}
                     onTouchStart={stopPropagation}
                     onDragStart={preventDrag}
@@ -335,9 +325,8 @@ export default function PlanView({
   const [optimizeCount, setOptimizeCount] = useState(0);
   const [draggedItemIndex, setDraggedItemIndex] = useState<number | null>(null);
 
-// 1. useStateの初期値を変更 (365行目付近)
-const [startTime, setStartTime] = useState(""); // "09:00" から "" に変更
-const [endTime, setEndTime] = useState("");     // "18:00" から "" に変更
+  const [startTime, setStartTime] = useState(""); 
+  const [endTime, setEndTime] = useState("");     
   const [startSpotName, setStartSpotName] = useState<string>("");
   const [endSpotName, setEndSpotName] = useState<string>("");
   
@@ -359,101 +348,72 @@ const [endTime, setEndTime] = useState("");     // "18:00" から "" に変更
       setShowScreenshotMode(false);
       if (onScreenshotClosed) onScreenshotClosed();
   };
-
-  // 同期処理
- // PlanView.tsx 360行目付近
-
- // PlanView.tsx 360行目付近の useEffect を以下に完全に置き換えてください
-
-  // ★修正: IDベースの同期処理。
-  // 既存のタイムライン構造（移動手段やカスタム時間）を維持しながら、
-  // DBからの最新情報（画像や名前の変更、新規追加）を反映させる。
-  // ★修正: IDベースの同期処理 + タイムライン正規化（2重移動バグ修正版）
-// ★修正: 完全な同期・正規化・重複排除ロジック
-  useEffect(() => {
-      // 1. この日の有効なスポットリストを取得
-      const activeDaySpots = spots.filter(s => s.status === 'confirmed' && s.day === selectedDay);
-      const activeSpotIds = new Set(activeDaySpots.map(s => String(s.id)));
-
-      // 2. 既存タイムラインのクリーニング (同期 & 重複排除)
-      const seenSpotIds = new Set<string>();
-      let cleanTimeline: any[] = [];
-
-      timeline.forEach(item => {
+// ▼▼▼ 追加: 時間の差分を計算するヘルパー関数 ▼▼▼
+  const calculateTimeDiff = (start: string, end: string) => {
+      if (!start || !end) return 0;
+      const [sH, sM] = start.split(':').map(Number);
+      const [eH, eM] = end.split(':').map(Number);
+      return (eH * 60 + eM) - (sH * 60 + sM);
+  };
+  // 1. calculateSchedule を先に定義 (useEffectで使用するため)
+  // --- 修正: スケジュール計算ロジック（移動時間の自動反映） ---
+  // 1. calculateSchedule を先に定義 (useEffectで使用するため)
+  const calculateSchedule = (currentTimeline: any[]) => {
+      if (!startTime) {
+        return currentTimeline.map((item) => ({
+            ...item,
+            arrival: item.arrival || null,
+            departure: item.departure || null,
+            // ▼▼▼ 修正: デフォルトの60分フォールバックを削除 (undefinedならそのまま) ▼▼▼
+            stay_min: item.stay_min ?? (item.type === 'spot' ? (item.spot.stay_time || null) : undefined),
+            duration_min: item.duration_min ?? (item.type === 'travel' ? 30 : undefined),
+        }));
+    }
+      let currentTime = new Date(`2000-01-01T${startTime}:00`);
+      const newTimeline = currentTimeline.map((item) => {
+          const newItem = { ...item };
           if (item.type === 'travel') {
-              cleanTimeline.push(item);
-              return;
-          }
-          
-          // スポットの場合: IDがないものは不正としてスキップ
-          if (!item.spot.id) return;
-          const sId = String(item.spot.id);
-          
-          // 「DBに存在」し、かつ「タイムラインでまだ処理していない(重複なし)」場合のみ採用
-          if (activeSpotIds.has(sId) && !seenSpotIds.has(sId)) {
-              // 最新の情報をDBデータ(activeDaySpots)からマージ
-              const freshSpot = activeDaySpots.find(s => String(s.id) === sId);
-              cleanTimeline.push({
-                  ...item,
-                  spot: { ...item.spot, ...(freshSpot || {}) },
-                  image: (freshSpot && freshSpot.image_url) || item.image
-              });
-              seenSpotIds.add(sId);
-          }
-      });
-
-      // 3. 新規追加スポットの検出 & 追加
-      const newSpots = activeDaySpots.filter(s => !seenSpotIds.has(String(s.id)));
-      newSpots.forEach(s => {
-          // 末尾がスポットなら、間に移動を挟む
-          if (cleanTimeline.length > 0 && cleanTimeline[cleanTimeline.length - 1].type === 'spot') {
-              cleanTimeline.push({ type: 'travel', duration_min: 30, transport_mode: 'car' });
-          }
-          cleanTimeline.push({ type: 'spot', spot: s, stay_min: 60 });
-      });
-
-      // 4. 構造の完全正規化 (Spot <-> Travel <-> Spot の形を強制)
-      const normalized: any[] = [];
-      cleanTimeline.forEach((item) => {
-          if (item.type === 'spot') {
-              // 直前がスポットなら、間に移動を強制挿入 (Spot, Spot となった場合の補正)
-              if (normalized.length > 0 && normalized[normalized.length - 1].type === 'spot') {
-                  normalized.push({ type: 'travel', duration_min: 30, transport_mode: 'car' });
-          }
-              normalized.push(item);
-          } else if (item.type === 'travel') {
-              // 先頭の移動は削除
-              if (normalized.length === 0) return;
-              // 直前が移動なら削除 (Travel, Travel となった場合の補正)
-              if (normalized[normalized.length - 1].type === 'travel') return;
+              const duration = item.duration_min !== undefined ? item.duration_min : 0;
+              currentTime = new Date(currentTime.getTime() + duration * 60000);
+          } else if (item.type === 'spot') {
+              newItem.arrival = currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
               
-              normalized.push(item);
+              // ▼▼▼ 修正: 初期値を60分に固定せず、未設定(null/undefined)なら0分として計算を進める ▼▼▼
+              let stayTime = item.stay_min;
+              // DBに保存された stay_time があれば使うが、それもなければ null (未定) とする
+              if (stayTime === undefined || stayTime === null) {
+                  stayTime = item.spot.stay_time || null;
+              }
+
+              // 計算用に数値化（未定なら0分として時間を進める）
+              let calcStayTime = stayTime || 0;
+
+              if (item.spot.is_hotel) {
+                  const nextMorning = new Date(currentTime);
+                  nextMorning.setDate(nextMorning.getDate() + 1);
+                  const [nextH, nextM] = startTime.split(':').map(Number);
+                  nextMorning.setHours(nextH, nextM, 0, 0);
+                  const diffMin = (nextMorning.getTime() - currentTime.getTime()) / 60000;
+                  calcStayTime = Math.max(diffMin, 60);
+                  newItem.is_overnight = true;
+                  // ホテルの場合は計算結果を stay_min にも反映
+                  stayTime = calcStayTime;
+              }
+              // 時間を進める
+              currentTime = new Date(currentTime.getTime() + calcStayTime * 60000);
+              
+              newItem.departure = currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+              // ★修正: null の場合は null のまま保持して「?」を表示できるようにする
+              newItem.stay_min = stayTime;
           }
+          return newItem;
       });
-
-      // 末尾の移動は削除 (Spot, Travel で終わっている場合の補正)
-      if (normalized.length > 0 && normalized[normalized.length - 1].type === 'travel') {
-          normalized.pop();
-      }
-
-      // 5. 変更がある場合のみState更新 (無限ループ防止)
-      if (JSON.stringify(normalized) !== JSON.stringify(timeline)) {
-          setTimeline(calculateSchedule(normalized));
-      }
-
-  }, [spots, selectedDay, timeline.length]);
-
-  // 予約状態更新ハンドラ
-  const handleSpotUpdate = (updatedSpot: any) => {
-      const newSpots = spots.map(s => {
-          if ((s.id && String(s.id) === String(updatedSpot.id)) || s.name === updatedSpot.name) {
-              return { ...s, ...updatedSpot };
-          }
-          return s;
-      });
-      onUpdateSpots(newSpots);
+      return newTimeline;
   };
 
+  // ▼▼▼▼▼ 修正: ここから記述順序を変更（useMemoを先に定義） ▼▼▼▼▼
+
+  // 1. 前日の宿を特定 (Day 2以降の場合)
   const prevDayHotel = useMemo(() => {
       if (selectedDay <= 1) return null;
       return spots.find(s => 
@@ -463,6 +423,7 @@ const [endTime, setEndTime] = useState("");     // "18:00" から "" に変更
       );
   }, [spots, selectedDay]);
 
+  // 2. この日の有効なスポットリスト (前日の宿を含む)
   const activeDaySpots = useMemo(() => {
       const current = spots.filter(s => 
           s.status === 'confirmed' && 
@@ -470,6 +431,7 @@ const [endTime, setEndTime] = useState("");     // "18:00" から "" に変更
       );
 
       if (prevDayHotel) {
+          // 重複チェック (念のため)
           if (!current.find(s => (s.id && String(s.id) === String(prevDayHotel.id)) || s.name === prevDayHotel.name)) {
               return [prevDayHotel, ...current];
           }
@@ -477,12 +439,9 @@ const [endTime, setEndTime] = useState("");     // "18:00" から "" に変更
       return current;
   }, [spots, selectedDay, prevDayHotel]);
 
-// PlanView.tsx (108行目付近)
-
+  // 3. 待機中スポット (useMemo)
   const unusedSpots = useMemo(() => {
       const usedSpotIds = new Set<string>();
-      // const usedSpotNames = new Set<string>(); // ★削除: 名前での管理はやめる
-
       timeline.forEach(item => {
           if (item.type === 'spot' && item.spot.id) {
               usedSpotIds.add(String(item.spot.id));
@@ -493,10 +452,116 @@ const [endTime, setEndTime] = useState("");     // "18:00" から "" に変更
           const id = spot.id ? String(spot.id) : null;
           // IDが存在し、かつ既に使われていれば除外する
           if (id && usedSpotIds.has(String(id))) return false;
-          // ★修正: 名前 (name) による重複判定を削除
           return true;
       });
   }, [activeDaySpots, timeline]);
+
+  // 4. 同期処理 (activeDaySpots を使用)
+// 4. 同期処理 (activeDaySpots を使用)
+  // ★修正: 型変換を厳密に行い、データの変更（予約状態など）を確実に反映させる
+  useEffect(() => {
+      // 1. この日の有効なスポットリストを取得（dayを数値に変換して比較）
+      let currentActiveSpots = spots.filter(s => s.status === 'confirmed' && Number(s.day) === selectedDay);
+
+      // 前日の宿を取得してリストの先頭に追加
+      if (selectedDay > 1) {
+          const prevDayHotel = spots.find(s => 
+              s.status === 'confirmed' && 
+              Number(s.day) === selectedDay - 1 && 
+              (s.is_hotel || s.category === 'hotel' || /ホテル|旅館|宿/.test(s.name))
+          );
+          // まだリストに含まれていなければ追加
+          if (prevDayHotel && !currentActiveSpots.find(s => String(s.id) === String(prevDayHotel.id))) {
+              currentActiveSpots = [prevDayHotel, ...currentActiveSpots];
+          }
+      }
+
+      const activeSpotIds = new Set(currentActiveSpots.map(s => String(s.id)));
+      const seenSpotIds = new Set<string>();
+      let cleanTimeline: any[] = [];
+
+      // 既存のタイムラインを走査して、最新のスポット情報で更新
+      timeline.forEach(item => {
+          if (item.type === 'travel') {
+              cleanTimeline.push(item);
+              return;
+          }
+          
+          if (!item.spot.id) return;
+          const sId = String(item.spot.id);
+          
+          // この日に存在するスポットなら維持＆最新データマージ
+          if (activeSpotIds.has(sId) && !seenSpotIds.has(sId)) {
+              const freshSpot = currentActiveSpots.find(s => String(s.id) === sId);
+              cleanTimeline.push({
+                  ...item,
+                  // ★重要: ここで最新の freshSpot 情報（予約ステータス等）を確実に上書きマージする
+                  spot: { ...item.spot, ...(freshSpot || {}) },
+                  image: (freshSpot && freshSpot.image_url) || item.image
+              });
+              seenSpotIds.add(sId);
+          }
+      });
+
+      // 新規追加されたスポットがあれば末尾に追加
+      const newSpots = currentActiveSpots.filter(s => !seenSpotIds.has(String(s.id)));
+      newSpots.forEach(s => {
+          if (cleanTimeline.length > 0 && cleanTimeline[cleanTimeline.length - 1].type === 'spot') {
+    cleanTimeline.push({ type: 'travel', duration_min: null, transport_mode: 'car' });
+}
+          cleanTimeline.push({ type: 'spot', spot: s, stay_min: null });
+      });
+
+      // 構造の正規化（スポット-移動-スポット の形に整える）
+     // 構造の正規化（スポット-移動-スポット の形に整える）
+      const normalized: any[] = [];
+      cleanTimeline.forEach((item) => {
+          if (item.type === 'spot') {
+              if (normalized.length > 0 && normalized[normalized.length - 1].type === 'spot') {
+    normalized.push({ type: 'travel', duration_min: null, transport_mode: 'car' });
+}
+              normalized.push(item);
+          } else if (item.type === 'travel') {
+              if (normalized.length === 0) return;
+              // ▼▼▼ 修正: 連続する移動を許可するため、重複チェックを削除 ▼▼▼
+              // if (normalized[normalized.length - 1].type === 'travel') return; <-- これを削除
+              normalized.push(item);
+          }
+      });
+      if (normalized.length > 0 && normalized[normalized.length - 1].type === 'travel') {
+          normalized.pop();
+      }
+
+      if (JSON.stringify(normalized) !== JSON.stringify(timeline)) {
+          setTimeline(calculateSchedule(normalized));
+      }
+
+  }, [activeDaySpots, timeline.length]); // 依存配列は activeDaySpots 推奨 (前の修正同様)
+  // ▲▲▲▲▲ 修正ここまで ▲▲▲▲▲
+// ▼▼▼ 追加: 移動ブロックの追加・削除ハンドラ ▼▼▼
+  const addTravel = (index: number) => {
+      const newTimeline = [...timeline];
+      // 現在の移動ブロックの後ろに「徒歩10分」をデフォルトとして追加
+      newTimeline.splice(index + 1, 0, { type: 'travel', duration_min: 10, transport_mode: 'walk' });
+      setTimeline(calculateSchedule(newTimeline));
+  };
+
+  const removeTravel = (index: number) => {
+      const newTimeline = [...timeline];
+      newTimeline.splice(index, 1);
+      // 全て消えたら正規化で自動復活するので、ここでは単に消すだけでOK
+      setTimeline(calculateSchedule(newTimeline));
+  };
+  // 予約状態更新ハンドラ
+  const handleSpotUpdate = (updatedSpot: any) => {
+      const newSpots = spots.map(s => {
+          if ((s.id && String(s.id) === String(updatedSpot.id)) || s.name === updatedSpot.name) {
+              return { ...s, ...updatedSpot };
+          }
+          return s;
+      });
+      onUpdateSpots(newSpots);
+  };
 
   const getAffiliateUrl = (hotel: any) => {
       const parseLocalYMD = (ymd: string) => {
@@ -548,22 +613,62 @@ const [endTime, setEndTime] = useState("");     // "18:00" から "" に変更
       return `https://search.travel.rakuten.co.jp/ds/hotel/search?f_query=${encodeURIComponent(hotel.name)}&${paramString}`;
   };
 
+  // --- 修正: Google Maps URL生成ロジック ---
+  // --- 修正: Google Maps URL生成ロジック (連続移動対応版) ---
   const getDirectionsUrl = (index: number) => {
-      const prevSpot = timeline[index - 1]?.spot?.name;
-      const nextSpot = timeline[index + 1]?.spot?.name;
-      const prevDepartureTime = timeline[index - 1]?.departure;
-      const mode = TRANSPORT_MODES.find(m => m.id === (timeline[index].transport_mode || 'car'))?.googleMode || 'driving';
+      // さかのぼって「出発地（スポット）」を探す
+      let prevSpotItem = null;
+      for (let k = index - 1; k >= 0; k--) {
+          if (timeline[k].type === 'spot') {
+              prevSpotItem = timeline[k];
+              break;
+          }
+      }
+
+      // 先に進んで「目的地（スポット）」を探す
+      let nextSpotItem = null;
+      for (let k = index + 1; k < timeline.length; k++) {
+          if (timeline[k].type === 'spot') {
+              nextSpotItem = timeline[k];
+              break;
+          }
+      }
       
-      if (prevSpot && nextSpot && prevDepartureTime) {
-          const [hours, minutes] = prevDepartureTime.split(':').map(Number);
+      if (!prevSpotItem || !nextSpotItem) return null;
+
+      const origin = prevSpotItem.spot.name;
+      const destination = nextSpotItem.spot.name;
+      
+      // 現在の移動モード
+      const currentModeId = timeline[index].transport_mode || 'car';
+      const modeEntry = TRANSPORT_MODES.find(m => m.id === currentModeId);
+      const googleMode = modeEntry ? modeEntry.googleMode : 'driving'; 
+
+      let url = `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(destination)}&travelmode=${googleMode}`;
+
+      // 出発時間
+      if (prevSpotItem.departure) {
+          const [hours, minutes] = prevSpotItem.departure.split(':').map(Number);
           const date = new Date();
           date.setHours(hours, minutes, 0, 0);
-
-          if (date.getTime() < Date.now()) date.setDate(date.getDate() + 1);
+          if (date.getTime() < Date.now()) {
+              date.setDate(date.getDate() + 1);
+          }
           const timestamp = Math.floor(date.getTime() / 1000);
-          return `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(prevSpot)}&destination=${encodeURIComponent(nextSpot)}&travelmode=${mode}`;
+          url += `&departure_time=${timestamp}`;
       }
-      return null;
+      return url;
+  };
+  // ★追加: 移動セグメントを追加する関数
+  const addTravelSegment = (index: number) => {
+      const newTimeline = [...timeline];
+      // 現在の移動の下に、新しい移動（徒歩・時間未定）を挿入
+      newTimeline.splice(index + 1, 0, { 
+          type: 'travel', 
+          duration_min: null, 
+          transport_mode: 'walk' 
+      });
+      setTimeline(calculateSchedule(newTimeline));
   };
   
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -574,47 +679,6 @@ const [endTime, setEndTime] = useState("");     // "18:00" から "" に変更
           setEditItem({ ...editItem, data: { ...editItem.data, image: reader.result as string } });
       };
       reader.readAsDataURL(file);
-  };
-
-  const calculateSchedule = (currentTimeline: any[]) => {
-      if (!startTime) {
-        return currentTimeline.map((item) => ({
-            ...item,
-            arrival: item.arrival || null,
-            departure: item.departure || null,
-            // 滞在時間や移動時間のデフォルト値は維持
-            stay_min: item.stay_min ?? (item.type === 'spot' ? (item.spot.stay_time || 60) : undefined),
-            duration_min: item.duration_min ?? (item.type === 'travel' ? 30 : undefined),
-        }));
-    }
-      let currentTime = new Date(`2000-01-01T${startTime}:00`);
-      const newTimeline = currentTimeline.map((item) => {
-          const newItem = { ...item };
-          if (item.type === 'travel') {
-              const duration = item.duration_min !== undefined ? item.duration_min : 0;
-              currentTime = new Date(currentTime.getTime() + duration * 60000);
-          } else if (item.type === 'spot') {
-              newItem.arrival = currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-              
-              let stayTime = item.stay_min;
-              if (stayTime === undefined || stayTime === null) stayTime = item.spot.stay_time || 60;
-
-              if (item.spot.is_hotel) {
-                  const nextMorning = new Date(currentTime);
-                  nextMorning.setDate(nextMorning.getDate() + 1);
-                  const [nextH, nextM] = startTime.split(':').map(Number);
-                  nextMorning.setHours(nextH, nextM, 0, 0);
-                  const diffMin = (nextMorning.getTime() - currentTime.getTime()) / 60000;
-                  stayTime = Math.max(diffMin, 60);
-                  newItem.is_overnight = true;
-              }
-              currentTime = new Date(currentTime.getTime() + stayTime * 60000);
-              newItem.departure = currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-              newItem.stay_min = stayTime;
-          }
-          return newItem;
-      });
-      return newTimeline;
   };
 
   useEffect(() => {
@@ -779,61 +843,113 @@ const [endTime, setEndTime] = useState("");     // "18:00" から "" に変更
       else stopAutoScroll(); 
   };
   
-  const onDrop = async (e: React.DragEvent, targetTimelineIndex: number) => {
+  // PlanView.tsx 内の onDrop 関数をすべて入れ替えてください
+
+ const onDrop = async (e: React.DragEvent, targetTimelineIndex: number) => {
     e.preventDefault();
     e.stopPropagation(); 
     stopAutoScroll(); 
 
+    // 1. ドラッグされた要素のインデックスを取得
     const rawIndex = e.dataTransfer.getData('text/plain');
     const sourceIndex = parseInt(rawIndex, 10);
     const effectiveSourceIndex = !isNaN(sourceIndex) ? sourceIndex : draggedItemIndex;
+    
+    // 無効な操作なら終了
     if (effectiveSourceIndex === null || effectiveSourceIndex === targetTimelineIndex) return;
 
     const draggedItem = timeline[effectiveSourceIndex];
     if (!draggedItem || draggedItem.type !== 'spot') return; 
 
-    const currentSpotsOnly = timeline.filter(item => item.type === 'spot');
-    const currentTravelsOnly = timeline.filter(item => item.type === 'travel');
-    const draggedSpotIndex = currentSpotsOnly.findIndex(s => s.spot.name === draggedItem.spot.name);
+    // ▼▼▼ 修正: 直前の「複数の移動」をスポットとペアにする ▼▼▼
     
-    let insertIndex = 0;
-    for(let i=0; i < targetTimelineIndex; i++) {
-        if(timeline[i].type === 'spot' && i !== effectiveSourceIndex) { insertIndex++; }
-    }
+    // 2. ペア化 ({ travels: any[], item: any })
+    // スポットと、その直前にある移動ブロック群をひとまとめにする
+    const pairs: { travels: any[], item: any }[] = [];
+    let pendingTravels: any[] = [];
 
-    const newSpotsOrder = [...currentSpotsOnly];
-    const [movedSpot] = newSpotsOrder.splice(draggedSpotIndex, 1);
-    newSpotsOrder.splice(insertIndex, 0, movedSpot);
-
-    const reconstructedTimeline: any[] = [];
-    newSpotsOrder.forEach((spotItem, i) => {
-        reconstructedTimeline.push(spotItem);
-        if (i < newSpotsOrder.length - 1) {
-            const existingTravel = currentTravelsOnly[i]; 
-            if (existingTravel) reconstructedTimeline.push(existingTravel);
-            else reconstructedTimeline.push({ type: 'travel', duration_min: 30, transport_mode: 'car' });
+    timeline.forEach(item => {
+        if (item.type === 'travel') {
+            pendingTravels.push(item);
+        } else if (item.type === 'spot') {
+            pairs.push({ travels: pendingTravels, item: item });
+            pendingTravels = []; // 次のペアのためにリセット
         }
     });
 
+    // 3. 移動元のペアを特定
+    const sourcePairIndex = pairs.findIndex(p => 
+        (p.item.spot.id && String(p.item.spot.id) === String(draggedItem.spot.id)) || 
+        p.item.spot.name === draggedItem.spot.name
+    );
+    if (sourcePairIndex === -1) return;
+
+    // 4. 移動先のペアインデックスを特定
+    // targetTimelineIndex はフラットな配列上のインデックスなので、ペア配列上のインデックスに変換
+    let targetPairIndex = 0;
+    for(let i = 0; i < targetTimelineIndex; i++) {
+        if(timeline[i].type === 'spot') targetPairIndex++;
+    }
+    
+    // ドラッグ方向による補正（下への移動時は挿入位置がずれるのを防ぐ）
+    if (sourcePairIndex < targetPairIndex) {
+        targetPairIndex--; 
+    }
+
+    // 5. 並び替え実行
+    const [movedPair] = pairs.splice(sourcePairIndex, 1);
+    pairs.splice(targetPairIndex, 0, movedPair);
+
+    // 6. タイムラインの再構築
+    const reconstructedTimeline: any[] = [];
+    pairs.forEach((pair, index) => {
+        // 先頭以外のスポットの前には移動ブロックを挿入
+        if (index > 0) {
+            // ペアになっていた移動があれば展開、なければデフォルト生成
+            if (pair.travels.length > 0) {
+                reconstructedTimeline.push(...pair.travels);
+            } else {
+                reconstructedTimeline.push({ type: 'travel', duration_min: 30, transport_mode: 'car' });
+            }
+        }
+        // スポットを追加
+        reconstructedTimeline.push(pair.item);
+    });
+
+    // ▼▼▼ 修正ここまで ▲▲▲
+
+    // 7. State更新
     setTimeline(reconstructedTimeline); 
     setDraggedItemIndex(null);
 
+    // 8. データの永続化 (DB & LocalStorage)
     if (roomId) {
-        const activeSpots = newSpotsOrder.map(item => item.spot);
+        // 並び替え後のスポットリスト（移動ブロックを除いたもの）
+        const activeSpots = reconstructedTimeline
+            .filter(t => t.type === 'spot')
+            .map(item => item.spot);
+
         const fullSpotsList = [...spots]; 
 
+        // 順序の更新処理
         activeSpots.forEach((s, idx) => {
-            if (s.id) supabase.from('spots').update({ order: idx }).eq('id', s.id).then();
+            // DB更新 (非同期で実行)
+            if (s.id && !String(s.id).startsWith('temp-') && !String(s.id).startsWith('ai-')) {
+                supabase.from('spots').update({ order: idx }).eq('id', s.id).then();
+            }
             
+            // ローカルの全体リストも更新
             const target = fullSpotsList.find(fs => (fs.id && String(fs.id) === String(s.id)) || fs.name === s.name);
             if (target) {
                 target.order = idx;
             }
         });
 
+        // 親コンポーネントへ通知 (全体リストをorder順にソートして渡す)
         fullSpotsList.sort((a, b) => (a.order || 0) - (b.order || 0));
         onUpdateSpots(fullSpotsList);
 
+        // ローカルストレージにタイムライン全体（移動詳細含む）を保存
         const storageKey = `rh_plan_${roomId}_day_${selectedDay}`;
         localStorage.setItem(storageKey, JSON.stringify({ 
             timeline: reconstructedTimeline, 
@@ -895,18 +1011,51 @@ const [endTime, setEndTime] = useState("");     // "18:00" から "" に変更
     setTimeline(newTimeline);
   };
 
+  // ▼▼▼ 修正: 出発時間が変更されたら滞在時間を自動計算 ▼▼▼
   const handleDepartureChange = (index: number, newDeparture: string) => {
     const newTimeline = [...timeline];
     if (newTimeline[index]) {
         newTimeline[index].departure = newDeparture;
+        
+        // 到着時間との差分を計算して滞在時間を更新
+        if (newTimeline[index].arrival) {
+            const diff = calculateTimeDiff(newTimeline[index].arrival, newDeparture);
+            if (diff >= 0) {
+                newTimeline[index].stay_min = diff;
+                if (newTimeline[index].spot) {
+                    newTimeline[index].spot.stay_time = diff;
+                }
+            }
+        }
         setTimeline(newTimeline);
     }
   };
+  // ▼▼▼ 追加: 到着・出発時間をリセットするハンドラ ▼▼▼
+  const handleTimeReset = (index: number) => {
+      const newTimeline = [...timeline];
+      if (newTimeline[index]) {
+          newTimeline[index].arrival = "";
+          newTimeline[index].departure = "";
+          setTimeline(newTimeline);
+      }
+  };
 
+  // ▼▼▼ 修正: 到着時間が変更されたら滞在時間を自動計算 ▼▼▼
   const handleArrivalChange = (index: number, newArrival: string) => {
     const newTimeline = [...timeline];
     if (newTimeline[index]) {
         newTimeline[index].arrival = newArrival;
+
+        // 出発時間との差分を計算して滞在時間を更新
+        if (newTimeline[index].departure) {
+            const diff = calculateTimeDiff(newArrival, newTimeline[index].departure);
+            if (diff >= 0) {
+                newTimeline[index].stay_min = diff;
+                if (newTimeline[index].spot) {
+                    newTimeline[index].spot.stay_time = diff;
+                }
+            }
+        }
         setTimeline(newTimeline);
     }
   };
@@ -917,33 +1066,27 @@ const [endTime, setEndTime] = useState("");     // "18:00" から "" に変更
       setTimeline(newTimeline); 
   };
 
- // PlanView.tsx の toggleSpotInclusion 関数を以下に置き換えてください
-
   const toggleSpotInclusion = (spot: any, isAdding: boolean) => {
     if (isAdding) {
-        // --- 追加処理 ---
+        // ... (追加処理はそのまま) ...
         const lastItem = timeline[timeline.length - 1];
         const newItems = [];
         if (lastItem && lastItem.type === 'spot') {
-            newItems.push({ type: 'travel', duration_min: 30, transport_mode: 'car' });
+           // ★修正: duration_min: 30 → null
+newItems.push({ type: 'travel', duration_min: null, transport_mode: 'car' });
         }
         newItems.push({ type: 'spot', spot, stay_min: 60 });
         const newTimeline = [...timeline, ...newItems];
         setTimeline(calculateSchedule(newTimeline));
 
-        // ▼▼▼ 修正: 名前(name)での判定を削除し、IDのみで特定する ▼▼▼
         if (roomId && spot.id) {
-            // 1. 親コンポーネント(Page)の状態を更新
             const newSpots = spots.map(s => {
-                // IDが一致する場合のみ更新 (名前での一致 || s.name === spot.name は削除)
                 if (s.id && String(s.id) === String(spot.id)) {
                     return { ...s, day: selectedDay }; 
                 }
                 return s;
             });
             onUpdateSpots(newSpots);
-
-            // 2. DBも更新
             if (!String(spot.id).startsWith('spot-') && !String(spot.id).startsWith('temp-')) {
                 supabase.from('spots').update({ day: selectedDay }).eq('id', spot.id).then();
             }
@@ -954,12 +1097,10 @@ const [endTime, setEndTime] = useState("");     // "18:00" から "" に変更
         if (!confirm("スケジュールから外しますか？")) return;
         
         // 1. ローカルのタイムラインから削除
-        // ▼▼▼ 修正: 名前ではなくIDで検索する ▼▼▼
         const spotIndex = timeline.findIndex(t => t.type === 'spot' && String(t.spot.id) === String(spot.id));
         if (spotIndex === -1) return;
         
         let newTimeline = [...timeline];
-        // 前後の移動(travel)も合わせて削除して整合性を保つ
         if (spotIndex === 0) {
             if (newTimeline[1]?.type === 'travel') newTimeline.splice(0, 2); 
             else newTimeline.splice(0, 1);
@@ -967,15 +1108,15 @@ const [endTime, setEndTime] = useState("");     // "18:00" から "" に変更
              if (newTimeline[spotIndex - 1]?.type === 'travel') newTimeline.splice(spotIndex - 1, 2); 
              else newTimeline.splice(spotIndex, 1);
         }
-        // 末尾に移動が残ったら消す
         if (newTimeline.length > 0 && newTimeline[newTimeline.length - 1].type === 'travel') newTimeline.pop();
         
         setTimeline(calculateSchedule(newTimeline));
 
         // 2. データ上の「日付」を未定(0)に変更してPageリストに反映させる
-        if (roomId && spot.id) {
+        // ★修正: 「この日のスポット」である場合のみ、DBの日付をリセットする。
+        // 前日の宿（day !== selectedDay）の場合は、タイムライン表示から消すだけでDBは更新しない。
+        if (roomId && spot.id && spot.day === selectedDay) {
             const newSpots = spots.map(s => {
-                // ▼▼▼ 修正: IDのみで特定 (名前判定を削除) ▼▼▼
                 if (s.id && String(s.id) === String(spot.id)) {
                     return { ...s, day: 0 }; 
                 }
@@ -1076,9 +1217,17 @@ const [endTime, setEndTime] = useState("");     // "18:00" から "" に変更
                               );
                           } else if (item.type === 'travel') {
                               const mode = TRANSPORT_MODES.find(m => m.id === (item.transport_mode || 'car')) || TRANSPORT_MODES[0];
+                              
+                              // ★修正: 時間設定済みかどうかの判定（値が入っているか）
+                              const isTimeSet = item.duration_min !== null && item.duration_min !== undefined && item.duration_min !== '';
+
                               return (
                                   <div key={i} className="relative z-10 mb-8 pl-12 flex flex-col gap-1">
-                                      <div className="flex items-center gap-2 text-gray-400 text-xs font-bold">{mode.icon} <span>{item.duration_min}分 移動</span></div>
+                                      {/* ▼▼▼ 修正: 値がない場合は '?' を表示 ▼▼▼ */}
+                                      <div className="flex items-center gap-2 text-gray-400 text-xs font-bold">
+                                          {mode.icon} 
+                                          <span>{isTimeSet ? item.duration_min : '?'}分 移動</span>
+                                      </div>
                                       
                                       <div className="flex flex-wrap gap-2">
                                           {(item.transport_departure || item.transport_arrival) && (
@@ -1135,11 +1284,9 @@ const [endTime, setEndTime] = useState("");     // "18:00" から "" に変更
                                     <input 
                                         type="number" 
                                         placeholder={editItem.data.spot?.is_hotel ? "例: 12000" : "例: 1500"}
-                                        // cost または price の値を表示 (未設定なら空文字)
                                         value={editItem.data.spot?.cost ?? editItem.data.spot?.price ?? ''} 
                                         onChange={(e) => {
                                             const val = e.target.value;
-                                            // cost と price の両方を更新 (未設定なら null)
                                             setEditItem({
                                                 ...editItem, 
                                                 data: {
@@ -1279,13 +1426,15 @@ const [endTime, setEndTime] = useState("");     // "18:00" から "" に変更
                 </div>
             </div>
             
-            <button 
+            {/* ▼▼▼ 修正: ルート最適化ボタンを削除 ▼▼▼ */}
+            {/* <button 
                 onClick={handleAutoGenerate} 
                 disabled={activeDaySpots.length < 2 || isProcessing}
                 className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold text-sm hover:bg-indigo-700 transition flex items-center justify-center gap-2 shadow-sm disabled:opacity-50 disabled:shadow-none"
             >
                 {isProcessing ? <Loader2 className="animate-spin w-4 h-4"/> : <Sparkles size={16}/>} ルート最適化(未実装)
-            </button>
+            </button> */}
+            {/* ▲▲▲ 削除ここまで ▲▲▲ */}
         </div>
 
         <div className="p-4">
@@ -1368,7 +1517,6 @@ const [endTime, setEndTime] = useState("");     // "18:00" から "" に変更
                                             </div>
                                            
                                             <div className="flex items-center gap-2 text-xs font-bold text-indigo-500 font-mono bg-indigo-50 w-max px-2 py-0.5 rounded" onClick={(e) => e.stopPropagation()}>
-                                                {/* 到着・出発時間入力欄 (略) */}
                                                 <input 
                                                     type="time" 
                                                     value={item.arrival || ""} 
@@ -1382,6 +1530,17 @@ const [endTime, setEndTime] = useState("");     // "18:00" から "" に変更
                                                     onChange={(e) => handleDepartureChange(i, e.target.value)}
                                                     className="bg-transparent text-indigo-600 font-bold text-xs font-mono w-[36px] text-center focus:outline-none border-b border-transparent focus:border-indigo-300 p-0"
                                                 />
+                                                
+                                                {/* ▼▼▼ 追加: 時間リセットボタン ▼▼▼ */}
+                                                {(item.arrival || item.departure) && (
+                                                    <button 
+                                                        onClick={() => handleTimeReset(i)} 
+                                                        className="ml-1 text-indigo-400 hover:text-indigo-600 p-0.5 rounded-full hover:bg-indigo-100 transition"
+                                                        title="時間を未設定に戻す"
+                                                    >
+                                                        <RotateCcw size={10} />
+                                                    </button>
+                                                )}
                                             </div>
                                         </div>
 
@@ -1400,10 +1559,13 @@ const [endTime, setEndTime] = useState("");     // "18:00" から "" に変更
                                                     </div>
                                                 )}
 
-                                                {!item.is_overnight && (
+                                               {!item.is_overnight && (
                                                     <div className="flex items-center gap-1 bg-gray-50 px-2 py-1 rounded border border-gray-200" onClick={(e) => e.stopPropagation()}>
                                                         <Clock size={10} className="text-gray-500"/>
-                                                        <span className="text-xs font-bold text-gray-700">{item.stay_min}分</span>
+                                                        {/* ▼▼▼ 修正: stay_min が null/0 の場合は「?分」を表示 ▼▼▼ */}
+                                                        <span className="text-xs font-bold text-gray-700">
+                                                            {(item.stay_min && item.stay_min > 0) ? `${item.stay_min}分` : '?分'}
+                                                        </span>
                                                     </div>
                                                 )}
 
@@ -1442,121 +1604,198 @@ const [endTime, setEndTime] = useState("");     // "18:00" から "" に変更
                                             </div>
 
                                             {item.spot.comment && (
-    <div className="text-[10px] text-gray-600 bg-gray-50 p-2 rounded border border-gray-100 w-full whitespace-pre-wrap flex items-start gap-1">
-        <StickyNote size={10} className="shrink-0 mt-0.5 text-gray-400"/>
-        {/* ★修正: 10文字制限を追加 */}
-        {item.spot.comment.length > 10 ? item.spot.comment.slice(0, 10) + "..." : item.spot.comment}
-    </div>
-)}
+                                                <div className="text-[10px] text-gray-600 bg-gray-50 p-2 rounded border border-gray-100 w-full whitespace-pre-wrap flex items-start gap-1">
+                                                    <StickyNote size={10} className="shrink-0 mt-0.5 text-gray-400"/>
+                                                    {item.spot.comment.length > 10 ? item.spot.comment.slice(0, 10) + "..." : item.spot.comment}
+                                                </div>
+                                            )}
                                         </div>
                                     </div>
                                 </div>
                               </div>
                             </div>
                           );
-                        } else if (item.type === 'travel') {
-                          const mode = TRANSPORT_MODES.find(m => m.id === (item.transport_mode || 'car')) || TRANSPORT_MODES[0];
-                          const mapLink = getDirectionsUrl(i);
+                        // ... (前略)
+// ... (前略)
+} else if (item.type === 'travel') {
+    const mode = TRANSPORT_MODES.find(m => m.id === (item.transport_mode || 'car')) || TRANSPORT_MODES[0];
+    const mapLink = getDirectionsUrl(i);
 
-                          return (
-                            <div 
-                                key={`travel-${i}`} 
-                                className="pl-14 mb-6 relative group"
-                                onDragOver={onDragOver}
-                                onDrop={(e) => onDrop(e, i)}
-                            >
-                                <div className="flex flex-col gap-1 w-full sm:w-auto">
-                                    <div className="flex items-center gap-3">
-                                        <div className="h-full absolute left-[24px] top-0 bottom-0 flex flex-col items-center justify-center z-0"></div>
-                                        
-                                        <div className="bg-white border border-gray-200 rounded-full px-4 py-2 flex items-center gap-3 text-xs shadow-sm hover:border-gray-300 transition w-full sm:w-auto relative">
-                                            
-                                            <div 
-                                                className="text-gray-500 cursor-pointer hover:text-indigo-600 flex items-center gap-1 transition relative" 
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    setActiveTransportMenuIndex(activeTransportMenuIndex === i ? null : i);
-                                                }}
-                                            >
-                                                {mode.icon}
-                                                <ChevronDown size={10} className="opacity-50"/>
-                                            </div>
+    return (
+    <div 
+        key={`travel-${i}`} 
+        className="pl-14 mb-6 relative group"
+        onDragOver={onDragOver}
+        onDrop={(e) => onDrop(e, i)}
+    >
+        <div className="flex flex-col gap-1 w-full sm:w-auto">
+            <div className="flex items-center gap-2">
+                {/* 左側の縦線 */}
+                <div className="h-full absolute left-[24px] top-0 bottom-0 flex flex-col items-center justify-center z-0"></div>
+                
+                {/* ▼▼▼ 修正箇所: ボタンを全てこのメインバーの中に統合 ▼▼▼ */}
+                <div className="bg-white border border-gray-200 rounded-full px-3 py-2 flex items-center gap-2 text-xs shadow-sm hover:border-gray-300 transition w-full sm:w-auto relative justify-between sm:justify-start">
+                    
+                    {/* 左側グループ（移動手段・時間） */}
+                    <div className="flex items-center gap-2 flex-1 sm:flex-none">
+                        {/* 移動手段ドロップダウン */}
+                        <div 
+                            className="text-gray-500 cursor-pointer hover:text-indigo-600 flex items-center gap-1 transition relative shrink-0" 
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setActiveTransportMenuIndex(activeTransportMenuIndex === i ? null : i);
+                            }}
+                        >
+                            {mode.icon}
+                            <ChevronDown size={10} className="opacity-50"/>
+                        </div>
 
-                                            {activeTransportMenuIndex === i && (
-                                                <>
-                                                    <div className="fixed inset-0 z-40" onClick={(e) => { e.stopPropagation(); setActiveTransportMenuIndex(null); }} />
-                                                    <div className="absolute top-full left-0 mt-2 bg-white shadow-xl rounded-xl border border-gray-100 p-2 z-50 flex flex-wrap gap-1 w-[180px] animate-in fade-in zoom-in-95">
-                                                        {TRANSPORT_MODES.map((m) => (
-                                                            <button
-                                                                key={m.id}
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation();
-                                                                    handleTransportChange(i, m.id);
-                                                                    setActiveTransportMenuIndex(null);
-                                                                }}
-                                                                className={`p-2 rounded-lg flex flex-col items-center justify-center gap-1 w-[50px] h-[50px] transition ${
-                                                                    m.id === mode.id 
-                                                                    ? 'bg-indigo-50 text-indigo-600 border border-indigo-100' 
-                                                                    : 'hover:bg-gray-50 text-gray-500 border border-transparent'
-                                                                }`}
-                                                            >
-                                                                {m.icon}
-                                                                <span className="text-[9px] font-bold leading-none">{m.label}</span>
-                                                            </button>
-                                                        ))}
-                                                    </div>
-                                                </>
-                                            )}
-
-                                            <div className="h-4 w-px bg-gray-200"></div>
-                                            <div className="flex items-center gap-1">
-                                                <input type="number" value={item.duration_min} onChange={(e) => handleTimeChange(i, e.target.value)} className="w-8 bg-transparent text-center font-bold text-gray-600 focus:text-indigo-600 outline-none"/>
-                                                <span className="text-[10px] text-gray-400">分</span>
-                                            </div>
-                                            {mapLink && (
-                                                <a href={mapLink} target="_blank" className="text-gray-400 hover:text-green-600 ml-1 transition"><MapPinned size={14}/></a>
-                                            )}
-                                            
-                                            <button 
-                                                onClick={() => setEditItem({index: i, type: 'travel', data: item})}
-                                                className="ml-2 text-gray-400 hover:text-indigo-600 p-1 rounded-full hover:bg-gray-100 transition"
-                                            >
-                                                <Edit3 size={12}/>
-                                            </button>
-                                        </div>
-                                    </div>
-
-                                    {(item.transport_departure || item.transport_arrival || item.note || item.url || item.cost) && (
-                                        <div className="flex flex-wrap gap-2 mt-1 ml-2">
-                                            {(item.transport_departure || item.transport_arrival) && (
-                                                <div className="bg-indigo-50 border border-indigo-100 text-indigo-700 px-2 py-0.5 rounded text-[10px] font-bold flex items-center gap-1">
-                                                    <Clock size={10}/>
-                                                    {item.transport_departure && <span>{item.transport_departure}発</span>}
-                                                    {item.transport_departure && item.transport_arrival && <span className="mx-0.5 text-indigo-300">→</span>}
-                                                    {item.transport_arrival && <span>{item.transport_arrival}着</span>}
-                                                </div>
-                                            )}
-                                            {item.cost && (
-                                                <div className="bg-yellow-50 border border-yellow-100 text-yellow-700 px-2 py-0.5 rounded text-[10px] font-bold flex items-center gap-1">
-                                                    <Banknote size={10}/> ¥{Number(item.cost).toLocaleString()}
-                                                </div>
-                                            )}
-                                            {item.note && (
-                                                <div className="bg-gray-100 border border-gray-200 text-gray-600 px-2 py-0.5 rounded text-[10px] flex items-center gap-1 max-w-[200px] truncate">
-                                                    <StickyNote size={10}/> {item.note}
-                                                </div>
-                                            )}
-                                            {item.url && (
-                                                <a href={item.url} target="_blank" className="bg-blue-50 border border-blue-100 text-blue-600 px-2 py-0.5 rounded text-[10px] flex items-center gap-1 hover:bg-blue-100">
-                                                    <LinkIcon size={10}/> リンク
-                                                </a>
-                                            )}
-                                        </div>
-                                    )}
+                        {/* ... (ドロップダウンメニューの中身は変更なし) ... */}
+                        {activeTransportMenuIndex === i && (
+                            <>
+                                <div className="fixed inset-0 z-40" onClick={(e) => { e.stopPropagation(); setActiveTransportMenuIndex(null); }} />
+                                <div className="absolute top-full left-0 mt-2 bg-white shadow-xl rounded-xl border border-gray-100 p-2 z-50 flex flex-wrap gap-1 w-[180px] animate-in fade-in zoom-in-95">
+                                    {TRANSPORT_MODES.map((m) => (
+                                        <button
+                                            key={m.id}
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleTransportChange(i, m.id);
+                                                setActiveTransportMenuIndex(null);
+                                            }}
+                                            className={`p-2 rounded-lg flex flex-col items-center justify-center gap-1 w-[50px] h-[50px] transition ${
+                                                m.id === mode.id 
+                                                ? 'bg-indigo-50 text-indigo-600 border border-indigo-100' 
+                                                : 'hover:bg-gray-50 text-gray-500 border border-transparent'
+                                            }`}
+                                        >
+                                            {m.icon}
+                                            <span className="text-[9px] font-bold leading-none">{m.label}</span>
+                                        </button>
+                                    ))}
                                 </div>
+                            </>
+                        )}
+
+                        <div className="h-4 w-px bg-gray-200 shrink-0"></div>
+                        
+                        {/* 時間入力 */}
+                       {/* 時間入力 */}
+                        <div className="flex items-center gap-1 shrink-0">
+                            <input 
+                                type="text" 
+                                inputMode="numeric"
+                                value={item.duration_min > 0 ? item.duration_min : ''} 
+                                placeholder="?"
+                                onChange={(e) => handleTimeChange(i, e.target.value)} 
+                                className="w-8 bg-transparent text-center font-bold text-gray-600 focus:text-indigo-600 outline-none placeholder:text-gray-300" 
+                                onClick={(e) => e.stopPropagation()}
+                            />
+                            <span className="text-[10px] text-gray-400">分</span>
+                        </div>
+                    </div>
+
+                    {/* 右側グループ（アクションボタン群） */}
+                    <div className="flex items-center gap-1 shrink-0">
+                        {/* GoogleMapボタン */}
+                        {mapLink && (
+                            <a href={mapLink} target="_blank" className="text-gray-400 hover:text-green-600 p-1 transition flex items-center"><MapPinned size={14}/></a>
+                        )}
+                        
+                        <div className="h-4 w-px bg-gray-200 mx-1"></div>
+
+                        {/* 編集ボタン */}
+                        <button 
+                            onClick={() => setEditItem({index: i, type: 'travel', data: item})}
+                            className="text-gray-400 hover:text-indigo-600 p-1 rounded-full hover:bg-gray-100 transition"
+                            title="詳細を編集"
+                        >
+                            <Edit3 size={12}/>
+                        </button>
+
+                        {/* ▼▼▼ ここに移動・スタイル変更した追加・削除ボタン ▼▼▼ */}
+                        {/* 追加ボタン */}
+                        <button 
+                            onClick={() => addTravel(i)}
+                            className="text-gray-400 hover:text-indigo-600 p-1 rounded-full hover:bg-gray-100 transition"
+                            title="経由・乗り換えを追加"
+                        >
+                            <PlusCircle size={12} />
+                        </button>
+
+                        {/* 削除ボタン */}
+                        <button 
+                            onClick={() => removeTravel(i)}
+                            className="text-gray-400 hover:text-red-500 p-1 rounded-full hover:bg-gray-100 transition"
+                            title="この移動を削除"
+                        >
+                            <Trash2 size={12} />
+                        </button>
+                        {/* ▲▲▲ ここまで ▲▲▲ */}
+                    </div>
+                </div>
+                {/* ▲▲▲ メインバー終了 ▲▲▲ */}
+
+                {/* 以前ここにあった外側のボタンは削除されました */}
+
+            </div>
+
+            {/* ... (詳細タグ表示部分は変更なし) ... */}
+            {(item.transport_departure || item.transport_arrival || item.note || item.url || item.cost) && (
+                <div className="flex flex-wrap gap-2 mt-1 ml-2">
+                   {/* ▼▼▼ 修正: 詳細情報（時間・金額・リンク・メモ）を表示するコードを追加 ▼▼▼ */}
+            {(item.transport_departure || item.transport_arrival || item.note || item.url || item.cost) && (
+                <div className="flex flex-col gap-1.5 mt-2 ml-1">
+                    <div className="flex flex-wrap gap-2 items-center">
+                        
+                        {/* 出発・到着時間 */}
+                        {(item.transport_departure || item.transport_arrival) && (
+                            <div className="flex items-center gap-1 text-[10px] font-bold text-indigo-700 bg-indigo-50 px-2 py-1 rounded border border-indigo-100 shrink-0">
+                                <Clock size={10}/>
+                                {item.transport_departure && <span>{item.transport_departure}発</span>}
+                                {item.transport_departure && item.transport_arrival && <span className="text-indigo-300 mx-0.5">→</span>}
+                                {item.transport_arrival && <span>{item.transport_arrival}着</span>}
                             </div>
-                          );
-                        }
+                        )}
+
+                        {/* 金額 */}
+                        {item.cost && (
+                            <div className="flex items-center gap-1 text-[10px] font-bold text-yellow-700 bg-yellow-50 px-2 py-1 rounded border border-yellow-100 shrink-0">
+                                <Banknote size={10}/> ¥{Number(item.cost).toLocaleString()}
+                            </div>
+                        )}
+
+                        {/* リンク */}
+                        {item.url && (
+                            <a 
+                                href={item.url} 
+                                target="_blank" 
+                                rel="noopener noreferrer" 
+                                onClick={(e) => e.stopPropagation()}
+                                className="flex items-center gap-1 text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded border border-blue-100 shrink-0 hover:bg-blue-100 transition"
+                            >
+                                <LinkIcon size={10}/> リンク
+                            </a>
+                        )}
+                    </div>
+
+                    {/* メモ */}
+                    {item.note && (
+                        <div className="text-[10px] text-gray-600 bg-gray-50 p-2 rounded border border-gray-100 w-full max-w-[90%] whitespace-pre-wrap flex items-start gap-1">
+                            <StickyNote size={10} className="shrink-0 mt-0.5 text-gray-400"/>
+                            {item.note}
+                        </div>
+                    )}
+                </div>
+            )}
+            {/* ▲▲▲ 追加ここまで ▲▲▲ */}
+                </div>
+            )}
+        </div>
+    </div>
+    );
+}
+// ... (後略)
                     })}
                     
                     <div className="absolute left-[24px] bottom-0 w-3 h-3 bg-gray-400 rounded-full -translate-x-1/2 border-2 border-white shadow-sm"></div>

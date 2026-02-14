@@ -334,6 +334,9 @@ function HomeContent() {
   const [showSwipeTutorial, setShowSwipeTutorial] = useState(false);
   const [dontShowTutorial, setDontShowTutorial] = useState(false);
 
+  // ★★★ 追加: 徒歩スケール表示用のState ★★★
+  const [scaleLabel, setScaleLabel] = useState("");
+
   const [selectedHotelDay, setSelectedHotelDay] = useState<number>(0);
 
   // ★追加: 計画ピン（確定・候補・宿）のマーカーを管理するRef
@@ -608,6 +611,8 @@ const onTimelineDragOver = (e: React.DragEvent) => {
     }
 };
 // page.tsx 内の onTimelineDrop を以下に置き換え
+// page.tsx 内の onTimelineDrop 関数をすべて入れ替えてください
+
 const onTimelineDrop = async (e: React.DragEvent, targetIndex: number) => {
     e.preventDefault();
     stopTimelineAutoScroll(); 
@@ -617,43 +622,54 @@ const onTimelineDrop = async (e: React.DragEvent, targetIndex: number) => {
     const draggedItem = displayTimeline[sourceIndex];
     if (!draggedItem || draggedItem.type !== 'spot') return;
 
-    // ▼▼▼ 修正: 既存のオブジェクト(時間情報込み)を維持して分離 ▼▼▼
-    const currentSpotsOnly = displayTimeline.filter(item => item.type === 'spot');
-    const currentTravelsOnly = displayTimeline.filter(item => item.type === 'travel');
+    // ▼▼▼ 修正: 複数移動対応のペアリングロジック ▼▼▼
+    const pairs: { travels: any[], item: any }[] = [];
+    let pendingTravels: any[] = [];
 
-    // 1. スポットリスト内での移動元・移動先インデックスを特定
-    const sourceSpotIndex = currentSpotsOnly.findIndex(s => s === draggedItem);
-    
-    // displayTimeline上の targetIndex が、spotリスト上のどこに相当するか計算
-    let targetSpotIndex = 0;
-    for(let i=0; i<targetIndex; i++){
-        if(displayTimeline[i].type === 'spot' && i !== sourceIndex) targetSpotIndex++;
+    displayTimeline.forEach(item => {
+        if (item.type === 'travel') {
+            pendingTravels.push(item);
+        } else if (item.type === 'spot') {
+            pairs.push({ travels: pendingTravels, item: item });
+            pendingTravels = [];
+        }
+    });
+
+    // 移動元の特定
+    const sourcePairIndex = pairs.findIndex(p => p.item === draggedItem);
+    if (sourcePairIndex === -1) return;
+
+    // 移動先の特定
+    let targetPairIndex = 0;
+    for(let i = 0; i < targetIndex; i++){
+        if(displayTimeline[i].type === 'spot') targetPairIndex++;
+    }
+    if (sourcePairIndex < targetPairIndex) {
+        targetPairIndex--;
     }
 
-    // 2. スポットの並び替え
-    const newSpotsOrder = [...currentSpotsOnly];
-    const [movedSpot] = newSpotsOrder.splice(sourceSpotIndex, 1);
-    newSpotsOrder.splice(targetSpotIndex, 0, movedSpot);
+    // 並び替え
+    const [movedPair] = pairs.splice(sourcePairIndex, 1);
+    pairs.splice(targetPairIndex, 0, movedPair);
 
-    // 3. タイムライン再構築 (再計算なし)
+    // 再構築
     const finalTimeline: any[] = [];
-    newSpotsOrder.forEach((spotItem, i) => {
-        finalTimeline.push(spotItem); // 既存のアイテムをそのまま使う
-        if (i < newSpotsOrder.length - 1) {
-            // 既存の移動アイテムがあればそれを使う
-            if (currentTravelsOnly[i]) {
-                finalTimeline.push(currentTravelsOnly[i]);
+    pairs.forEach((pair, index) => {
+        if (index > 0) {
+            if (pair.travels.length > 0) {
+                finalTimeline.push(...pair.travels);
             } else {
                 finalTimeline.push({ type: 'travel', duration_min: 30, transport_mode: 'car' });
             }
         }
+        finalTimeline.push(pair.item);
     });
+    // ▼▼▼ 修正ここまで ▲▲▲
 
-    // 4. 更新 (calculateSimpleScheduleを通さない)
     setDisplayTimeline(finalTimeline);
     setDraggedTimelineIndex(null);
     
-    // 5. ローカルストレージ更新
+    // 保存処理 (既存ロジック)
     if (roomId && selectedConfirmDay > 0) {
         const storageKey = `rh_plan_${roomId}_day_${selectedConfirmDay}`;
         localStorage.setItem(storageKey, JSON.stringify({ 
@@ -662,8 +678,7 @@ const onTimelineDrop = async (e: React.DragEvent, targetIndex: number) => {
         }));
     }
 
-    // 6. DB (Supabase) の order カラムを一括更新
-    const justSpots = newSpotsOrder.map(s => s.spot);
+    const justSpots = pairs.map(p => p.item.spot);
     for (let i = 0; i < justSpots.length; i++) {
         await supabase
             .from('spots')
@@ -671,7 +686,6 @@ const onTimelineDrop = async (e: React.DragEvent, targetIndex: number) => {
             .eq('id', justSpots[i].id);
     }
 
-    // 全体リスト（planSpots）も同期
     setPlanSpots(prev => {
         const next = [...prev];
         justSpots.forEach((s, idx) => {
@@ -1143,17 +1157,20 @@ const [arrivalModalSpots, setArrivalModalSpots] = useState<any[]>([]); // ★追
 
     // ★★★ 修正: タイムラインの正規化（クリーニング）処理 ★★★
     // 「移動」が連続したり、先頭・末尾に来ないように整理する
+   // ★★★ 修正: タイムラインの正規化（クリーニング）処理 ★★★
     const cleanTimeline: any[] = [];
     tempTimeline.forEach((item) => {
         if (item.type === 'spot') {
-            // 直前がスポットなら、間にデフォルト移動を挟む（Spot, Spot となるのを防ぐ）
             if (cleanTimeline.length > 0 && cleanTimeline[cleanTimeline.length - 1].type === 'spot') {
                 cleanTimeline.push({ type: 'travel', duration_min: 30, transport_mode: 'car' });
             }
             cleanTimeline.push(item);
         } else if (item.type === 'travel') {
-            // 直前がスポットの場合のみ移動を追加（Travel, Travel や 先頭Travel を防ぐ）
+            // ▼▼▼ 修正: 連続移動を許可（重複チェック削除） ▼▼▼
             if (cleanTimeline.length > 0 && cleanTimeline[cleanTimeline.length - 1].type === 'spot') {
+                cleanTimeline.push(item);
+            } else if (cleanTimeline.length > 0 && cleanTimeline[cleanTimeline.length - 1].type === 'travel') {
+                // 連続する移動も許可
                 cleanTimeline.push(item);
             }
         }
@@ -1479,14 +1496,16 @@ const filteredSpots = useMemo(() => {
         return currentDaySpots;
     } 
     // 3. 候補リスト (エリアによる絞り込み)
+   // 3. 候補リスト (エリアによる絞り込み)
     else if (filterStatus === 'candidate') {
-        spots = planSpots.filter(s => (s.status || 'candidate') === 'candidate');
+        // ★修正: 候補だけでなく「確定」も含める
+        spots = planSpots.filter(s => s.status === 'candidate' || s.status === 'confirmed');
         
         // 選択中のエリアがある場合、モード(市町村/県)に合わせてフィルタリング
         if (selectedCandidateArea !== 'all') {
             spots = spots.filter(s => getSpotArea(s, groupingMode) === selectedCandidateArea);
         }
-    } 
+    }
     // 4. 宿候補リスト (Dayごとの表示)
     else if (filterStatus === 'hotel_candidate') {
         spots = planSpots.filter(s => s.status === 'hotel_candidate');
@@ -1501,12 +1520,13 @@ const filteredSpots = useMemo(() => {
   }, [planSpots, filterStatus, selectedConfirmDay, selectedCandidateArea, selectedHotelDay, groupingMode]);
 
 // ▼▼▼ 修正: candidateAreas の生成ロジック ▼▼▼
+  // ▼▼▼ 修正: candidateAreas の生成ロジック (確定スポットも含める) ▼▼▼
   const candidateAreas = useMemo(() => {
-      const candidates = planSpots.filter(s => (s.status || 'candidate') === 'candidate');
-      // ★修正: getSpotArea(s, groupingMode) を使用
-      const areas = new Set(candidates.map(s => getSpotArea(s, groupingMode)));
+      // 候補(candidate) または 確定(confirmed) のスポットを対象にする
+      const targetSpots = planSpots.filter(s => s.status === 'candidate' || s.status === 'confirmed');
+      
+      const areas = new Set(targetSpots.map(s => getSpotArea(s, groupingMode)));
       return Array.from(areas).sort();
-      // 依存配列に groupingMode を追加
   }, [planSpots, groupingMode]);
 
   // ▼▼▼ 修正: スポット追加時などに勝手にズームアウトしないように依存配列を変更 ▼▼▼
@@ -2508,6 +2528,8 @@ const now = new Date().toISOString(); // ★現在時刻
             });
         }
         // ▲▲▲ 追加ここまで ▲▲▲
+
+        
         map.current.resize();
         map.current.addSource('draw-source', { type: 'geojson', data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } } });
         map.current.addLayer({ id: 'draw-line', type: 'line', source: 'draw-source', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#EF4444', 'line-width': 4, 'line-opacity': 0.8 } });
@@ -2621,6 +2643,41 @@ const now = new Date().toISOString(); // ★現在時刻
               }
           });
         });
+
+
+        // ★★★ 追加: 徒歩スケールの計算ロジック (ここから) ★★★
+        const updateScale = () => {
+            if (!map.current) return;
+            
+            // 画面上の幅 100px が、地図上で何メートルかを計算
+            const y = map.current.getContainer().clientHeight / 2; // 画面中央の緯度基準
+            // 画面中央付近の左端(0px)と、そこから100px右の地点の座標を取得
+            const p1 = map.current.unproject([0, y]);
+            const p2 = map.current.unproject([100, y]);
+
+            // 距離計算 (既存のcalculateDistance関数を使用: 単位km)
+            const distKm = calculateDistance(p1.lat, p1.lng, p2.lat, p2.lng);
+            const distM = distKm * 1000;
+            
+            // 不動産業界の徒歩所要時間基準：80m/分 で計算
+            const minutes = Math.round(distM / 80);
+
+            if (minutes >= 180) {
+                setScaleLabel("徒歩3時間以上");
+            } else if (minutes >= 60) {
+                const h = Math.floor(minutes / 60);
+                const m = minutes % 60;
+                setScaleLabel(`徒歩約${h}時間${m > 0 ? m + '分' : ''}`);
+            } else {
+                setScaleLabel(`徒歩約${minutes}分`);
+            }
+        };
+
+        // 地図が動いたりズームしたら再計算
+        map.current.on('move', updateScale);
+        map.current.on('zoom', updateScale);
+        updateScale(); // 初期表示用
+        // ★★★ 追加: 徒歩スケールの計算ロジック (ここまで) ★★★
         // ▲▲▲ 修正ここまで ▲▲▲
       });
       
@@ -3109,6 +3166,22 @@ const now = new Date().toISOString(); // ★現在時刻
         <div className={`relative h-full w-full md:flex-1 ${currentTab === 'explore' ? 'block' : 'hidden md:block'}`}>
           <div ref={mapContainer} className="absolute top-0 left-0 w-full h-full z-0" style={{ touchAction: isDrawing ? 'none' : 'auto' }} />
 
+          {/* ★★★ 追加: 徒歩時間スケール (ここから) ★★★ */}
+          {currentTab === 'explore' && scaleLabel && (
+              <div className="absolute top-32 left-4 z-10 pointer-events-none drop-shadow-md flex flex-col items-start animate-in fade-in duration-500">
+                   {/* テキストラベル */}
+                   <span className="text-[10px] font-bold text-gray-600 bg-white/90 px-2 py-0.5 rounded-md mb-0.5 whitespace-nowrap border border-white/50 backdrop-blur-sm shadow-sm">
+                       {scaleLabel}
+                   </span>
+                   {/* 100px幅の定規バー */}
+                   <div className="w-[100px] h-2 border-x-2 border-b-2 border-gray-600/80 bg-white/20 backdrop-blur-[1px] relative">
+                        {/* 中央の目盛り */}
+                        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-px h-1 bg-gray-600/50"></div>
+                   </div>
+              </div>
+          )}
+          {/* ★★★ 追加: 徒歩時間スケール (ここまで) ★★★ */}
+          
           <div className="absolute top-32 right-4 z-20 flex flex-col gap-3">
              <button 
                 onClick={() => isDrawing ? stopDrawing() : startDrawing()} 
@@ -3682,7 +3755,7 @@ const now = new Date().toISOString(); // ★現在時刻
                                           {/* 区切り線 */}
                                           <div className="w-px h-6 bg-gray-200 shrink-0 mx-1"></div>
 
-                                          {/* ▼▼▼ 既存: 「すべて」ボタン ▼▼▼ */}
+                                         {/* ▼▼▼ 既存: 「すべて」ボタン ▼▼▼ */}
                                           <button 
                                               onClick={(e) => { e.stopPropagation(); setSelectedCandidateArea('all'); }}
                                               className={`px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition border flex-shrink-0 flex items-center gap-1 relative ${
@@ -3692,19 +3765,21 @@ const now = new Date().toISOString(); // ★現在時刻
                                               }`}
                                           >
                                               すべて <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${selectedCandidateArea === 'all' ? 'bg-white/20' : 'bg-gray-100'}`}>
-                                                  {planSpots.filter(s => (s.status||'candidate') === 'candidate').length}
+                                                  {/* ★修正: 件数を候補+確定にする */}
+                                                  {planSpots.filter(s => s.status === 'candidate' || s.status === 'confirmed').length}
                                               </span>
                                           </button>
 
                                           {/* ▼▼▼ 既存: エリア別ボタンリスト ▼▼▼ */}
                                           {candidateAreas.map((area) => {
                                               const isActive = selectedCandidateArea === area;
-                                              // ★修正: カウントも getSpotArea を使う
-                                              const count = planSpots.filter(s => (s.status||'candidate') === 'candidate' && getSpotArea(s, groupingMode) === area).length;
+                                              // ★修正: 件数を候補+確定にする
+                                              const count = planSpots.filter(s => (s.status === 'candidate' || s.status === 'confirmed') && getSpotArea(s, groupingMode) === area).length;
                                               
                                               return (
                                                   <button 
                                                       key={area}
+                                                      // ... (省略) ...
                                                       onClick={(e) => { e.stopPropagation(); setSelectedCandidateArea(area); }}
                                                       className={`px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition border flex-shrink-0 flex items-center gap-1 relative ${
                                                           isActive 
@@ -4025,71 +4100,55 @@ const now = new Date().toISOString(); // ★現在時刻
                                                                             {/* 滞在時間 (自動計算に変更) */}
 {/* 滞在時間 (自動計算 + 警告表示) */}
 {/* 滞在時間 (自動計算 + 整合性チェック) */}
-<div className="text-[10px] truncate flex items-center gap-1 shrink-0 bg-gray-50 px-1.5 py-0.5 rounded border border-gray-100">
-    <Clock size={10} className="text-gray-400"/>
-    {(() => {
-        // 安全策: データがない場合はデフォルト表示
-        if (!item.arrival || !item.departure) {
-             return <span className="text-gray-400">{item.stay_min || 0}分</span>;
-        }
+{/* 滞在時間 (自動計算 + 整合性チェック) */}
+                                                                            <div className="text-[10px] truncate flex items-center gap-1 shrink-0 bg-gray-50 px-1.5 py-0.5 rounded border border-gray-100">
+                                                                                <Clock size={10} className="text-gray-400"/>
+                                                                                {(() => {
+                                                                                    // 安全策: データがない場合はデフォルト表示
+                                                                                    if (!item.arrival || !item.departure) {
+                                                                                         // ★修正1: データ不足時は「?分」
+                                                                                         return <span className="text-gray-400">{(item.stay_min && item.stay_min > 0) ? `${item.stay_min}分` : '?分'}</span>;
+                                                                                    }
 
-        try {
-            // 1. 滞在時間の計算 (マイナスチェック)
-            const [sH, sM] = item.arrival.split(':').map(Number);
-            const [eH, eM] = item.departure.split(':').map(Number);
-            const diff = (eH * 60 + eM) - (sH * 60 + sM);
-            
-            const isNegative = diff < 0; // マイナスかどうか
-            
-            const abs = Math.abs(diff);
-            const h = Math.floor(abs / 60);
-            const m = abs % 60;
-            const sign = isNegative ? "-" : "";
-            
-            let text = `${sign}${m}分`;
-            if (h > 0) {
-                text = `${sign}${h}時間${m > 0 ? m + "分" : ""}`;
-            }
+                                                                                    try {
+                                                                                        // 1. 滞在時間の計算 (マイナスチェック)
+                                                                                        const [sH, sM] = item.arrival.split(':').map(Number);
+                                                                                        const [eH, eM] = item.departure.split(':').map(Number);
+                                                                                        const diff = (eH * 60 + eM) - (sH * 60 + sM);
+                                                                                        
+                                                                                        const isNegative = diff < 0; // マイナスかどうか
+                                                                                        
+                                                                                        const abs = Math.abs(diff);
+                                                                                        const h = Math.floor(abs / 60);
+                                                                                        const m = abs % 60;
+                                                                                        const sign = isNegative ? "-" : "";
+                                                                                        
+                                                                                        let text = `${sign}${m}分`;
+                                                                                        if (h > 0) {
+                                                                                            text = `${sign}${h}時間${m > 0 ? m + "分" : ""}`;
+                                                                                        }
+                                                                                        
+                                                                                        // ... (中略: 整合性チェックなどはそのまま) ...
 
-            // 2. 前のスポットとの整合性チェック (時間が飛んでいないか)
-            let isInconsistent = false;
-            // idx は displayTimeline.map の引数として受け取っている前提
-            const prevTravel = displayTimeline[idx - 1];
-            const prevSpot = displayTimeline[idx - 2];
+                                                                                        // 赤くするかどうかの判定
+                                                                                        const isWarning = isNegative ;
 
-            if (prevTravel && prevTravel.type === 'travel' && prevSpot && prevSpot.type === 'spot' && prevSpot.departure) {
-                const [pH, pM] = prevSpot.departure.split(':').map(Number);
-                const [cH, cM] = item.arrival.split(':').map(Number);
-                const travelMin = prevTravel.duration_min || 0;
-                
-                // 期待される到着時間
-                const expectedMin = (pH * 60 + pM + travelMin) % 1440;
-                // 実際の到着時間
-                const currentMin = (cH * 60 + cM) % 1440;
-                
-                if (expectedMin !== currentMin) {
-                    isInconsistent = true;
-                }
-            }
-
-            // 赤くするかどうかの判定
-            const isWarning = isNegative || isInconsistent;
-
-            return (
-                <span className={`font-medium ${
-                    isWarning
-                    ? 'text-red-500 underline decoration-red-500 decoration-wavy'
-                    : 'text-gray-400'
-                }`}>
-                    {text}
-                </span>
-            );
-        } catch (e) {
-            // エラー時は安全に元の分数を表示
-            return <span className="text-gray-400">{item.stay_min || 0}分</span>;
-        }
-    })()}
-</div>
+                                                                                        return (
+                                                                                            <span className={`font-medium ${
+                                                                                                isWarning
+                                                                                                ? 'text-red-500 underline decoration-red-500 decoration-wavy'
+                                                                                                : 'text-gray-400'
+                                                                                            }`}>
+                                                                                                {text}
+                                                                                            </span>
+                                                                                        );
+                                                                                    } catch (e) {
+                                                                                        // エラー時は安全に元の分数を表示
+                                                                                        // ★修正2: エラー時も「?分」対応
+                                                                                        return <span className="text-gray-400">{(item.stay_min && item.stay_min > 0) ? `${item.stay_min}分` : '?分'}</span>;
+                                                                                    }
+                                                                                })()}
+                                                                            </div>
 
                                                                             {/* 金額 (price優先) */}
                                                                             {(spot.price || spot.cost) && (
@@ -4142,22 +4201,30 @@ const now = new Date().toISOString(); // ★現在時刻
                                                         </div>
                                                     </div>
                                                 );
-                                           } else if (item.type === 'travel') {
-                                                const mode = TRANSPORT_MODES.find(m => m.id === (item.transport_mode || 'car')) || TRANSPORT_MODES[0];
-                                                return (
-                                                    <div 
-                                                        key={`travel-${idx}`} 
-                                                        className="relative pl-8 pb-4"
-                                                        onDragOver={onTimelineDragOver}
-                                                        onDrop={(e) => onTimelineDrop(e, idx + 1)} 
-                                                    >
-                                                        <div className="absolute left-[-1px] top-0 bottom-0 w-0.5 bg-gray-200"></div>
-                                                        <div className="ml-4 flex flex-col gap-1">
-                                                            {/* 移動手段と時間 */}
-                                                            <div className="flex items-center gap-2 text-xs text-gray-400 font-bold bg-gray-50 px-2 py-1 rounded w-max border border-gray-100">
-                                                                {mode.icon}
-                                                                <span>{item.duration_min}分 移動</span>
-                                                            </div>
+                                       } else if (item.type === 'travel') {
+    const mode = TRANSPORT_MODES.find(m => m.id === (item.transport_mode || 'car')) || TRANSPORT_MODES[0];
+    
+    // ▼▼▼ 修正: 0分または未設定の場合は「?」を表示する判定に変更 ▼▼▼
+    // const isTimeSet = idx > 0 && displayTimeline[idx - 1]?.departure; // ← 以前のロジック（削除）
+
+    const durationVal = Number(item.duration_min || 0);
+    const hasDuration = durationVal > 0;
+
+    return (
+        <div 
+            key={`travel-${idx}`} 
+            className="relative pl-8 pb-4"
+            onDragOver={onTimelineDragOver}
+            onDrop={(e) => onTimelineDrop(e, idx + 1)} 
+        >
+            <div className="absolute left-[-1px] top-0 bottom-0 w-0.5 bg-gray-200"></div>
+            <div className="ml-4 flex flex-col gap-1">
+                {/* 移動手段と時間 */}
+                <div className="flex items-center gap-2 text-xs text-gray-400 font-bold bg-gray-50 px-2 py-1 rounded w-max border border-gray-100">
+                    {mode.icon}
+                    {/* ▼▼▼ 修正: 0より大きい場合のみ数値を表示、それ以外は '?' ▼▼▼ */}
+                    <span>{hasDuration ? durationVal : '?'}分 移動</span>
+                </div>
 
                                                             {/* 詳細情報タグ (時間・金額・リンク・メモ) */}
                                                             {(item.transport_departure || item.transport_arrival || item.cost || item.url || item.note) && (
@@ -4263,27 +4330,30 @@ const now = new Date().toISOString(); // ★現在時刻
 
         <div className="flex gap-1 shrink-0 ml-1">
             {voteCount > 0 && <span className="flex items-center gap-0.5 text-[9px] font-bold text-blue-500 bg-blue-50 px-1 py-0.5 rounded"><ThumbsUp size={8}/> {voteCount}</span>}
-            {/* ... 既存の「確定にする」ボタンなどはそのまま ... */}{(filterStatus === 'candidate' || filterStatus === 'hotel_candidate') && (
-    <button 
-        onClick={(e) => { e.stopPropagation(); handleStatusChangeClick(spot, 'confirmed'); }} 
-        className="bg-blue-600 text-white text-[9px] px-2 py-0.5 rounded font-bold hover:bg-blue-700 transition"
-    >
-        確定にする
-    </button>
-)}
-                                                            {filterStatus === 'confirmed' && (
-                                                                <button 
-                                                                    // ▼▼▼ 修正: 宿判定を行い、適切なステータスを渡す
-                                                                    onClick={(e) => { 
-                                                                        e.stopPropagation(); 
-                                                                        const nextStatus = isSpotHotel ? 'hotel_candidate' : 'candidate';
-                                                                        handleStatusChangeClick(spot, nextStatus); 
-                                                                    }} 
-                                                                    className="bg-gray-100 border border-gray-200 text-gray-600 text-[9px] px-2 py-0.5 rounded font-bold hover:bg-gray-200 transition whitespace-nowrap"
-                                                                >
-                                                                    {isSpotHotel ? '宿リストに戻す' : '候補に戻す'}
-                                                                </button>
-                                                            )}
+          {/* ★修正: 確定にするボタン (候補リスト内でも、未確定のものにだけ表示) */}
+                      {(filterStatus === 'hotel_candidate' || (filterStatus === 'candidate' && spot.status !== 'confirmed')) && (
+                        <button 
+                            onClick={(e) => { e.stopPropagation(); handleStatusChangeClick(spot, 'confirmed'); }} 
+                            className="bg-blue-600 text-white text-[9px] px-2 py-0.5 rounded font-bold hover:bg-blue-700 transition"
+                        >
+                            確定にする
+                        </button>
+                      )}
+                      
+                      {/* ★修正: 候補に戻すボタン (確定リスト、または候補リスト内の確定済みスポットに表示) */}
+                      {(filterStatus === 'confirmed' || (filterStatus === 'candidate' && spot.status === 'confirmed')) && (
+                            <button 
+                                onClick={(e) => { 
+                                    e.stopPropagation(); 
+                                    const nextStatus = (isHotel(spot.name) || spot.is_hotel) ? 'hotel_candidate' : 'candidate';
+                                    handleStatusChangeClick(spot, nextStatus); 
+                                }} 
+                                className="bg-gray-100 border border-gray-200 text-gray-600 text-[9px] px-2 py-0.5 rounded font-bold hover:bg-gray-200 transition whitespace-nowrap"
+                            >
+                                {(isHotel(spot.name) || spot.is_hotel) ? '宿リストに戻す' : '候補に戻す'}
+                            </button>
+                        )}
+                                                            
                                                         </div>
                                                     </div>
                                                    <div className="flex gap-2 items-center justify-end mt-1">

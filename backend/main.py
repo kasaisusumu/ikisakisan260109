@@ -1163,49 +1163,114 @@ async def calculate_route_endpoint(req: OptimizeRequest):
     
     return await calculate_route_fallback(client, spots, start, limit)
 
+# main.py の 760行目付近にある search_places 関数をこれに置き換えてください
+
+# main.py の 760行目付近にある search_places 関数をこれに置き換えてください
+
 @app.get("/api/search_places")
-async def search_places(query: str):
+async def search_places(query: str, lat: Optional[float] = None, lng: Optional[float] = None):
     global http_client
     if http_client is None: return {"results": []}
     client = http_client
 
-    cache_key = f"search_places_v1:{query}"
+    # キャッシュキーに座標も含める
+    cache_key = f"search_places_hybrid_v3:{query}:{lat}:{lng}"
     cached = get_cache(cache_key)
     if cached: return cached
 
     try:
         clean_query = re.sub(r'[(（].*?[)）]', '', query).strip()
-        url = "https://api.geoapify.com/v1/geocode/search"
-        params = {
+        if not clean_query: return {"results": []}
+
+        results = []
+        seen_ids = set()
+
+        # ---------------------------------------------------------
+        # 1. Geocoding API (住所・地名・代表的な施設)
+        # ---------------------------------------------------------
+        geo_url = "https://api.geoapify.com/v1/geocode/search"
+        geo_params = {
             "text": clean_query, 
             "apiKey": GEOAPIFY_API_KEY, 
             "lang": "ja", 
-            "limit": 10, 
+            "limit": 5, 
             "countrycode": "jp"
         }
-        res = await fetch_with_retry(client, url, params=params, initial_timeout=5.0, retries=3)
+        # 座標があれば周辺優先バイアスをかける
+        if lat is not None and lng is not None:
+            geo_params["bias"] = f"proximity:{lng},{lat}"
 
-        results = []
-        if res and res.status_code == 200:
-            data = res.json()
+        geo_res = await fetch_with_retry(client, geo_url, params=geo_params, initial_timeout=5.0, retries=2)
+
+        if geo_res and geo_res.status_code == 200:
+            data = geo_res.json()
             if "features" in data:
                 for feat in data["features"]:
                     props = feat["properties"]
+                    place_id = props.get("place_id")
+                    if place_id in seen_ids: continue
+
                     name = props.get("name", "")
                     formatted = props.get("formatted", "")
                     if not name: name = formatted.split(",")[0] if formatted else clean_query
 
                     results.append({
-                        "id": props.get("place_id"),
+                        "id": place_id,
                         "name": name,
                         "place_name": formatted,
                         "center": feat["geometry"]["coordinates"],
-                        "is_geoapify": True
+                        "is_geoapify": True,
+                        "type": "location"
                     })
-        
+                    seen_ids.add(place_id)
+
+        # ---------------------------------------------------------
+        # 2. Places API (施設名・店名・あいまい検索)
+        # ※ Geocodingの結果が少ない、または意図した店が出ない場合に補完
+        # ---------------------------------------------------------
+        if len(results) < 5:
+            places_url = "https://api.geoapify.com/v2/places"
+            places_params = {
+                "name": clean_query, # ここであいまいな店名を検索
+                "apiKey": GEOAPIFY_API_KEY,
+                "lang": "ja",
+                "limit": 10
+            }
+            # Places APIは範囲指定やバイアスが重要
+            if lat is not None and lng is not None:
+                places_params["bias"] = f"proximity:{lng},{lat}"
+            
+            places_res = await fetch_with_retry(client, places_url, params=places_params, initial_timeout=5.0, retries=2)
+
+            if places_res and places_res.status_code == 200:
+                data = places_res.json()
+                if "features" in data:
+                    for feat in data["features"]:
+                        props = feat["properties"]
+                        place_id = props.get("place_id")
+                        if place_id in seen_ids: continue
+
+                        name = props.get("name", "")
+                        # 名前がない施設はスキップ（住所検索ですでに拾っている可能性が高い）
+                        if not name: continue
+                        
+                        # 住所の整形
+                        formatted = get_clean_address(props)
+                        
+                        results.append({
+                            "id": place_id,
+                            "name": name,
+                            "place_name": formatted,
+                            "center": feat["geometry"]["coordinates"],
+                            "is_geoapify": True,
+                            "type": "place"
+                        })
+                        seen_ids.add(place_id)
+
         response_data = {"results": results}
         if results: set_cache(cache_key, response_data)
         return response_data
+
     except Exception as e:
         print(f"Search Error: {e}")
         return {"results": []}
