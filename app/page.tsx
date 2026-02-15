@@ -1903,9 +1903,12 @@ const filteredSpots = useMemo(() => {
   // --- page.tsx 1310行目付近 ---
 
 // --- page.tsx 1310行目付近 ---
-
+// page.tsx 1310行目付近
 useEffect(() => {
     const onTouchStart = (e: TouchEvent) => {
+        // ★追加: exploreタブ（地図画面）以外ではズーム機能を無効化する
+        if (currentTab !== 'explore') return;
+
         // 1本指以外の操作、または「かこって検索」中は無視
         if (e.touches.length !== 1 || isDrawing) return;
 
@@ -1914,14 +1917,10 @@ useEffect(() => {
         const screenHeight = window.innerHeight;
         const edgeThreshold = 60; 
 
-        // ★ 修正：リスト（ボトムシート）が表示されているエリアか判定
-        // filterStatus が 'all' 以外ならシートが出ているので、その高さを避ける
+        // リスト（ボトムシート）が表示されているエリアか判定
         if (filterStatus !== 'all') {
             const sheetTop = screenHeight - sheetHeight;
-            if (touch.clientY > sheetTop) {
-                // リストエリア内のタッチなので、ズーム判定をせずに終了
-                return;
-            }
+            if (touch.clientY > sheetTop) return;
         }
 
         const isRight = touch.clientX > screenWidth - edgeThreshold;
@@ -1946,6 +1945,7 @@ useEffect(() => {
     };
 
     const onTouchMove = (e: TouchEvent) => {
+        // isActive が false（explore以外で開始した場合など）なら何もしない
         if (!rightEdgeGestureRef.current.isActive || !map.current) return;
         if (e.cancelable) e.preventDefault();
 
@@ -1977,7 +1977,8 @@ useEffect(() => {
         window.removeEventListener('touchend', onTouchEnd);
         window.removeEventListener('touchcancel', onTouchEnd);
     };
-}, [isDrawing, isAuthLoading, isJoined, filterStatus, sheetHeight]); // ★ 依存配列に filterStatus と sheetHeight を追加
+    // ★依存配列に currentTab を追加するのを忘れずに！
+}, [isDrawing, isAuthLoading, isJoined, filterStatus, sheetHeight, currentTab]);
 
   useEffect(() => {
     if (selectedResult && roomId) {
