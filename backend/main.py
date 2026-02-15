@@ -228,7 +228,6 @@ def is_inside_polygon(lat, lng, poly_coords):
     return inside
 
 # ▼▼▼ 都道府県名変換・補完マップ ▼▼▼
-# 漢字(接尾辞なし/あり)・ローマ字 -> 正しい都道府県名(漢字)
 PREF_NORMALIZER = {
     # 北海道・東北
     "北海道": "北海道", "Hokkaido": "北海道",
@@ -286,18 +285,12 @@ PREF_NORMALIZER = {
     "沖縄": "沖縄県", "Okinawa": "沖縄県"
 }
 
-# ▼▼▼ 修正: 住所整形ロジック (分割・正規化・結合) ▼▼▼
+# ▼▼▼ 住所整形ロジック (分割・正規化・結合) ▼▼▼
 
 def extract_and_fix_address(raw_address: str) -> str:
-    """
-    住所文字列から都道府県と市町村を正しく分離・整形する。
-    例: "長野長野市..." -> "長野県長野市..."
-    例: "NaganoNagano-shi" -> "長野県長野市"
-    """
+    """住所文字列から都道府県と市町村を正しく分離・整形する"""
     if not raw_address: return ""
 
-    # 1. 区切り文字("市", "区", "郡", "町", "村")の位置を探す
-    # 最も手前に来る区切り文字を採用する
     delimiters = ["市", "区", "郡", "町", "村"]
     split_index = -1
     found_delimiter = ""
@@ -309,47 +302,32 @@ def extract_and_fix_address(raw_address: str) -> str:
                 split_index = idx
                 found_delimiter = d
     
-    # 区切り文字が見つからない場合、そのまま返すか、辞書マッチを試みる
     if split_index == -1:
-        # 救済: 先頭が辞書のキーと一致するか
         for k, v in PREF_NORMALIZER.items():
             if raw_address.startswith(k):
                 rest = raw_address[len(k):]
-                # ★追加: 県名と後続が一致する場合（例: 長野長野）、後続に市をつける
-                state_core = v.replace("都", "").replace("府", "").replace("県", "") # 北海道はそのまま
+                state_core = v.replace("都", "").replace("府", "").replace("県", "")
                 if rest == state_core:
                     rest += "市"
                 return v + rest
         return raw_address
 
-    # 2. 区切り文字の前にある文字列を取得 (これが "長野長野" や "NaganoNagano" になっている可能性がある)
-    # ただし、単純に前から見ていって、PREF_NORMALIZERのキーにヒットする場所で切るのが確実
-    
-    # 区切り文字までの部分文字列
-    prefix_area = raw_address[:split_index + len(found_delimiter)] # "長野長野市"
-    rest_area = raw_address[split_index + len(found_delimiter):]   # "..."
+    prefix_area = raw_address[:split_index + len(found_delimiter)] 
+    rest_area = raw_address[split_index + len(found_delimiter):]
 
-    # 3. 前から順に都道府県名を見つける
     detected_state = ""
     detected_state_raw = ""
     
     for k, v in PREF_NORMALIZER.items():
         if prefix_area.startswith(k):
-            # 長いマッチを優先したいが、PREF_NORMALIZERはほぼ県名かローマ字なので先頭一致でOK
             detected_state = v
             detected_state_raw = k
             break
     
     if detected_state:
-        # 都道府県名が見つかった場合
-        # 残りの部分を取得 (prefix_area から detected_state_raw を取り除く)
-        # 例: prefix_area="長野長野市", k="長野" -> remainder="長野市"
         remainder = prefix_area[len(detected_state_raw):]
-        
-        # 結合: 正規化された県名 + 残りの部分 + その後の住所
         return detected_state + remainder + rest_area
     
-    # 見つからなかった場合
     return raw_address
 
 def get_clean_address(props: dict) -> str:
@@ -368,9 +346,7 @@ def get_clean_address(props: dict) -> str:
     
     formatted = props.get("formatted", "")
 
-    # 1. パーツが揃っている場合はパーツから組み立てる (これが一番綺麗)
     if state and (city or county or ward):
-        # stateの正規化
         if state in PREF_NORMALIZER:
             state = PREF_NORMALIZER[state]
         elif not any(state.endswith(s) for s in ['都', '道', '府', '県']):
@@ -378,8 +354,6 @@ def get_clean_address(props: dict) -> str:
             elif state in ['京都', '大阪']: state += '府'
             elif state != '北海道': state += '県'
             
-        # ★追加: cityが県名と同じで「市」がない場合、市を付与する
-        # (例: state="長野県", city="長野" -> "長野市")
         state_core = state
         if state_core.endswith("都"): state_core = state_core[:-1]
         elif state_core.endswith("府"): state_core = state_core[:-1]
@@ -395,11 +369,7 @@ def get_clean_address(props: dict) -> str:
         
         return "".join(address_parts)
 
-    # 2. パーツが足りない場合、formatted から抽出・整形ロジックを走らせる
-    # NNなどのゴミを除去
     clean_formatted = formatted.replace("NN", "").replace(" ,", "").replace(", ", "").strip()
-    
-    # 強制抽出ロジック ("長野長野市" -> "長野県長野市")
     return extract_and_fix_address(clean_formatted)
 
 async def fetch_with_retry(client, url, params=None, headers=None, retries=5, initial_timeout=10.0):
@@ -428,19 +398,14 @@ async def fetch_wikipedia_image(client, query: str):
     return info.get("image_url")
 
 async def fetch_wikipedia_info(client, query: str, target_name: str = None):
-    """
-    画像と概要(summary)をまとめて取得する
-    target_name が指定されている場合、ページタイトルにその名前が含まれているかチェックする
-    """
+    """画像と概要(summary)をまとめて取得する"""
     if not query: return {"image_url": None, "summary": None}
     
-    # キャッシュキー
     cache_key = f"wiki_info_v4:{query}"
     cached = get_cache(cache_key)
     if cached: return cached
 
     try:
-        # 1. 検索してページIDを取得
         search_url = "https://ja.wikipedia.org/w/api.php"
         search_params = {
             "action": "query", "list": "search", "srsearch": query,
@@ -470,7 +435,6 @@ async def fetch_wikipedia_info(client, query: str, target_name: str = None):
         if not page_id:
              return {"image_url": None, "summary": None}
         
-        # 2. 詳細情報を取得
         info_url = "https://ja.wikipedia.org/w/api.php"
         info_params = {
             "action": "query", 
@@ -531,7 +495,6 @@ async def fetch_spot_coordinates(client, target_name: str, search_query: str):
                     result_name = props.get("name", "")
                     if not result_name or not result_name.strip(): continue
 
-                    # ▼▼▼ 修正: get_clean_address を使用 ▼▼▼
                     desc = get_clean_address(props)
                     if not desc: desc = "住所不明"
 
@@ -596,7 +559,6 @@ async def fetch_spot_by_coordinates(client, lat: float, lng: float, fallback_nam
                 if not result_name:
                     result_name = fallback_name
 
-                # ▼▼▼ 修正: get_clean_address を使用 ▼▼▼
                 desc = get_clean_address(props)
                 desc = re.sub(r'〒\d{3}-\d{4}', '', desc).strip()
                 if not desc: desc = "住所不明"
@@ -626,6 +588,51 @@ async def fetch_spot_by_coordinates(client, lat: float, lng: float, fallback_nam
         print(f"Reverse Geo Error: {e}")
     
     return None
+
+# ==========================================
+# 🧠 AIによるクエリ正規化関数
+# ==========================================
+async def get_official_name_by_ai(query: str) -> str:
+    """
+    AIを使用して、あだ名・ひらがな・誤記を「地図検索でヒットしやすい正式名称」に変換する。
+    例: "そらてらす" -> "SORA terrace"
+    例: "ディズニー" -> "東京ディズニーランド"
+    """
+    cache_key = f"query_norm_v1:{query}"
+    cached = get_cache(cache_key)
+    if cached: return cached
+
+    prompt = f"""
+    タスク: ユーザーの検索語句「{query}」を、Google Mapsやナビで検索した際に最もヒットしやすい『正式名称』または『漢字表記』に修正してください。
+    
+    ルール:
+    1. 観光地や施設の「あだ名」「ひらがな」「カタカナ」「ローマ字」は、正式な表記（漢字や英語含む）に直す。
+    2. 明らかな誤字脱字があれば修正する。
+    3. 住所や、すでに正式名称である場合は、入力そのままを返す。
+    4. 余計な説明は一切不要。修正後の単語のみを出力すること。
+
+    例:
+    そらてらす -> SORA terrace
+    京都のみずでら -> 清水寺
+    スカイツリー -> 東京スカイツリー
+    ユニバ -> ユニバーサル・スタジオ・ジャパン
+    """
+    
+    try:
+        res = await aclient.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=50,
+            temperature=0.0
+        )
+        normalized_name = res.choices[0].message.content.strip()
+        normalized_name = normalized_name.replace('"', '').replace("「", "").replace("」", "")
+        
+        set_cache(cache_key, normalized_name)
+        return normalized_name
+    except Exception as e:
+        print(f"AI Normalize Error: {e}")
+        return query
 
 # ---------------------------------------------------------
 # API: 各種エンドポイント
@@ -677,7 +684,6 @@ async def nearby_spots(req: NearbyRequest):
                     coords = geometry["coordinates"]
                     if not isinstance(coords, list) or len(coords) != 2: continue
 
-                    # ▼▼▼ 修正: get_clean_address を使用 ▼▼▼
                     formatted = get_clean_address(props)
                     
                     categories_list = props.get("categories", [])
@@ -781,7 +787,6 @@ async def import_rakuten_hotel(req: ImportRequest):
         raw_hotel = data["hotels"][0]
         hotel_content = raw_hotel["hotel"] if "hotel" in raw_hotel else raw_hotel
         
-        # 構造解析
         basic = None
         user_review = {}
         if isinstance(hotel_content, list):
@@ -804,7 +809,6 @@ async def import_rakuten_hotel(req: ImportRequest):
             "price": basic.get("hotelMinCharge", 0), 
             "rating": basic.get("reviewAverage", 3.0),
             
-            # 詳細評価
             "service_rating": user_review.get("serviceAverage", 0.0),
             "location_rating": user_review.get("locationAverage", 0.0),
             "room_rating": user_review.get("roomAverage", 0.0),
@@ -883,7 +887,6 @@ async def search_hotels_vacant(req: VacantSearchRequest):
                     hotel_content = h_group["hotel"] if "hotel" in h_group else h_group
                     if not isinstance(hotel_content, list) or len(hotel_content) == 0: continue
                     
-                    # 構造解析: hotelBasicInfo と userReview (ある場合) を探す
                     basic = None
                     user_review = {}
                     
@@ -908,13 +911,11 @@ async def search_hotels_vacant(req: VacantSearchRequest):
                     best_plan_id, best_room_class = None, None
                     found_valid_plan = False
                     
-                    # プラン検索 (index 1以降)
                     for j in range(1, len(hotel_content)):
                         r_info = hotel_content[j].get("roomInfo")
                         if isinstance(r_info, list) and len(r_info) >= 2:
                             r_basic = r_info[0].get("roomBasicInfo", {})
                             
-                            # 食事条件チェック
                             if req.meal_type == 'room_only':
                                 if r_basic.get("withBreakfastFlag") == 1 or r_basic.get("withDinnerFlag") == 1: continue
                             elif req.meal_type == 'breakfast':
@@ -936,7 +937,6 @@ async def search_hotels_vacant(req: VacantSearchRequest):
                     
                     address = f"{basic.get('address1', '')}{basic.get('address2', '')}"
                     
-                    # ▼▼▼ データ構築 (詳細評価を含む) ▼▼▼
                     all_hotels.append({
                         "id": hotel_id, "name": basic["hotelName"],
                         "description": address, 
@@ -1163,117 +1163,105 @@ async def calculate_route_endpoint(req: OptimizeRequest):
     
     return await calculate_route_fallback(client, spots, start, limit)
 
-# main.py の 760行目付近にある search_places 関数をこれに置き換えてください
-
-# main.py の 760行目付近にある search_places 関数をこれに置き換えてください
-
+# ==========================================
+# 🔍 検索エンドポイント (AI補正版)
+# ==========================================
 @app.get("/api/search_places")
 async def search_places(query: str, lat: Optional[float] = None, lng: Optional[float] = None):
     global http_client
     if http_client is None: return {"results": []}
     client = http_client
 
-    # キャッシュキーに座標も含める
-    cache_key = f"search_places_hybrid_v3:{query}:{lat}:{lng}"
-    cached = get_cache(cache_key)
-    if cached: return cached
+    # キャッシュキー (結果が変わる可能性があるため、ロジック変更後はキーのバージョンを変えると良い)
+    cache_key_raw = f"search_places_smart_v1:{query}:{lat}:{lng}"
+    cached_raw = get_cache(cache_key_raw)
+    if cached_raw: return cached_raw
 
-    try:
-        clean_query = re.sub(r'[(（].*?[)）]', '', query).strip()
-        if not clean_query: return {"results": []}
-
-        results = []
-        seen_ids = set()
-
-        # ---------------------------------------------------------
-        # 1. Geocoding API (住所・地名・代表的な施設)
-        # ---------------------------------------------------------
-        geo_url = "https://api.geoapify.com/v1/geocode/search"
-        geo_params = {
-            "text": clean_query, 
-            "apiKey": GEOAPIFY_API_KEY, 
-            "lang": "ja", 
-            "limit": 5, 
-            "countrycode": "jp"
-        }
-        # 座標があれば周辺優先バイアスをかける
-        if lat is not None and lng is not None:
-            geo_params["bias"] = f"proximity:{lng},{lat}"
-
-        geo_res = await fetch_with_retry(client, geo_url, params=geo_params, initial_timeout=5.0, retries=2)
-
-        if geo_res and geo_res.status_code == 200:
-            data = geo_res.json()
-            if "features" in data:
-                for feat in data["features"]:
-                    props = feat["properties"]
-                    place_id = props.get("place_id")
-                    if place_id in seen_ids: continue
-
-                    name = props.get("name", "")
-                    formatted = props.get("formatted", "")
-                    if not name: name = formatted.split(",")[0] if formatted else clean_query
-
-                    results.append({
-                        "id": place_id,
-                        "name": name,
-                        "place_name": formatted,
-                        "center": feat["geometry"]["coordinates"],
-                        "is_geoapify": True,
-                        "type": "location"
-                    })
-                    seen_ids.add(place_id)
-
-        # ---------------------------------------------------------
-        # 2. Places API (施設名・店名・あいまい検索)
-        # ※ Geocodingの結果が少ない、または意図した店が出ない場合に補完
-        # ---------------------------------------------------------
-        if len(results) < 5:
-            places_url = "https://api.geoapify.com/v2/places"
-            places_params = {
-                "name": clean_query, # ここであいまいな店名を検索
-                "apiKey": GEOAPIFY_API_KEY,
-                "lang": "ja",
-                "limit": 10
-            }
-            # Places APIは範囲指定やバイアスが重要
+    async def execute_search(search_q):
+        """内部検索ロジックの再利用用関数"""
+        local_results = []
+        seen = set()
+        
+        # Geocoding API
+        try:
+            geo_url = "https://api.geoapify.com/v1/geocode/search"
+            geo_params = {"text": search_q, "apiKey": GEOAPIFY_API_KEY, "lang": "ja", "limit": 5, "countrycode": "jp"}
             if lat is not None and lng is not None:
-                places_params["bias"] = f"proximity:{lng},{lat}"
+                geo_params["bias"] = f"proximity:{lng},{lat}"
             
-            places_res = await fetch_with_retry(client, places_url, params=places_params, initial_timeout=5.0, retries=2)
-
-            if places_res and places_res.status_code == 200:
-                data = places_res.json()
-                if "features" in data:
-                    for feat in data["features"]:
+            res = await fetch_with_retry(client, geo_url, params=geo_params, initial_timeout=5.0)
+            if res and res.status_code == 200:
+                data = res.json()
+                for feat in data.get("features", []):
+                    pid = feat["properties"].get("place_id")
+                    if pid and pid not in seen:
                         props = feat["properties"]
-                        place_id = props.get("place_id")
-                        if place_id in seen_ids: continue
-
-                        name = props.get("name", "")
-                        # 名前がない施設はスキップ（住所検索ですでに拾っている可能性が高い）
-                        if not name: continue
+                        name = props.get("name", "") or props.get("formatted", "").split(",")[0]
+                        formatted = props.get("formatted", "")
+                        # 住所整形
+                        clean_fmt = get_clean_address(props)
                         
-                        # 住所の整形
-                        formatted = get_clean_address(props)
-                        
-                        results.append({
-                            "id": place_id,
-                            "name": name,
-                            "place_name": formatted,
+                        local_results.append({
+                            "id": pid, "name": name, "place_name": clean_fmt,
                             "center": feat["geometry"]["coordinates"],
-                            "is_geoapify": True,
-                            "type": "place"
+                            "type": "location"
                         })
-                        seen_ids.add(place_id)
+                        seen.add(pid)
+        except Exception: pass
+        
+        # Places API (補完)
+        if len(local_results) < 3:
+            try:
+                places_url = "https://api.geoapify.com/v2/places"
+                p_params = {"name": search_q, "apiKey": GEOAPIFY_API_KEY, "lang": "ja", "limit": 5}
+                if lat is not None and lng is not None:
+                    p_params["bias"] = f"proximity:{lng},{lat}"
+                
+                res = await fetch_with_retry(client, places_url, params=p_params, initial_timeout=5.0)
+                if res and res.status_code == 200:
+                    data = res.json()
+                    for feat in data.get("features", []):
+                        pid = feat["properties"].get("place_id")
+                        if pid and pid not in seen:
+                            props = feat["properties"]
+                            name = props.get("name", "")
+                            if not name: continue
+                            clean_fmt = get_clean_address(props)
+                            
+                            local_results.append({
+                                "id": pid, "name": name, "place_name": clean_fmt,
+                                "center": feat["geometry"]["coordinates"],
+                                "type": "place"
+                            })
+                            seen.add(pid)
+            except Exception: pass
+            
+        return local_results
 
-        response_data = {"results": results}
-        if results: set_cache(cache_key, response_data)
-        return response_data
+    # 1. ユーザー入力そのままで検索
+    results = await execute_search(query)
 
-    except Exception as e:
-        print(f"Search Error: {e}")
-        return {"results": []}
+    # 2. 結果が少ない、または無い場合、AI補正を発動 (Smart Retry)
+    should_ask_ai = False
+    if len(results) < 3:
+        should_ask_ai = True
+    
+    if should_ask_ai:
+        normalized_query = await get_official_name_by_ai(query)
+        
+        # AIの答えが元の入力と違う場合のみ、再検索してマージ
+        if normalized_query != query:
+            ai_results = await execute_search(normalized_query)
+            
+            existing_ids = {r["id"] for r in results}
+            for ar in ai_results:
+                if ar["id"] not in existing_ids:
+                    results.append(ar)
+                    existing_ids.add(ar["id"])
+
+    response_data = {"results": results}
+    set_cache(cache_key_raw, response_data)
+    return response_data
 
 @app.get("/api/get_spot_info")
 async def get_spot_info(query: str, lat: Optional[float] = None, lng: Optional[float] = None):

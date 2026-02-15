@@ -172,11 +172,20 @@ const calculateSimpleSchedule = (items: any[], startTime: string = "") => {
             currentTime = new Date(currentTime.getTime() + duration * 60000);
         } else if (item.type === 'spot') {
             newItem.arrival = currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            let stayTime = item.stay_min || item.spot.stay_time || 60;
-            if (item.spot.is_hotel) stayTime = 600; 
-            currentTime = new Date(currentTime.getTime() + stayTime * 60000);
+            
+            // ▼▼▼ 修正: デフォルトの || 60 を削除し、なければ null にする ▼▼▼
+            let stayTime = item.stay_min || (item.spot ? item.spot.stay_time : null);
+            
+            // ホテルの場合は例外的に600分(10時間)などを維持してもOKですが、ここも未定にしたければ null に
+            if (item.spot.is_hotel && !stayTime) stayTime = 600; 
+
+            // 時間計算用には 0 を使うが、表示用(newItem.stay_min)は null のままにする
+            const durationForCalc = stayTime || 0;
+            
+            currentTime = new Date(currentTime.getTime() + durationForCalc * 60000);
             newItem.departure = currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            newItem.stay_min = stayTime;
+            
+            newItem.stay_min = stayTime; // nullならnullのまま
         }
         return newItem;
     });
@@ -599,7 +608,9 @@ const onTimelineDragOver = (e: React.DragEvent) => {
     if (container) {
         const { top, bottom } = container.getBoundingClientRect();
         const mouseY = e.clientY;
-        const threshold = 100;
+        
+        // ▼▼▼ 修正: 閾値を 100 → 20 に変更して、端まで行かないとスクロールしないようにする ▼▼▼
+        const threshold = 20; 
 
         if (mouseY < top + threshold) {
             startTimelineAutoScroll('up');
@@ -644,9 +655,12 @@ const onTimelineDrop = async (e: React.DragEvent, targetIndex: number) => {
     for(let i = 0; i < targetIndex; i++){
         if(displayTimeline[i].type === 'spot') targetPairIndex++;
     }
-    if (sourcePairIndex < targetPairIndex) {
-        targetPairIndex--;
-    }
+    
+    // ★修正: 上から下へ移動する際、ドロップした位置の「後ろ」に挿入されるようにするため、
+    // インデックスを減らす処理を削除します。
+    // if (sourcePairIndex < targetPairIndex) {
+    //    targetPairIndex--;
+    // }
 
     // 並び替え
     const [movedPair] = pairs.splice(sourcePairIndex, 1);
@@ -659,7 +673,8 @@ const onTimelineDrop = async (e: React.DragEvent, targetIndex: number) => {
             if (pair.travels.length > 0) {
                 finalTimeline.push(...pair.travels);
             } else {
-                finalTimeline.push({ type: 'travel', duration_min: 30, transport_mode: 'car' });
+                // ▼▼▼ 修正: デフォルトを徒歩・未定に変更 ▼▼▼
+                finalTimeline.push({ type: 'travel', duration_min: null, transport_mode: 'walk' });
             }
         }
         finalTimeline.push(pair.item);
@@ -1162,8 +1177,8 @@ const [arrivalModalSpots, setArrivalModalSpots] = useState<any[]>([]); // ★追
     tempTimeline.forEach((item) => {
         if (item.type === 'spot') {
             if (cleanTimeline.length > 0 && cleanTimeline[cleanTimeline.length - 1].type === 'spot') {
-                cleanTimeline.push({ type: 'travel', duration_min: 30, transport_mode: 'car' });
-            }
+        cleanTimeline.push({ type: 'travel', duration_min: null, transport_mode: 'walk' });
+     }
             cleanTimeline.push(item);
         } else if (item.type === 'travel') {
             // ▼▼▼ 修正: 連続移動を許可（重複チェック削除） ▼▼▼
@@ -1190,10 +1205,10 @@ const [arrivalModalSpots, setArrivalModalSpots] = useState<any[]>([]); // ★追
         validSpotsInDB.sort((a, b) => (a.order || 0) - (b.order || 0));
         
         validSpotsInDB.forEach((spot, i) => {
-             finalTimeline.push({ type: 'spot', spot, stay_min: spot.stay_time || 60 });
-             if (i < validSpotsInDB.length - 1) { 
-                 finalTimeline.push({ type: 'travel', duration_min: 30, transport_mode: 'car' }); 
-             }
+             finalTimeline.push({ type: 'spot', spot, stay_min: spot.stay_time || null });
+            if (i < validSpotsInDB.length - 1) { 
+         finalTimeline.push({ type: 'travel', duration_min: null, transport_mode: 'walk' }); 
+     }
          });
          // ★初期生成時は 09:00 で計算してOK
          finalTimeline = calculateSimpleSchedule(finalTimeline, "09:00");
@@ -1205,9 +1220,9 @@ const [arrivalModalSpots, setArrivalModalSpots] = useState<any[]>([]); // ★追
         if (newSpots.length > 0) {
             newSpots.forEach(s => {
                 if (finalTimeline.length > 0) {
-                    finalTimeline.push({ type: 'travel', duration_min: 30, transport_mode: 'car' });
-                }
-                finalTimeline.push({ type: 'spot', spot: s, stay_min: 60 });
+         finalTimeline.push({ type: 'travel', duration_min: null, transport_mode: 'walk' });
+     }
+               finalTimeline.push({ type: 'spot', spot: s, stay_min: null });
             });
             
             // ★削除: ここで再計算すると既存の時間がリセットされるため削除します
@@ -1497,9 +1512,12 @@ const filteredSpots = useMemo(() => {
     } 
     // 3. 候補リスト (エリアによる絞り込み)
    // 3. 候補リスト (エリアによる絞り込み)
-    else if (filterStatus === 'candidate') {
-        // ★修正: 候補だけでなく「確定」も含める
-        spots = planSpots.filter(s => s.status === 'candidate' || s.status === 'confirmed');
+  else if (filterStatus === 'candidate') {
+        /* ▼▼▼ 修正: 確定済み(confirmed)も含めるが、ホテルは除外する ▼▼▼ */
+        spots = planSpots.filter(s => 
+            s.status === 'candidate' || 
+            (s.status === 'confirmed' && !s.is_hotel && !isHotel(s.name))
+        );
         
         // 選択中のエリアがある場合、モード(市町村/県)に合わせてフィルタリング
         if (selectedCandidateArea !== 'all') {
@@ -1507,8 +1525,11 @@ const filteredSpots = useMemo(() => {
         }
     }
     // 4. 宿候補リスト (Dayごとの表示)
-    else if (filterStatus === 'hotel_candidate') {
-        spots = planSpots.filter(s => s.status === 'hotel_candidate');
+   else if (filterStatus === 'hotel_candidate') {
+        spots = planSpots.filter(s => 
+            s.status === 'hotel_candidate' || 
+            (s.status === 'confirmed' && (s.is_hotel || isHotel(s.name))) // ★確定済みホテルも含める
+        );
         spots = spots.filter(s => (s.day || 0) === selectedHotelDay);
     }
     // 5. その他 (予備)
@@ -1521,9 +1542,13 @@ const filteredSpots = useMemo(() => {
 
 // ▼▼▼ 修正: candidateAreas の生成ロジック ▼▼▼
   // ▼▼▼ 修正: candidateAreas の生成ロジック (確定スポットも含める) ▼▼▼
+// ▼▼▼ 修正: candidateAreas の生成ロジック (確定スポットも含めるが、ホテルは除外) ▼▼▼
   const candidateAreas = useMemo(() => {
-      // 候補(candidate) または 確定(confirmed) のスポットを対象にする
-      const targetSpots = planSpots.filter(s => s.status === 'candidate' || s.status === 'confirmed');
+      // 候補(candidate) または 確定(confirmed) のスポットを対象にする（ただしホテルは除く）
+      const targetSpots = planSpots.filter(s => 
+          s.status === 'candidate' || 
+          (s.status === 'confirmed' && !s.is_hotel && !isHotel(s.name))
+      );
       
       const areas = new Set(targetSpots.map(s => getSpotArea(s, groupingMode)));
       return Array.from(areas).sort();
@@ -3304,13 +3329,27 @@ const now = new Date().toISOString(); // ★現在時刻
                 
                 {query && <button onClick={resetSearchState} className="p-2 hover:bg-gray-100 rounded-full text-gray-400 transition shrink-0"><X size={16}/></button>}
                 
-                <button 
-                    onClick={() => setCurrentTab('swipe')} 
-                    className="bg-gradient-to-tr from-indigo-500 to-purple-600 text-white w-10 h-10 rounded-full font-black text-xs shadow-md hover:scale-110 transition active:scale-95 flex items-center justify-center shrink-0"
-                    title="AI提案ページへ"
-                >
-                    AI
-                </button>
+                {/* AIローディング表示の切り替え */}
+<div className="flex items-center shrink-0">
+  {isSearching ? (
+    // 🔍 検索中（AI補正中）の表示
+    <div className="flex items-center gap-1 bg-indigo-50 px-2 py-1.5 rounded-full border border-indigo-100 animate-pulse">
+      <Loader2 size={16} className="animate-spin text-indigo-600" />
+      <span className="text-[10px] font-black text-indigo-600 mr-1">AI</span>
+    </div>
+  ) : (
+    // 通常時のAI提案タブへの移動ボタン
+    <button 
+      onClick={() => setCurrentTab('swipe')} 
+      className="bg-gradient-to-tr from-indigo-500 to-purple-600 text-white w-10 h-10 rounded-full font-black text-xs shadow-md hover:scale-110 transition active:scale-95 flex items-center justify-center shrink-0"
+      title="AI提案ページへ"
+    >
+      AI
+    </button>
+  )}
+</div>
+
+
 
                 <button onClick={() => handleSearch()} className="bg-black text-white p-3 rounded-full hover:bg-gray-800 shadow-md transition active:scale-95 shrink-0"><Search size={18} /></button>
               </div>
@@ -3756,6 +3795,7 @@ const now = new Date().toISOString(); // ★現在時刻
                                           <div className="w-px h-6 bg-gray-200 shrink-0 mx-1"></div>
 
                                          {/* ▼▼▼ 既存: 「すべて」ボタン ▼▼▼ */}
+                                          {/* ▼▼▼ 修正: 「すべて」ボタン (確定ホテルを除外してカウント) ▼▼▼ */}
                                           <button 
                                               onClick={(e) => { e.stopPropagation(); setSelectedCandidateArea('all'); }}
                                               className={`px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition border flex-shrink-0 flex items-center gap-1 relative ${
@@ -3765,20 +3805,19 @@ const now = new Date().toISOString(); // ★現在時刻
                                               }`}
                                           >
                                               すべて <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${selectedCandidateArea === 'all' ? 'bg-white/20' : 'bg-gray-100'}`}>
-                                                  {/* ★修正: 件数を候補+確定にする */}
-                                                  {planSpots.filter(s => s.status === 'candidate' || s.status === 'confirmed').length}
+                                                  {planSpots.filter(s => s.status === 'candidate' || (s.status === 'confirmed' && !s.is_hotel && !isHotel(s.name))).length}
                                               </span>
                                           </button>
 
-                                          {/* ▼▼▼ 既存: エリア別ボタンリスト ▼▼▼ */}
+                                          {/* ▼▼▼ 修正: エリア別ボタンリスト (確定ホテルを除外してカウント) ▼▼▼ */}
                                           {candidateAreas.map((area) => {
                                               const isActive = selectedCandidateArea === area;
-                                              // ★修正: 件数を候補+確定にする
-                                              const count = planSpots.filter(s => (s.status === 'candidate' || s.status === 'confirmed') && getSpotArea(s, groupingMode) === area).length;
+                                              const count = planSpots.filter(s => (s.status === 'candidate' || (s.status === 'confirmed' && !s.is_hotel && !isHotel(s.name))) && getSpotArea(s, groupingMode) === area).length;
                                               
                                               return (
                                                   <button 
                                                       key={area}
+// ... (後略)
                                                       // ... (省略) ...
                                                       onClick={(e) => { e.stopPropagation(); setSelectedCandidateArea(area); }}
                                                       className={`px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition border flex-shrink-0 flex items-center gap-1 relative ${
@@ -3812,7 +3851,11 @@ const now = new Date().toISOString(); // ★現在時刻
                                               }`}
                                           >
                                               未定 <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${(filterStatus === 'confirmed' ? selectedConfirmDay : selectedHotelDay) === 0 ? 'bg-white/20' : 'bg-gray-100'}`}>
-                                                  {planSpots.filter(s => s.status === filterStatus && (!s.day || s.day === 0)).length}
+                                                  {/* 宿リストの場合は、確定済みホテルも含めてカウントする */}
+                                                  {filterStatus === 'hotel_candidate' 
+                                                    ? planSpots.filter(s => (s.status === 'hotel_candidate' || (s.status === 'confirmed' && (s.is_hotel || isHotel(s.name)))) && (!s.day || s.day === 0)).length
+                                                    : planSpots.filter(s => s.status === filterStatus && (!s.day || s.day === 0)).length
+                                                  }
                                               </span>
                                           </button>
 
@@ -3822,16 +3865,17 @@ const now = new Date().toISOString(); // ★現在時刻
                                               if (filterStatus === 'confirmed') isActive = selectedConfirmDay === dayNum;
                                               else isActive = selectedHotelDay === dayNum;
 
-                                              // 宿リストの最終日除外などは既存通り
                                               if (filterStatus === 'hotel_candidate' && dayNum === travelDays) return null;
 
-                                              // 色設定
                                               let activeClass = 'bg-blue-600 text-white border-blue-600';
                                               if (filterStatus === 'hotel_candidate') activeClass = 'bg-orange-500 text-white border-orange-500';
 
                                               const label = filterStatus === 'hotel_candidate' ? `Day ${dayNum}-${dayNum+1}` : `Day ${dayNum}`;
-                                              const spotCount = planSpots.filter(s => s.status === filterStatus && s.day === dayNum).length;
-
+                                              
+                                              // ★修正: 宿リストの場合は、確定済みホテルも含めてカウントする
+                                              const spotCount = filterStatus === 'hotel_candidate'
+                                                ? planSpots.filter(s => (s.status === 'hotel_candidate' || (s.status === 'confirmed' && (s.is_hotel || isHotel(s.name)))) && s.day === dayNum).length
+                                                : planSpots.filter(s => s.status === filterStatus && s.day === dayNum).length;
                                               return (
                                                   <button 
                                                     key={dayNum}
@@ -4289,6 +4333,8 @@ const now = new Date().toISOString(); // ★現在時刻
                                         const isSpotHotel = isHotel(spot.name) || spot.is_hotel;
                                         // const isNew = isNewSpot(spot);
                                         const isNew = isHighlighted(spot);
+
+                                        
                                         return (
                                             <div 
                                                // <div 
@@ -4296,12 +4342,15 @@ const now = new Date().toISOString(); // ★現在時刻
                                                 // ★追加: スクロール用のID
                                                 id={`spot-item-${spot.id}`}
                                                 //className={`rounded-xl shadow-sm border overflow-hidden flex h-16 transition active:scale-[0.98] animate-in slide-in-from-bottom-2 fade-in relative ${ 
+                                                /* ▼▼▼ 修正: 背景色のクラス判定を変更 ▼▼▼ */
                                                 className={`rounded-xl shadow-sm border overflow-hidden flex h-16 transition active:scale-[0.98] animate-in slide-in-from-bottom-2 fade-in relative ${
-                                                    // ★修正: 新着なら黄色
                                                     isNew 
-                                                        ? 'bg-yellow-50 border-yellow-400 ring-2 ring-yellow-200' 
-                                                        : 'bg-white border-gray-100'
+                                                        ? 'bg-yellow-50 border-yellow-400 ring-2 ring-yellow-200' // 新着（黄色）
+                                                        : spot.status === 'confirmed'
+                                                            ? 'bg-blue-50 border-blue-200' // 確定済み（薄い青） ★ここを変更
+                                                            : 'bg-white border-gray-100'   // 通常（白）
                                                 }`}
+                                                /* ▲▲▲ 修正ここまで ▲▲▲ */
                                                 onClick={() => handlePreviewSpot(spot)}
                                             >   
                                                 {isNew && (
@@ -4330,29 +4379,32 @@ const now = new Date().toISOString(); // ★現在時刻
 
         <div className="flex gap-1 shrink-0 ml-1">
             {voteCount > 0 && <span className="flex items-center gap-0.5 text-[9px] font-bold text-blue-500 bg-blue-50 px-1 py-0.5 rounded"><ThumbsUp size={8}/> {voteCount}</span>}
-          {/* ★修正: 確定にするボタン (候補リスト内でも、未確定のものにだけ表示) */}
-                      {(filterStatus === 'hotel_candidate' || (filterStatus === 'candidate' && spot.status !== 'confirmed')) && (
-                        <button 
-                            onClick={(e) => { e.stopPropagation(); handleStatusChangeClick(spot, 'confirmed'); }} 
-                            className="bg-blue-600 text-white text-[9px] px-2 py-0.5 rounded font-bold hover:bg-blue-700 transition"
-                        >
-                            確定にする
-                        </button>
-                      )}
-                      
-                      {/* ★修正: 候補に戻すボタン (確定リスト、または候補リスト内の確定済みスポットに表示) */}
-                      {(filterStatus === 'confirmed' || (filterStatus === 'candidate' && spot.status === 'confirmed')) && (
-                            <button 
-                                onClick={(e) => { 
-                                    e.stopPropagation(); 
-                                    const nextStatus = (isHotel(spot.name) || spot.is_hotel) ? 'hotel_candidate' : 'candidate';
-                                    handleStatusChangeClick(spot, nextStatus); 
-                                }} 
-                                className="bg-gray-100 border border-gray-200 text-gray-600 text-[9px] px-2 py-0.5 rounded font-bold hover:bg-gray-200 transition whitespace-nowrap"
-                            >
-                                {(isHotel(spot.name) || spot.is_hotel) ? '宿リストに戻す' : '候補に戻す'}
-                            </button>
-                        )}
+        
+        {/* ▼▼▼ 修正1: 確定にするボタン (未確定のものにだけ表示) ▼▼▼ */}
+        {/* 旧: {(filterStatus === 'hotel_candidate' || (filterStatus === 'candidate' && spot.status !== 'confirmed')) && ( */}
+        {((filterStatus === 'hotel_candidate' || filterStatus === 'candidate') && spot.status !== 'confirmed') && (
+            <button 
+                onClick={(e) => { e.stopPropagation(); handleStatusChangeClick(spot, 'confirmed'); }} 
+                className="bg-blue-600 text-white text-[9px] px-2 py-0.5 rounded font-bold hover:bg-blue-700 transition"
+            >
+                確定にする
+            </button>
+        )}
+        
+        {/* ▼▼▼ 修正2: 戻すボタン (確定済みスポットに表示、宿リスト時も含む) ▼▼▼ */}
+        {/* 旧: {(filterStatus === 'confirmed' || (filterStatus === 'candidate' && spot.status === 'confirmed')) && ( */}
+        {(filterStatus === 'confirmed' || ((filterStatus === 'candidate' || filterStatus === 'hotel_candidate') && spot.status === 'confirmed')) && (
+            <button 
+                onClick={(e) => { 
+                    e.stopPropagation(); 
+                    const nextStatus = (isHotel(spot.name) || spot.is_hotel) ? 'hotel_candidate' : 'candidate';
+                    handleStatusChangeClick(spot, nextStatus); 
+                }} 
+                className="bg-gray-100 border border-gray-200 text-gray-600 text-[9px] px-2 py-0.5 rounded font-bold hover:bg-gray-200 transition whitespace-nowrap"
+            >
+                {(isHotel(spot.name) || spot.is_hotel) ? '宿リストに戻す' : '候補に戻す'}
+            </button>
+        )}
                                                             
                                                         </div>
                                                     </div>

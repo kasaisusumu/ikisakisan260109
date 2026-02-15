@@ -358,6 +358,8 @@ export default function PlanView({
   // 1. calculateSchedule を先に定義 (useEffectで使用するため)
   // --- 修正: スケジュール計算ロジック（移動時間の自動反映） ---
   // 1. calculateSchedule を先に定義 (useEffectで使用するため)
+ // PlanView.tsx
+
   const calculateSchedule = (currentTimeline: any[]) => {
       if (!startTime) {
         return currentTimeline.map((item) => ({
@@ -366,7 +368,10 @@ export default function PlanView({
             departure: item.departure || null,
             // ▼▼▼ 修正: デフォルトの60分フォールバックを削除 (undefinedならそのまま) ▼▼▼
             stay_min: item.stay_min ?? (item.type === 'spot' ? (item.spot.stay_time || null) : undefined),
-            duration_min: item.duration_min ?? (item.type === 'travel' ? 30 : undefined),
+            
+            // ▼▼▼ 修正: ここが 30 になっていたのを null に変更 ▼▼▼
+            // 修正前: duration_min: item.duration_min ?? (item.type === 'travel' ? 30 : undefined),
+            duration_min: item.duration_min ?? (item.type === 'travel' ? null : undefined),
         }));
     }
       let currentTime = new Date(`2000-01-01T${startTime}:00`);
@@ -504,11 +509,13 @@ export default function PlanView({
       });
 
       // 新規追加されたスポットがあれば末尾に追加
+      // 新規追加されたスポットがあれば末尾に追加
       const newSpots = currentActiveSpots.filter(s => !seenSpotIds.has(String(s.id)));
       newSpots.forEach(s => {
           if (cleanTimeline.length > 0 && cleanTimeline[cleanTimeline.length - 1].type === 'spot') {
-    cleanTimeline.push({ type: 'travel', duration_min: null, transport_mode: 'car' });
-}
+              // ▼▼▼ 修正: デフォルトを徒歩に変更 ▼▼▼
+              cleanTimeline.push({ type: 'travel', duration_min: null, transport_mode: 'walk' });
+          }
           cleanTimeline.push({ type: 'spot', spot: s, stay_min: null });
       });
 
@@ -539,14 +546,19 @@ export default function PlanView({
   }, [activeDaySpots, timeline.length]); // 依存配列は activeDaySpots 推奨 (前の修正同様)
   // ▲▲▲▲▲ 修正ここまで ▲▲▲▲▲
 // ▼▼▼ 追加: 移動ブロックの追加・削除ハンドラ ▼▼▼
+ // ▼▼▼ 追加: 移動ブロックの追加・削除ハンドラ ▼▼▼
   const addTravel = (index: number) => {
       const newTimeline = [...timeline];
-      // 現在の移動ブロックの後ろに「徒歩10分」をデフォルトとして追加
-      newTimeline.splice(index + 1, 0, { type: 'travel', duration_min: 10, transport_mode: 'walk' });
+      // 現在の移動ブロックの後ろに「徒歩・時間未定」をデフォルトとして追加
+      // 修正: duration_min: 10 -> null
+      newTimeline.splice(index + 1, 0, { type: 'travel', duration_min: null, transport_mode: 'walk' });
       setTimeline(calculateSchedule(newTimeline));
   };
 
   const removeTravel = (index: number) => {
+      // ▼▼▼ 追加: 削除前の確認アラート ▼▼▼
+      if (!confirm("この移動を削除しますか？")) return;
+
       const newTimeline = [...timeline];
       newTimeline.splice(index, 1);
       // 全て消えたら正規化で自動復活するので、ここでは単に消すだけでOK
@@ -845,7 +857,7 @@ export default function PlanView({
   
   // PlanView.tsx 内の onDrop 関数をすべて入れ替えてください
 
- const onDrop = async (e: React.DragEvent, targetTimelineIndex: number) => {
+const onDrop = async (e: React.DragEvent, targetTimelineIndex: number) => {
     e.preventDefault();
     e.stopPropagation(); 
     stopAutoScroll(); 
@@ -861,10 +873,7 @@ export default function PlanView({
     const draggedItem = timeline[effectiveSourceIndex];
     if (!draggedItem || draggedItem.type !== 'spot') return; 
 
-    // ▼▼▼ 修正: 直前の「複数の移動」をスポットとペアにする ▼▼▼
-    
     // 2. ペア化 ({ travels: any[], item: any })
-    // スポットと、その直前にある移動ブロック群をひとまとめにする
     const pairs: { travels: any[], item: any }[] = [];
     let pendingTravels: any[] = [];
 
@@ -873,7 +882,7 @@ export default function PlanView({
             pendingTravels.push(item);
         } else if (item.type === 'spot') {
             pairs.push({ travels: pendingTravels, item: item });
-            pendingTravels = []; // 次のペアのためにリセット
+            pendingTravels = [];
         }
     });
 
@@ -885,71 +894,73 @@ export default function PlanView({
     if (sourcePairIndex === -1) return;
 
     // 4. 移動先のペアインデックスを特定
-    // targetTimelineIndex はフラットな配列上のインデックスなので、ペア配列上のインデックスに変換
     let targetPairIndex = 0;
     for(let i = 0; i < targetTimelineIndex; i++) {
         if(timeline[i].type === 'spot') targetPairIndex++;
     }
     
-    // ドラッグ方向による補正（下への移動時は挿入位置がずれるのを防ぐ）
-    if (sourcePairIndex < targetPairIndex) {
-        targetPairIndex--; 
-    }
+    // ★修正: 下方向への移動時にインデックスを減らさないことで、「ドロップした要素の後ろ」に挿入されるようにする
+    // if (sourcePairIndex < targetPairIndex) {
+    //    targetPairIndex--; 
+    // }
 
     // 5. 並び替え実行
     const [movedPair] = pairs.splice(sourcePairIndex, 1);
+    
+    // 移動元を削除した分、インデックスがずれるので、下方向への移動の時だけ調整が必要なケースがあるが、
+    // 「ドロップした場所の後ろ」に入れたい場合は、削除前のターゲットインデックスそのままでOK。
+    // 上方向への移動（Source > Target）の場合は、そのまま「ドロップした場所の手前」に入る。
+    
+    // ただし、配列から要素を抜いた後に挿入するため、
+    // 「下へ移動」かつ「抜いた要素より後ろ」に挿入する場合、ターゲットインデックスは1つ前詰めになっているため、
+    // 補正なし（targetPairIndexそのまま）で挿入すると、直感的には「ドロップした要素の次」に入る挙動になります。
+
+    // 例: [A, B, C] で A(0) を B(1) にドロップ。Target=1。
+    // Aを抜く -> [B, C]。Target 1 に挿入 -> [B, A, C]。 AとBが入れ替わる（正解）。
+
     pairs.splice(targetPairIndex, 0, movedPair);
 
     // 6. タイムラインの再構築
+    // 6. タイムラインの再構築
     const reconstructedTimeline: any[] = [];
     pairs.forEach((pair, index) => {
-        // 先頭以外のスポットの前には移動ブロックを挿入
         if (index > 0) {
-            // ペアになっていた移動があれば展開、なければデフォルト生成
             if (pair.travels.length > 0) {
                 reconstructedTimeline.push(...pair.travels);
             } else {
-                reconstructedTimeline.push({ type: 'travel', duration_min: 30, transport_mode: 'car' });
+                // ▼▼▼ 修正: ここがまだ 'car', 30 でした。'walk', null に変更します ▼▼▼
+                // 修正前: reconstructedTimeline.push({ type: 'travel', duration_min: 30, transport_mode: 'car' });
+                reconstructedTimeline.push({ type: 'travel', duration_min: null, transport_mode: 'walk' });
             }
         }
-        // スポットを追加
         reconstructedTimeline.push(pair.item);
     });
-
-    // ▼▼▼ 修正ここまで ▲▲▲
 
     // 7. State更新
     setTimeline(reconstructedTimeline); 
     setDraggedItemIndex(null);
 
-    // 8. データの永続化 (DB & LocalStorage)
+    // 8. データの永続化
     if (roomId) {
-        // 並び替え後のスポットリスト（移動ブロックを除いたもの）
         const activeSpots = reconstructedTimeline
             .filter(t => t.type === 'spot')
             .map(item => item.spot);
 
         const fullSpotsList = [...spots]; 
 
-        // 順序の更新処理
         activeSpots.forEach((s, idx) => {
-            // DB更新 (非同期で実行)
             if (s.id && !String(s.id).startsWith('temp-') && !String(s.id).startsWith('ai-')) {
                 supabase.from('spots').update({ order: idx }).eq('id', s.id).then();
             }
-            
-            // ローカルの全体リストも更新
             const target = fullSpotsList.find(fs => (fs.id && String(fs.id) === String(s.id)) || fs.name === s.name);
             if (target) {
                 target.order = idx;
             }
         });
 
-        // 親コンポーネントへ通知 (全体リストをorder順にソートして渡す)
         fullSpotsList.sort((a, b) => (a.order || 0) - (b.order || 0));
         onUpdateSpots(fullSpotsList);
 
-        // ローカルストレージにタイムライン全体（移動詳細含む）を保存
         const storageKey = `rh_plan_${roomId}_day_${selectedDay}`;
         localStorage.setItem(storageKey, JSON.stringify({ 
             timeline: reconstructedTimeline, 
@@ -1012,13 +1023,17 @@ export default function PlanView({
   };
 
   // ▼▼▼ 修正: 出発時間が変更されたら滞在時間を自動計算 ▼▼▼
+  // ▼▼▼ 修正: 出発時間が変更されたら滞在時間を自動計算（空ならリセット） ▼▼▼
   const handleDepartureChange = (index: number, newDeparture: string) => {
     const newTimeline = [...timeline];
     if (newTimeline[index]) {
         newTimeline[index].departure = newDeparture;
         
-        // 到着時間との差分を計算して滞在時間を更新
-        if (newTimeline[index].arrival) {
+        // 片方でも空なら滞在時間を未定(null)に戻す
+        if (!newDeparture || !newTimeline[index].arrival) {
+            newTimeline[index].stay_min = null;
+        } else {
+            // 両方揃っていれば計算
             const diff = calculateTimeDiff(newTimeline[index].arrival, newDeparture);
             if (diff >= 0) {
                 newTimeline[index].stay_min = diff;
@@ -1030,24 +1045,35 @@ export default function PlanView({
         setTimeline(newTimeline);
     }
   };
-  // ▼▼▼ 追加: 到着・出発時間をリセットするハンドラ ▼▼▼
+
+  // ▼▼▼ 修正: 到着・出発時間をリセットしたら滞在時間も未定に戻す ▼▼▼
+// ▼▼▼ 修正: 時間リセット前に確認を入れる ▼▼▼
   const handleTimeReset = (index: number) => {
+      if (!confirm("時間をリセットしてもよろしいですか？")) return;
+
       const newTimeline = [...timeline];
       if (newTimeline[index]) {
           newTimeline[index].arrival = "";
           newTimeline[index].departure = "";
+          newTimeline[index].stay_min = null;
+          if (newTimeline[index].spot) {
+              newTimeline[index].spot.stay_time = null;
+          }
           setTimeline(newTimeline);
       }
   };
 
-  // ▼▼▼ 修正: 到着時間が変更されたら滞在時間を自動計算 ▼▼▼
+  // ▼▼▼ 修正: 到着時間が変更されたら滞在時間を自動計算（空ならリセット） ▼▼▼
   const handleArrivalChange = (index: number, newArrival: string) => {
     const newTimeline = [...timeline];
     if (newTimeline[index]) {
         newTimeline[index].arrival = newArrival;
 
-        // 出発時間との差分を計算して滞在時間を更新
-        if (newTimeline[index].departure) {
+        // 片方でも空なら滞在時間を未定(null)に戻す
+        if (!newArrival || !newTimeline[index].departure) {
+            newTimeline[index].stay_min = null;
+        } else {
+            // 両方揃っていれば計算
             const diff = calculateTimeDiff(newArrival, newTimeline[index].departure);
             if (diff >= 0) {
                 newTimeline[index].stay_min = diff;
@@ -1066,6 +1092,7 @@ export default function PlanView({
       setTimeline(newTimeline); 
   };
 
+// ... existing code ...
   const toggleSpotInclusion = (spot: any, isAdding: boolean) => {
     if (isAdding) {
         // ... (追加処理はそのまま) ...
@@ -1073,9 +1100,10 @@ export default function PlanView({
         const newItems = [];
         if (lastItem && lastItem.type === 'spot') {
            // ★修正: duration_min: 30 → null
-newItems.push({ type: 'travel', duration_min: null, transport_mode: 'car' });
+           newItems.push({ type: 'travel', duration_min: null, transport_mode: 'walk' });
         }
-        newItems.push({ type: 'spot', spot, stay_min: 60 });
+      // ▼▼▼ 修正: 初期値を 60 → null に変更 ▼▼▼
+        newItems.push({ type: 'spot', spot, stay_min: null });
         const newTimeline = [...timeline, ...newItems];
         setTimeline(calculateSchedule(newTimeline));
 
@@ -1115,7 +1143,8 @@ newItems.push({ type: 'travel', duration_min: null, transport_mode: 'car' });
         // 2. データ上の「日付」を未定(0)に変更してPageリストに反映させる
         // ★修正: 「この日のスポット」である場合のみ、DBの日付をリセットする。
         // 前日の宿（day !== selectedDay）の場合は、タイムライン表示から消すだけでDBは更新しない。
-        if (roomId && spot.id && spot.day === selectedDay) {
+        // ▼▼▼ 修正: 型変換して比較 (spot.dayが文字列の場合があるため) ▼▼▼
+        if (roomId && spot.id && Number(spot.day) === selectedDay) {
             const newSpots = spots.map(s => {
                 if (s.id && String(s.id) === String(spot.id)) {
                     return { ...s, day: 0 }; 
@@ -1130,6 +1159,7 @@ newItems.push({ type: 'travel', duration_min: null, transport_mode: 'car' });
         }
     }
   };
+// ... existing code ...
 
   const handleDownloadImage = async () => {
       if (!captureRef.current) return;
@@ -1334,8 +1364,21 @@ newItems.push({ type: 'travel', duration_min: null, transport_mode: 'car' });
                     {editItem.type === 'travel' && (
                         <>
                             <div className="grid grid-cols-2 gap-3">
+                                {/* 出発時間 */}
                                 <div>
-                                    <label className="text-xs font-bold text-gray-500 mb-1 block">出発時間</label>
+                                    <div className="flex justify-between items-center mb-1">
+                                        <label className="text-xs font-bold text-gray-500 block">出発時間</label>
+                                        {/* ★追加: リセットボタン */}
+                                        {editItem.data.transport_departure && (
+                                            <button 
+                                                onClick={() => setEditItem({...editItem, data: {...editItem.data, transport_departure: ""}})}
+                                                className="text-[10px] text-gray-400 hover:text-indigo-600 flex items-center gap-1 transition bg-gray-100 px-2 py-0.5 rounded-md hover:bg-gray-200"
+                                                title="未設定に戻す"
+                                            >
+                                                <RotateCcw size={10} /> リセット
+                                            </button>
+                                        )}
+                                    </div>
                                     <input 
                                         type="time" 
                                         value={editItem.data.transport_departure || ''} 
@@ -1343,8 +1386,22 @@ newItems.push({ type: 'travel', duration_min: null, transport_mode: 'car' });
                                         className="w-full bg-gray-50 border border-gray-200 rounded-lg p-3 text-sm font-bold focus:border-indigo-500 outline-none"
                                     />
                                 </div>
+
+                                {/* 到着時間 */}
                                 <div>
-                                    <label className="text-xs font-bold text-gray-500 mb-1 block">到着時間</label>
+                                    <div className="flex justify-between items-center mb-1">
+                                        <label className="text-xs font-bold text-gray-500 block">到着時間</label>
+                                        {/* ★追加: リセットボタン */}
+                                        {editItem.data.transport_arrival && (
+                                            <button 
+                                                onClick={() => setEditItem({...editItem, data: {...editItem.data, transport_arrival: ""}})}
+                                                className="text-[10px] text-gray-400 hover:text-indigo-600 flex items-center gap-1 transition bg-gray-100 px-2 py-0.5 rounded-md hover:bg-gray-200"
+                                                title="未設定に戻す"
+                                            >
+                                                <RotateCcw size={10} /> リセット
+                                            </button>
+                                        )}
+                                    </div>
                                     <input 
                                         type="time" 
                                         value={editItem.data.transport_arrival || ''} 
@@ -1354,8 +1411,10 @@ newItems.push({ type: 'travel', duration_min: null, transport_mode: 'car' });
                                 </div>
                             </div>
                             
+                            {/* 以下、交通費などはそのまま */}
                             <div>
                                 <label className="text-xs font-bold text-gray-500 mb-1 block">交通費</label>
+                                {/* ... */}
                                 <div className="relative">
                                     <Banknote className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16}/>
                                     <input 
@@ -1797,6 +1856,15 @@ newItems.push({ type: 'travel', duration_min: null, transport_mode: 'car' });
 }
 // ... (後略)
                     })}
+
+                    {/* ▼▼▼ 追加: ここから ▼▼▼ */}
+                    {/* リストの一番下にドロップするための透明なエリア */}
+                    <div 
+                        className="h-24 w-full relative z-0 -mt-4"
+                        onDragOver={onDragOver}
+                        onDrop={(e) => onDrop(e, timeline.length)}
+                    />
+                    {/* ▲▲▲ 追加: ここまで ▲▲▲ */}
                     
                     <div className="absolute left-[24px] bottom-0 w-3 h-3 bg-gray-400 rounded-full -translate-x-1/2 border-2 border-white shadow-sm"></div>
                 </div>
