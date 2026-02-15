@@ -2795,6 +2795,9 @@ const handleLocateOnMap = (e: React.MouseEvent, spot: any) => {
 // ---------------------------------------------------------
 // ▼▼▼ 修正版：マーカー描画ロジック (追加者の自動1票を廃止 & 0票表示対応) ▼▼▼
 // ---------------------------------------------------------
+// ---------------------------------------------------------
+// ▼▼▼ 修正版：マーカー描画ロジック (確定リスト以外は得票数を優先) ▼▼▼
+// ---------------------------------------------------------
 useEffect(() => {
     if (!map.current) return;
 
@@ -2856,7 +2859,7 @@ useEffect(() => {
         let voteCount = 0;
 
         if (!isNearby) {
-            // ★修正1: 追加者(added_by)を強制含めず、純粋な投票データ(LIKE)のみを抽出
+            // 純粋な投票データ(LIKE)のみを抽出
             const likes = spotVotes
                 .filter(v => String(v.spot_id) === String(spot.id) && v.vote_type === 'like')
                 .map(v => v.user_name);
@@ -2866,14 +2869,18 @@ useEffect(() => {
         }
 
         let currentFontSize = '14px';
+
+        // ★ラベル(数字)の表示ロジックのみを修正
         if (isDayView && isConfirmed) {
+            // Day 1, Day 2などの詳細表示中：訪れる順番(1, 2...)
             const indices = spotIndicesMap.get(String(spot.id)) || [];
             displayLabel = indices.join(',');
             if (displayLabel.length > 2) currentFontSize = '10px';
-        } else if (isConfirmed && filterStatus !== 'hotel_candidate') {
+        } else if (filterStatus === 'confirmed' && isConfirmed) {
+            // 「確定リスト」タブ：設定されたDayを表示
             displayLabel = String(spot.day || '?');
         } else {
-            // ★修正2: 0票の場合も空文字にせず "0" を表示する
+            // 「ALL」「候補」「宿候補」タブ：確定スポットであっても「得票数」を表示
             displayLabel = String(voteCount);
         }
 
@@ -2889,6 +2896,7 @@ useEffect(() => {
         if (isNearby) {
             el.innerHTML = `<div style="position:relative; display:flex; flex-direction:column; align-items:center;"><div style="width:24px; height:24px; background:black; border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 5px rgba(0,0,0,0.3);"><div style="width:20px; height:20px; background:white; border-radius:50%; display:flex; align-items:center; justify-content:center; color:black; font-weight:bold; font-size:10px;">?</div></div><div style="width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:6px solid black; margin-top:-1px;"></div></div>`;
         } else if (isConfirmed && filterStatus !== 'hotel_candidate') {
+            // ★見た目は「さっきのまま（青）」を維持（HTML構造は変更なし）
             el.innerHTML = `
                 <div style="position:relative; display:flex; flex-direction:column; align-items:center;">
                     ${hotelInfoHtml}
@@ -2900,6 +2908,7 @@ useEffect(() => {
                     <div style="width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent; border-top:7px solid ${confirmedColor}; margin-top:-1px;"></div>
                 </div>`;
         } else {
+            // 候補ピン・宿候補ピン
             let gradientString = '#9CA3AF';
             if (participants.length > 0) {
                 const segmentSize = 100 / participants.length;
