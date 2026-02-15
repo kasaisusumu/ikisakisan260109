@@ -2784,6 +2784,17 @@ const handleLocateOnMap = (e: React.MouseEvent, spot: any) => {
 
 // page.tsx 1445行目付近の useEffect を以下に置き換え
 
+// ---------------------------------------------------------
+// ▼▼▼ 修正版：マーカー描画ロジック (得票数最大値表示 & ホテル数字優先) ▼▼▼
+// ---------------------------------------------------------
+// ---------------------------------------------------------
+// ▼▼▼ 修正版：マーカー描画ロジック (得票数最大値 & 複数ピン同期 & 宿優先) ▼▼▼
+// ---------------------------------------------------------// ---------------------------------------------------------
+// ▼▼▼ 修正版：マーカー描画ロジック (投票数・名寄せ・即時反映対応) ▼▼▼
+// ---------------------------------------------------------
+// ---------------------------------------------------------
+// ▼▼▼ 修正版：マーカー描画ロジック (追加者の自動1票を廃止 & 0票表示対応) ▼▼▼
+// ---------------------------------------------------------
 useEffect(() => {
     if (!map.current) return;
 
@@ -2791,47 +2802,43 @@ useEffect(() => {
     planMarkersRef.current.forEach(marker => marker.remove());
     planMarkersRef.current = [];
 
-    // ★重要: 確定リスト表示中かつDayを選択している場合は、displayTimeline（行程順）を正解にする
     const isDayView = filterStatus === 'confirmed' && selectedConfirmDay > 0;
     const spotIndicesMap = new Map<string, number[]>();
 
     if (isDayView) {
-        // 門田さんが並び替えたタイムラインから「何番目か」を取得
         displayTimeline.filter(t => t.type === 'spot').forEach((item, idx) => {
-            const spotId = item.spot.id;
+            const spotId = String(item.spot.id); 
             const indices = spotIndicesMap.get(spotId) || [];
             indices.push(idx + 1); 
             spotIndicesMap.set(spotId, indices);
         });
     }
 
-    // 地図に描画するスポットの重複を排除
     const renderedSpotIds = new Set<string>();
     const spotsToRender: any[] = [];
 
     if (isDayView) {
         displayTimeline.forEach(item => {
-            if (item.type === 'spot' && !renderedSpotIds.has(item.spot.id)) {
+            if (item.type === 'spot' && !renderedSpotIds.has(String(item.spot.id))) {
                 spotsToRender.push(item.spot);
-                renderedSpotIds.add(item.spot.id);
+                renderedSpotIds.add(String(item.spot.id));
             }
         });
     } else {
-        // ALL表示や候補リスト表示時は、フィルタリングされたスポットをすべて出す
         filteredSpots.forEach(s => {
-            if (!renderedSpotIds.has(s.id)) {
+            if (!renderedSpotIds.has(String(s.id))) {
                 spotsToRender.push(s);
-                renderedSpotIds.add(s.id);
+                renderedSpotIds.add(String(s.id));
             }
         });
     }
 
-    // 周辺検索候補を追加
     if (currentTab === 'explore') {
         nearbyCandidates.forEach(s => {
-            if (!renderedSpotIds.has(s.id)) {
+            const sid = String(s.id);
+            if (!renderedSpotIds.has(sid)) {
                 spotsToRender.push(s);
-                renderedSpotIds.add(s.id);
+                renderedSpotIds.add(sid);
             }
         });
     }
@@ -2839,32 +2846,37 @@ useEffect(() => {
     // 2. マーカー生成ループ
     spotsToRender.forEach((spot) => {
         const isNearby = spot.is_nearby === true;
-        // 投票した人のリストを取得
-        const voters = isNearby ? [] : spotVotes.filter(v => String(v.spot_id) === String(spot.id) && v.vote_type === 'like').map(v => v.user_name);
-        const uniqueParticipants = Array.from(new Set([spot.added_by, ...voters])).filter(Boolean);
-        
-        const size = 24; 
         const isConfirmed = spot.status === 'confirmed';
-        const confirmedColor = '#2563EB';
         const isSpotHotel = isHotel(spot.name) || spot.is_hotel;
+        const size = 24; 
+        const confirmedColor = '#2563EB';
 
-        // ★ラベル決定ロジック
-        let displayLabel: string | number = "";
-        let currentFontSize = '14px';
+        let displayLabel: string = "";
+        let participants: string[] = [];
+        let voteCount = 0;
 
-        if (isDayView && isConfirmed) {
-            const indices = spotIndicesMap.get(spot.id) || [];
-            displayLabel = indices.join(','); // ここで「1,7」になる
-            if (displayLabel.length > 2) currentFontSize = '10px';
-            if (displayLabel.length > 5) currentFontSize = '8px';
-        } else if (isConfirmed) {
-            displayLabel = spot.day || '?';
-        } else {
-            // 候補の場合は「何人からLIKEされているか」を表示
-            displayLabel = uniqueParticipants.length > 0 ? uniqueParticipants.length : '';
+        if (!isNearby) {
+            // ★修正1: 追加者(added_by)を強制含めず、純粋な投票データ(LIKE)のみを抽出
+            const likes = spotVotes
+                .filter(v => String(v.spot_id) === String(spot.id) && v.vote_type === 'like')
+                .map(v => v.user_name);
+            
+            participants = Array.from(new Set(likes)).filter(Boolean) as string[];
+            voteCount = participants.length;
         }
 
-        // 金額吹き出し
+        let currentFontSize = '14px';
+        if (isDayView && isConfirmed) {
+            const indices = spotIndicesMap.get(String(spot.id)) || [];
+            displayLabel = indices.join(',');
+            if (displayLabel.length > 2) currentFontSize = '10px';
+        } else if (isConfirmed && filterStatus !== 'hotel_candidate') {
+            displayLabel = String(spot.day || '?');
+        } else {
+            // ★修正2: 0票の場合も空文字にせず "0" を表示する
+            displayLabel = String(voteCount);
+        }
+
         let hotelInfoHtml = ''; 
         if (!isNearby && isSpotHotel && spot.price > 0) {
             hotelInfoHtml = `<div style="position:absolute; bottom:100%; left:50%; transform:translateX(-50%) translateY(-8px); background:white; padding:2px 6px; border-radius:6px; font-size:10px; font-weight:bold; color:#d32f2f; white-space:nowrap; box-shadow:0 2px 4px rgba(0,0,0,0.2); display:flex; flex-direction:column; align-items:center;"><span>¥${Number(spot.price).toLocaleString()}</span><div style="position:absolute; top:100%; left:50%; transform:translateX(-50%); width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:4px solid white;"></div></div>`;
@@ -2875,10 +2887,8 @@ useEffect(() => {
         el.style.cursor = 'pointer';
 
         if (isNearby) {
-            // 周辺検索ピン
             el.innerHTML = `<div style="position:relative; display:flex; flex-direction:column; align-items:center;"><div style="width:24px; height:24px; background:black; border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 5px rgba(0,0,0,0.3);"><div style="width:20px; height:20px; background:white; border-radius:50%; display:flex; align-items:center; justify-content:center; color:black; font-weight:bold; font-size:10px;">?</div></div><div style="width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:6px solid black; margin-top:-1px;"></div></div>`;
-        } else if (isConfirmed) {
-            // ★確定ピン（青色）
+        } else if (isConfirmed && filterStatus !== 'hotel_candidate') {
             el.innerHTML = `
                 <div style="position:relative; display:flex; flex-direction:column; align-items:center;">
                     ${hotelInfoHtml}
@@ -2890,12 +2900,11 @@ useEffect(() => {
                     <div style="width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent; border-top:7px solid ${confirmedColor}; margin-top:-1px;"></div>
                 </div>`;
         } else {
-            // ★候補ピン（参加者カラーのグラデーション）
             let gradientString = '#9CA3AF';
-            if (uniqueParticipants.length > 0) {
-                const segmentSize = 100 / uniqueParticipants.length;
-                const gradientParts = uniqueParticipants.map((name, i) => { 
-                    const color = getUserColor(name as string); 
+            if (participants.length > 0) {
+                const segmentSize = 100 / participants.length;
+                const gradientParts = participants.map((name, i) => { 
+                    const color = getUserColor(name); 
                     return `${color} ${i * segmentSize}% ${(i + 1) * segmentSize}%`; 
                 });
                 gradientString = `conic-gradient(${gradientParts.join(', ')})`;
@@ -2906,7 +2915,7 @@ useEffect(() => {
                     ${hotelInfoHtml}
                     <div style="width:${size + 6}px; height:${size + 6}px; background:${gradientString}; border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 5px rgba(0,0,0,0.3);">
                         <div style="width:${size}px; height:${size}px; background:${isSpotHotel ? '#FEF9C3' : '#FFFFFF'}; border-radius:50%; display:flex; align-items:center; justify-content:center; color:${isSpotHotel ? '#CA8A04' : '#1E3A8A'}; font-weight:800; font-size:12px; border:1px solid rgba(0,0,0,0.1);">
-                            ${isSpotHotel ? '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4v16"/><path d="M2 8h18a2 2 0 0 1 2 2v10"/><path d="M2 17h20"/><path d="M6 8v9"/></svg>' : displayLabel}
+                            ${displayLabel}
                         </div>
                     </div>
                     <div style="width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent; border-top:7px solid ${isSpotHotel ? '#FEF9C3' : '#FFFFFF'}; margin-top:-1px;"></div>
@@ -2923,7 +2932,8 @@ useEffect(() => {
         }
     });
 
-}, [filteredSpots, displayTimeline, nearbyCandidates, spotVotes, currentTab, filterStatus, selectedConfirmDay]);
+}, [filteredSpots, planSpots, displayTimeline, nearbyCandidates, spotVotes, currentTab, filterStatus, selectedConfirmDay]);
+// ---------------------------------------------------------
   if (isAuthLoading || (!roomId && !isJoined) || (roomId && !isJoined)) {
     return (
         <>
@@ -4389,8 +4399,10 @@ useEffect(() => {
                                                                         )}
 
                                                                         {/* 金額 */}
-                                                                        // page.tsx 1915行目付近
+                                                                       
 {/* 修正前: {item.cost && ( ... )} */}
+
+
 {(item.cost && Number(item.cost) > 0) && (
     <div className="flex items-center gap-1 text-[10px] font-bold text-yellow-700 bg-yellow-50 px-1.5 py-0.5 rounded border border-yellow-100 shrink-0">
         <Banknote size={10}/> ¥{Number(item.cost).toLocaleString()}
