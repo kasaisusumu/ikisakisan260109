@@ -2798,6 +2798,9 @@ const handleLocateOnMap = (e: React.MouseEvent, spot: any) => {
 // ---------------------------------------------------------
 // ▼▼▼ 修正版：マーカー描画ロジック (確定リスト以外は得票数を優先) ▼▼▼
 // ---------------------------------------------------------
+// ---------------------------------------------------------
+// ▼▼▼ 修正版：マーカー描画ロジック (宿リストも得票数表示 & 青ピン維持) ▼▼▼
+// ---------------------------------------------------------
 useEffect(() => {
     if (!map.current) return;
 
@@ -2870,7 +2873,7 @@ useEffect(() => {
 
         let currentFontSize = '14px';
 
-        // ★ラベル(数字)の表示ロジックのみを修正
+        // ★ラベル(数字)の表示ロジック
         if (isDayView && isConfirmed) {
             // Day 1, Day 2などの詳細表示中：訪れる順番(1, 2...)
             const indices = spotIndicesMap.get(String(spot.id)) || [];
@@ -2880,7 +2883,8 @@ useEffect(() => {
             // 「確定リスト」タブ：設定されたDayを表示
             displayLabel = String(spot.day || '?');
         } else {
-            // 「ALL」「候補」「宿候補」タブ：確定スポットであっても「得票数」を表示
+            // 「ALL」「候補」「宿リスト」タブ：
+            // 確定スポットであっても、共通して「得票数」を表示する
             displayLabel = String(voteCount);
         }
 
@@ -2895,8 +2899,8 @@ useEffect(() => {
 
         if (isNearby) {
             el.innerHTML = `<div style="position:relative; display:flex; flex-direction:column; align-items:center;"><div style="width:24px; height:24px; background:black; border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 5px rgba(0,0,0,0.3);"><div style="width:20px; height:20px; background:white; border-radius:50%; display:flex; align-items:center; justify-content:center; color:black; font-weight:bold; font-size:10px;">?</div></div><div style="width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:6px solid black; margin-top:-1px;"></div></div>`;
-        } else if (isConfirmed && filterStatus !== 'hotel_candidate') {
-            // ★見た目は「さっきのまま（青）」を維持（HTML構造は変更なし）
+        } else if (isConfirmed) {
+            // ★修正：どのタブであっても「確定済み」なら青いピンを表示する
             el.innerHTML = `
                 <div style="position:relative; display:flex; flex-direction:column; align-items:center;">
                     ${hotelInfoHtml}
@@ -2908,7 +2912,7 @@ useEffect(() => {
                     <div style="width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent; border-top:7px solid ${confirmedColor}; margin-top:-1px;"></div>
                 </div>`;
         } else {
-            // 候補ピン・宿候補ピン
+            // 候補ピン（グラデーション/黄色）
             let gradientString = '#9CA3AF';
             if (participants.length > 0) {
                 const segmentSize = 100 / participants.length;
