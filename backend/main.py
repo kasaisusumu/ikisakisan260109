@@ -287,47 +287,40 @@ PREF_NORMALIZER = {
 
 # ▼▼▼ 住所整形ロジック (分割・正規化・結合) ▼▼▼
 
+# main.py の 200行目付近を以下に差し替え
+
+# main.py の extract_and_fix_address をさらに強化
+
 def extract_and_fix_address(raw_address: str) -> str:
-    """住所文字列から都道府県と市町村を正しく分離・整形する"""
     if not raw_address: return ""
 
-    delimiters = ["市", "区", "郡", "町", "村"]
-    split_index = -1
-    found_delimiter = ""
+    # 1. クレンジング（日本、郵便番号、不要な空白を削除）
+    raw_address = re.sub(r'^(Japan|日本|〒?\d{3}-\d{4})\s*[, ]*', '', raw_address).strip()
 
-    for d in delimiters:
-        idx = raw_address.find(d)
-        if idx != -1:
-            if split_index == -1 or idx < split_index:
-                split_index = idx
-                found_delimiter = d
-    
-    if split_index == -1:
-        for k, v in PREF_NORMALIZER.items():
-            if raw_address.startswith(k):
-                rest = raw_address[len(k):]
-                state_core = v.replace("都", "").replace("府", "").replace("県", "")
-                if rest == state_core:
-                    rest += "市"
-                return v + rest
-        return raw_address
-
-    prefix_area = raw_address[:split_index + len(found_delimiter)] 
-    rest_area = raw_address[split_index + len(found_delimiter):]
-
-    detected_state = ""
-    detected_state_raw = ""
-    
+    # 2. 都道府県の補完と市区町村の分離を試みる
+    # PREF_NORMALIZER: {"富山": "富山県", ...}
     for k, v in PREF_NORMALIZER.items():
-        if prefix_area.startswith(k):
-            detected_state = v
-            detected_state_raw = k
+        # "富山" が含まれているが "富山県"（正式名称）になっていない場合
+        if k in raw_address and v not in raw_address:
+            # 都道府県の後に続く文字列を「市区町村以降」として切り出す
+            # 例: "富山高岡市" -> k="富山", v="富山県"
+            rest = raw_address.split(k, 1)[-1]
+            
+            # もし切り出した後の先頭が「県」などの重複なら除去（"富山県高岡市"のケース対策）
+            rest = re.sub(r'^[県都府道]', '', rest)
+            
+            # 再構築: "富山県" + "高岡市"
+            raw_address = v + rest
             break
-    
-    if detected_state:
-        remainder = prefix_area[len(detected_state_raw):]
-        return detected_state + remainder + rest_area
-    
+
+    # 3. 市区町村が抜けている場合の推論（例: "富山県" だけの場合への対策）
+    # 市・区・郡・町・村 のいずれも含まれていない場合
+    delimiters = ["市", "区", "郡", "町", "村"]
+    if not any(d in raw_address for d in delimiters):
+        # AI補完（get_structured_address_by_ai）に回すフラグを立てるか、
+        # ここで最小限の整形を試みる
+        pass
+
     return raw_address
 
 def get_clean_address(props: dict) -> str:
@@ -588,7 +581,45 @@ async def fetch_spot_by_coordinates(client, lat: float, lng: float, fallback_nam
         print(f"Reverse Geo Error: {e}")
     
     return None
+# main.py の get_official_name_by_ai の付近に追加
 
+async def get_structured_address_by_ai(name: str, raw_address: str = "") -> Dict[str, str]:
+    """
+    AIを使用してスポット名から正確な住所を特定し、市区町村レベルで正規化する。
+    """
+    cache_key = f"address_fix_v2:{name}:{raw_address}"
+    cached = get_cache(cache_key)
+    if cached: return cached
+
+    prompt = f"""
+    タスク: スポット「{name}」の正確な住所を特定し、都道府県と市区町村に分解してください。
+    現在の不完全な住所情報: {raw_address}
+
+    ルール:
+    1. 出力は以下のJSON形式のみとすること。
+    {{
+      "prefecture": "〇〇県",
+      "city": "〇〇市",
+      "full_address": "〇〇県〇〇市〇〇町1-2-3"
+    }}
+    2. "city" フィールドには、市、区（東京23区等）、または郡を除いた町村名までを入れること。
+    3. 市が存在する場合、町名（〇〇市△△町）の「△△町」は含めず、「〇〇市」とすること。
+    4. 不明な場合は、そのスポットがある可能性が最も高い場所を推論してください。
+    """
+
+    try:
+        res = await aclient.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.0
+        )
+        data = json.loads(res.choices[0].message.content)
+        set_cache(cache_key, data)
+        return data
+    except Exception as e:
+        print(f"AI Address Fix Error: {e}")
+        return {"prefecture": "", "city": "", "full_address": raw_address}
 # ==========================================
 # 🧠 AIによるクエリ正規化関数
 # ==========================================
@@ -1263,27 +1294,38 @@ async def search_places(query: str, lat: Optional[float] = None, lng: Optional[f
     set_cache(cache_key_raw, response_data)
     return response_data
 
+# main.py の @app.get("/api/get_spot_info") を書き換え
+
+# get_spot_info を修正
 @app.get("/api/get_spot_info")
 async def get_spot_info(query: str, lat: Optional[float] = None, lng: Optional[float] = None):
     global http_client
     if http_client is None: return {}
     client = http_client
     
+    # 既存の検索処理
+    data = None
     if lat is not None and lng is not None:
         data = await fetch_spot_by_coordinates(client, lat, lng, query)
-        if data: return data
+    if not data:
+        data = await fetch_spot_coordinates(client, query, query)
 
-    data = await fetch_spot_coordinates(client, query, query)
-    if data: return data
+    # 住所が不完全（NN, 調査中, 市町村が含まれない等）な場合にAIで補完
+    current_desc = data.get("description", "") if data else ""
+    is_invalid = not current_desc or "NN" in current_desc or "調査中" in current_desc or "不明" in current_desc
     
-    wiki = await fetch_wikipedia_info(client, query, target_name=query)
-    return {
-        "name": query,
-        "description": "",
-        "image_url": wiki.get("image_url"),
-        "comment": wiki.get("summary") or ""
-    }
+    if is_invalid:
+        ai_data = await get_structured_address_by_ai(query, current_desc)
+        if ai_data.get("full_address"):
+            if not data:
+                data = {"name": query, "coordinates": [lng or 0.0, lat or 0.0]}
+            data["description"] = ai_data["full_address"]
 
-@app.get("/")
-async def root():
-    return {"status": "active", "message": "Render is awake with Robust Retry!"}
+    # Wikipedia情報等のマージ
+    wiki = await fetch_wikipedia_info(client, query, target_name=query)
+    if data:
+        data["image_url"] = data.get("image_url") or wiki.get("image_url")
+        data["comment"] = data.get("comment") or wiki.get("summary") or ""
+        return data
+    
+    return {"name": query, "description": "", "image_url": wiki.get("image_url"), "comment": wiki.get("summary") or ""}

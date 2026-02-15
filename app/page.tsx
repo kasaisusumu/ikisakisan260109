@@ -782,15 +782,26 @@ const PREFECTURES = [
   "熊本県", "大分県", "宮崎県", "鹿児島県", "沖縄県"
 ];
 
+// page.tsx の 285行目付近 (extractPrefecture 関数)
+
 const extractPrefecture = (spot: any) => {
     const text = spot.description || spot.place_name || spot.name || "";
     
-    // 1. 都道府県リストから完全一致検索
+    // 1. 都道府県リスト（富山県 など）から検索
     for (const pref of PREFECTURES) {
         if (text.includes(pref)) return pref;
     }
     
-    // 2. 省略表記への対応（主要都市のみ救済）
+    // 2. 「県」が抜けている場合（富山 など）の救済措置を追加
+    for (const pref of PREFECTURES) {
+        const shortPref = pref.replace(/[都府県]$/, ""); // "富山" に変換
+        // 2文字以上の都道府県名（北海、東京など）が含まれていれば補完して返す
+        if (shortPref.length >= 2 && text.includes(shortPref)) {
+            return pref; 
+        }
+    }
+    
+    // 主要都市の救済（既存のまま）
     if (text.includes("京都")) return "京都府";
     if (text.includes("大阪")) return "大阪府";
     if (text.includes("東京")) return "東京都";
@@ -798,48 +809,56 @@ const extractPrefecture = (spot: any) => {
     return "その他";
 };
 
+// page.tsx の extractCity を修正
+// page.tsx の extractCity 関数を修正
+
 const extractCity = (spot: any) => {
     const text = spot.description || spot.place_name || spot.name || "";
-    
-    // 1. まず都道府県を特定して除去（誤検知防止）
     let addressBody = text;
-    const pref = extractPrefecture(spot);
+    const pref = extractPrefecture(spot); // 前回の修正で "富山県" を返すはず
+
     if (pref !== "その他") {
-        const split = text.split(pref);
-        if (split.length > 1) {
-            addressBody = split[1]; // 都道府県より後ろの部分
+        // 都道府県名（富山県）で分割
+        const splitByFull = text.split(pref);
+        if (splitByFull.length > 1) {
+            addressBody = splitByFull[1];
+        } else {
+            // 都道府県名（略称：富山）で分割を試みる
+            const shortPref = pref.replace(/[都府県]$/, "");
+            const splitByShort = text.split(shortPref);
+            if (splitByShort.length > 1) {
+                // "高岡市" の前に残った "県" などのゴミを掃除
+                addressBody = splitByShort[1].replace(/^[県都府道]/, "");
+            }
         }
     }
 
-    // 2. 正規表現で市町村を抽出
-    
-    // パターンA: 「〇〇市」 (政令指定都市も「京都市」などでまとめる)
-    const cityMatch = addressBody.match(/([^0-9\s,]{1,8}市)/);
-    if (cityMatch) {
-        return cityMatch[1];
-    }
-    
-    // パターンB: 東京23区などの「〇〇区」
-    const wardMatch = addressBody.match(/([^0-9\s,]{1,8}区)/);
+    // 市区町村の抽出（既存ロジック）
+    const cityMatch = addressBody.match(/([^0-9\s,]+?市)/);
+    if (cityMatch) return cityMatch[1];
+
+    const wardMatch = addressBody.match(/([^0-9\s,]+?区)/);
     if (wardMatch) return wardMatch[1];
-    
-    // パターンC: 「〇〇郡 〇〇町/村」 -> 郡を無視して「〇〇町/村」だけ返す
-    const townMatch = addressBody.match(/([^0-9\s,]{1,8}[町村])/);
+
+    const townMatch = addressBody.match(/([^0-9\s,]+?[町村])/);
     if (townMatch) {
         const val = townMatch[1];
-        // "郡"が含まれていたら、その後ろを使う
-        if (val.includes("郡")) {
-            return val.split("郡")[1];
-        }
-        return val;
+        return val.includes("郡") ? val.split("郡")[1] : val;
     }
 
-    // 3. 抽出できなかった場合のフォールバック
-    // ★修正: カンマ区切りの先頭を安易に返さないように変更
-    // "NN" のような意味不明な文字列になるのを防ぐため、市町村が不明なら都道府県を返す
-    if (pref !== "その他") return pref;
+    return pref !== "その他" ? "市町村不明" : "その他";
+};
 
-    return "その他";
+// フィルタリング対象の判定を修正
+const isInvalidAddress = (spot: any) => {
+    const city = extractCity(spot);
+    const pref = extractPrefecture(spot);
+    // 「その他」「不明」「NN」が含まれる場合は再取得が必要
+    return !spot.description || 
+           spot.description.includes("住所調査中") || 
+           spot.description.includes("NN") || 
+           city === "市町村不明" || 
+           pref === "その他";
 };
 
 const getSpotArea = (spot: any, mode: 'city' | 'prefecture') => {
@@ -1317,51 +1336,42 @@ useEffect(() => {
   }, [planSpots, roomId]);
   // ▼▼▼ 追加: 住所が不明・「その他」のスポットを自動修正する処理 ▼▼▼
 // ▼▼▼ 追加: 住所自動修正（バッジ点灯なし版） ▼▼▼
-  useEffect(() => {
+// page.tsx 内の住所自動修正 useEffect (940行目付近) を確認/調整
+
+// page.tsx の自動修正 useEffect を強化
+// 自動修正を行う useEffect 内の判定ロジック
+useEffect(() => {
     if (!roomId || planSpots.length === 0) return;
 
     planSpots.forEach(async (spot) => {
-        // 1. 住所再取得が必要か判定
-        const currentPref = extractPrefecture(spot);
-        // descriptionが空、または「住所調査中...」または「NN/その他」になっているものを対象にする
-        const isInvalidAddress = !spot.description || spot.description === "住所調査中..." || spot.description === "住所調査中" || currentPref === "その他";
+        const city = extractCity(spot);
+        const pref = extractPrefecture(spot);
+        
+        // 修正が必要な条件：住所が空、NN、調査中、市町村が「不明」または「その他」
+        const needsFix = !spot.description || 
+                        spot.description.includes("住所調査中") || 
+                        spot.description.includes("NN") || 
+                        city === "市町村不明" || 
+                        pref === "その他";
 
-        if (isInvalidAddress && !attemptedAddressFetch.current.has(spot.id)) {
+        if (needsFix && !attemptedAddressFetch.current.has(spot.id)) {
             attemptedAddressFetch.current.add(spot.id);
 
-            const lat = spot.coordinates ? spot.coordinates[1] : undefined;
-            const lng = spot.coordinates ? spot.coordinates[0] : undefined;
+            const info = await fetchSpotInfo(spot.name, spot.coordinates?.[1], spot.coordinates?.[0]);
 
-            // API呼び出し
-            const info = await fetchSpotInfo(spot.name, lat, lng);
-
-            if (info && info.description && info.description !== "住所調査中..." && info.description !== "NN") {
-                console.log(`🏠 Fixing address (Silent) for ${spot.name}: ${spot.description} -> ${info.description}`);
-
-                // A. ローカルState更新
-                // ここで updated_at を更新しないことで、ローカルでもハイライトされない
+            if (info && info.description && !info.description.includes("NN")) {
+                // ローカルStateとDBを更新（updated_atを更新せず、静かに修正）
                 setPlanSpots(prev => prev.map(s => 
-                    s.id === spot.id ? { 
-                        ...s, 
-                        description: info.description,
-                        image_url: s.image_url || info.image_url,
-                        comment: s.comment || info.comment
-                    } : s
+                    s.id === spot.id ? { ...s, description: info.description } : s
                 ));
 
-                // B. DB更新
-                // ★重要: updated_at を更新対象に含めないことで、
-                // 他のユーザーにも「新着/更新」として通知されないようにする
                 await supabase.from('spots').update({ 
-                    description: info.description,
-                    image_url: spot.image_url || info.image_url,
-                    comment: spot.comment || info.comment
-                    // updated_at: new Date().toISOString()  <-- 削除！
+                    description: info.description 
                 }).eq('id', spot.id);
             }
         }
     });
-  }, [planSpots, roomId]);
+}, [planSpots, roomId]);
 
   // ... (前略)
 
@@ -1486,6 +1496,8 @@ const rakutenHomeUrl = "https://travel.rakuten.co.jp/";
 
 // page.tsx 750行目付近
 
+// page.tsx 750行目付近の filteredSpots を以下に置き換え
+
 const filteredSpots = useMemo(() => {
     // 1. ALL表示
     if (filterStatus === 'all') return planSpots;
@@ -1496,50 +1508,68 @@ const filteredSpots = useMemo(() => {
     if (filterStatus === 'confirmed') {
         const currentDaySpots = planSpots.filter(s => s.status === 'confirmed' && (s.day || 0) === selectedConfirmDay);
         
-        // 2日目以降の場合、前日の宿をリストの先頭に表示する（移動の起点として分かりやすくするため）
         if (selectedConfirmDay > 1) {
             const prevDayHotel = planSpots.find(s => 
                 s.status === 'confirmed' && 
                 s.day === selectedConfirmDay - 1 && 
                 (s.is_hotel || isHotel(s.name))
             );
-            // 現在のリストにまだ含まれていなければ追加
             if (prevDayHotel && !currentDaySpots.some(s => s.id === prevDayHotel.id)) {
                 return [prevDayHotel, ...currentDaySpots];
             }
         }
         return currentDaySpots;
     } 
-    // 3. 候補リスト (エリアによる絞り込み)
-   // 3. 候補リスト (エリアによる絞り込み)
-  else if (filterStatus === 'candidate') {
-        /* ▼▼▼ 修正: 確定済み(confirmed)も含めるが、ホテルは除外する ▼▼▼ */
-        spots = planSpots.filter(s => 
+    
+    // 3. 候補リスト (★並び替えロジックを追加)
+    else if (filterStatus === 'candidate') {
+        // フィルタリング: 「候補」または「確定したスポット（ホテル以外）」
+        let candidateSpots = planSpots.filter(s => 
             s.status === 'candidate' || 
             (s.status === 'confirmed' && !s.is_hotel && !isHotel(s.name))
         );
         
-        // 選択中のエリアがある場合、モード(市町村/県)に合わせてフィルタリング
+        // エリア絞り込み
         if (selectedCandidateArea !== 'all') {
-            spots = spots.filter(s => getSpotArea(s, groupingMode) === selectedCandidateArea);
+            candidateSpots = candidateSpots.filter(s => getSpotArea(s, groupingMode) === selectedCandidateArea);
         }
+
+        // ★ 並び替えロジック
+        candidateSpots.sort((a, b) => {
+            const aIsConfirmed = a.status === 'confirmed';
+            const bIsConfirmed = b.status === 'confirmed';
+            const aIsNew = isHighlighted(a);
+            const bIsNew = isHighlighted(b);
+
+            // ① 候補 vs 確定: 候補を上に
+            if (!aIsConfirmed && bIsConfirmed) return -1;
+            if (aIsConfirmed && !bIsConfirmed) return 1;
+
+            // ② 候補同士の場合: 新着(黄色)を上に
+            if (!aIsConfirmed && !bIsConfirmed) {
+                if (aIsNew && !bIsNew) return -1;
+                if (!aIsNew && bIsNew) return 1;
+            }
+
+            // ③ 確定同士、または上記以外: 新しい順(作成日時降順)
+            return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+        });
+
+        return candidateSpots;
     }
+    
     // 4. 宿候補リスト (Dayごとの表示)
-   else if (filterStatus === 'hotel_candidate') {
+    else if (filterStatus === 'hotel_candidate') {
         spots = planSpots.filter(s => 
             s.status === 'hotel_candidate' || 
-            (s.status === 'confirmed' && (s.is_hotel || isHotel(s.name))) // ★確定済みホテルも含める
+            (s.status === 'confirmed' && (s.is_hotel || isHotel(s.name)))
         );
         spots = spots.filter(s => (s.day || 0) === selectedHotelDay);
     }
-    // 5. その他 (予備)
-    else {
-        spots = planSpots.filter(s => (s.status || 'candidate') === filterStatus);
-    }
     
     return spots;
-  }, [planSpots, filterStatus, selectedConfirmDay, selectedCandidateArea, selectedHotelDay, groupingMode]);
-
+  }, [planSpots, filterStatus, selectedConfirmDay, selectedCandidateArea, selectedHotelDay, groupingMode, lastVisited]); 
+  // ↑依存配列に lastVisited を追加して、既読時に並び順が更新されるようにします
 // ▼▼▼ 修正: candidateAreas の生成ロジック ▼▼▼
   // ▼▼▼ 修正: candidateAreas の生成ロジック (確定スポットも含める) ▼▼▼
 // ▼▼▼ 修正: candidateAreas の生成ロジック (確定スポットも含めるが、ホテルは除外) ▼▼▼
@@ -1863,18 +1893,30 @@ const filteredSpots = useMemo(() => {
 
 
 // Whoo風 右端スワイプでのズーム機能 + UI連動
-  useEffect(() => {
-    const container = mapContainer.current;
-    if (!container) return;
+  // --- page.tsx 1310行目付近 ---
 
+// --- page.tsx 1310行目付近 ---
+
+useEffect(() => {
     const onTouchStart = (e: TouchEvent) => {
+        // 1本指以外の操作、または「かこって検索」中は無視
         if (e.touches.length !== 1 || isDrawing) return;
 
         const touch = e.touches[0];
         const screenWidth = window.innerWidth;
+        const screenHeight = window.innerHeight;
         const edgeThreshold = 60; 
 
-        // ▼▼▼ 修正: 右端(isRight) または 左端(isLeft) を判定 ▼▼▼
+        // ★ 修正：リスト（ボトムシート）が表示されているエリアか判定
+        // filterStatus が 'all' 以外ならシートが出ているので、その高さを避ける
+        if (filterStatus !== 'all') {
+            const sheetTop = screenHeight - sheetHeight;
+            if (touch.clientY > sheetTop) {
+                // リストエリア内のタッチなので、ズーム判定をせずに終了
+                return;
+            }
+        }
+
         const isRight = touch.clientX > screenWidth - edgeThreshold;
         const isLeft = touch.clientX < edgeThreshold;
 
@@ -1885,20 +1927,15 @@ const filteredSpots = useMemo(() => {
                 startZoom: map.current?.getZoom() || 14
             };
             
-            // どちら側かをStateにセット
             setZoomSide(isRight ? 'right' : 'left');
-
-            // UIを表示
             setShowZoomUI(true);
             
-            // ツマミをタッチ位置へ移動
             if (zoomKnobRef.current) {
                 zoomKnobRef.current.style.transform = `translateY(${touch.clientY}px)`;
             }
 
             if (navigator.vibrate) navigator.vibrate(10);
         }
-        // ▲▲▲ 修正ここまで ▲▲▲
     };
 
     const onTouchMove = (e: TouchEvent) => {
@@ -1912,7 +1949,6 @@ const filteredSpots = useMemo(() => {
         
         map.current.setZoom(newZoom);
 
-        // ★追加: ツマミの位置を更新 (ReactのStateを使わず直接DOMを操作して高速化)
         if (zoomKnobRef.current) {
             zoomKnobRef.current.style.transform = `translateY(${touch.clientY}px)`;
         }
@@ -1920,22 +1956,21 @@ const filteredSpots = useMemo(() => {
 
     const onTouchEnd = () => {
         rightEdgeGestureRef.current.isActive = false;
-        // ★追加: UIを非表示
         setShowZoomUI(false);
     };
 
-    container.addEventListener('touchstart', onTouchStart, { passive: false });
-    container.addEventListener('touchmove', onTouchMove, { passive: false });
-    container.addEventListener('touchend', onTouchEnd);
-    container.addEventListener('touchcancel', onTouchEnd);
+    window.addEventListener('touchstart', onTouchStart, { passive: false });
+    window.addEventListener('touchmove', onTouchMove, { passive: false });
+    window.addEventListener('touchend', onTouchEnd);
+    window.addEventListener('touchcancel', onTouchEnd);
 
     return () => {
-        container.removeEventListener('touchstart', onTouchStart);
-        container.removeEventListener('touchmove', onTouchMove);
-        container.removeEventListener('touchend', onTouchEnd);
-        container.removeEventListener('touchcancel', onTouchEnd);
+        window.removeEventListener('touchstart', onTouchStart);
+        window.removeEventListener('touchmove', onTouchMove);
+        window.removeEventListener('touchend', onTouchEnd);
+        window.removeEventListener('touchcancel', onTouchEnd);
     };
- }, [isDrawing, isAuthLoading, isJoined]);
+}, [isDrawing, isAuthLoading, isJoined, filterStatus, sheetHeight]); // ★ 依存配列に filterStatus と sheetHeight を追加
 
   useEffect(() => {
     if (selectedResult && roomId) {
@@ -2174,7 +2209,7 @@ const now = new Date().toISOString(); // ★現在時刻
       is_hotel: spot.is_hotel || false,
       status: spot.status || 'candidate',
       day: spot.day || 0,
-      price: spot.price || 0,
+      price: null,
       url: spot.url || "",
       rating: spot.rating || 0,
       created_at: now, // ★追加
@@ -2283,7 +2318,21 @@ const now = new Date().toISOString(); // ★現在時刻
     // ★追加: 入力内容をクリア
     setQuery("");
   };
+// page.tsx の handlePreviewSpot 関数の近くに追加
 
+const handleLocateOnMap = (e: React.MouseEvent, spot: any) => {
+    e.stopPropagation(); // カード自体の「詳細を開く」イベントを止める
+    if (!map.current || !spot.coordinates) return;
+
+    map.current.flyTo({
+        center: spot.coordinates as [number, number],
+        zoom: 16,
+        // 下のシート（短冊リスト）に隠れないよう、少し上にオフセットをかける
+        offset: [0, -150] 
+    });
+
+    if (navigator.vibrate) navigator.vibrate(10); // 触覚フィードバック
+};
  const handlePreviewSpot = (spot: any, openMemo: boolean = false) => {
     setCurrentTab('explore');
     
@@ -2722,120 +2771,152 @@ const now = new Date().toISOString(); // ★現在時刻
   // ---------------------------------------------------------
   // ▼▼▼ 修正: マーカー描画ロジック (周辺検索対応版) ▼▼▼
   // ---------------------------------------------------------
-  useEffect(() => {
+ // page.tsx 1445行目付近：マーカー描画 useEffect の全域を差し替え
+
+// page.tsx 1445行目付近の useEffect
+
+// page.tsx 1445行目付近の useEffect を以下に置き換え
+
+useEffect(() => {
     if (!map.current) return;
 
-    // 1. 高速削除: Refに保存しておいたマーカーを直接削除
+    // 1. 既存マーカーをすべて削除
     planMarkersRef.current.forEach(marker => marker.remove());
     planMarkersRef.current = [];
-    
-    // 表示対象: 既存のフィルタリング済みスポット + 周辺検索候補
-    // (周辺検索候補は、currentTabが'explore'の時のみ表示)
-    const spotsToRender = [
-        ...filteredSpots, 
-        ...(currentTab === 'explore' ? nearbyCandidates : [])
-    ];
-    
-    // 2. マーカー生成ループ
-    spotsToRender.forEach((spot, index) => { 
-        const isNearby = spot.is_nearby === true;
 
-        // 投票者・参加者の計算 (周辺スポットの場合は投票なし)
-        const voters = isNearby ? [] : spotVotes.filter(v => v.spot_id === spot.id && v.vote_type === 'like').map(v => v.user_name);
-        const participants = isNearby ? [] : [spot.added_by, ...voters];
-        const uniqueParticipants = Array.from(new Set(participants));
+    // ★重要: 確定リスト表示中かつDayを選択している場合は、displayTimeline（行程順）を正解にする
+    const isDayView = filterStatus === 'confirmed' && selectedConfirmDay > 0;
+    const spotIndicesMap = new Map<string, number[]>();
+
+    if (isDayView) {
+        // 門田さんが並び替えたタイムラインから「何番目か」を取得
+        displayTimeline.filter(t => t.type === 'spot').forEach((item, idx) => {
+            const spotId = item.spot.id;
+            const indices = spotIndicesMap.get(spotId) || [];
+            indices.push(idx + 1); 
+            spotIndicesMap.set(spotId, indices);
+        });
+    }
+
+    // 地図に描画するスポットの重複を排除
+    const renderedSpotIds = new Set<string>();
+    const spotsToRender: any[] = [];
+
+    if (isDayView) {
+        displayTimeline.forEach(item => {
+            if (item.type === 'spot' && !renderedSpotIds.has(item.spot.id)) {
+                spotsToRender.push(item.spot);
+                renderedSpotIds.add(item.spot.id);
+            }
+        });
+    } else {
+        // ALL表示や候補リスト表示時は、フィルタリングされたスポットをすべて出す
+        filteredSpots.forEach(s => {
+            if (!renderedSpotIds.has(s.id)) {
+                spotsToRender.push(s);
+                renderedSpotIds.add(s.id);
+            }
+        });
+    }
+
+    // 周辺検索候補を追加
+    if (currentTab === 'explore') {
+        nearbyCandidates.forEach(s => {
+            if (!renderedSpotIds.has(s.id)) {
+                spotsToRender.push(s);
+                renderedSpotIds.add(s.id);
+            }
+        });
+    }
+
+    // 2. マーカー生成ループ
+    spotsToRender.forEach((spot) => {
+        const isNearby = spot.is_nearby === true;
+        // 投票した人のリストを取得
+        const voters = isNearby ? [] : spotVotes.filter(v => String(v.spot_id) === String(spot.id) && v.vote_type === 'like').map(v => v.user_name);
+        const uniqueParticipants = Array.from(new Set([spot.added_by, ...voters])).filter(Boolean);
         
-        // 色・グラデーションの計算
         const size = 24; 
-        let gradientString = '#9CA3AF'; // デフォルト
-        
-        if (!isNearby && uniqueParticipants.length > 0) {
-            const segmentSize = 100 / uniqueParticipants.length;
-            const gradientParts = uniqueParticipants.map((name, i) => { 
-                const color = getUserColor(name as string); 
-                return `${color} ${i * segmentSize}% ${(i + 1) * segmentSize}%`; 
-            });
-            gradientString = `conic-gradient(${gradientParts.join(', ')})`;
-        }
-        
-        // スタイル変数の決定
-        const isSpotHotel = isHotel(spot.name) || spot.is_hotel;
-        const baseColor = isSpotHotel ? '#FEF9C3' : '#FFFFFF'; 
-        const textColor = isSpotHotel ? '#CA8A04' : '#1E3A8A'; 
         const isConfirmed = spot.status === 'confirmed';
         const confirmedColor = '#2563EB';
-        const isDayView = filterStatus === 'confirmed' && selectedConfirmDay > 0;
-        const voteCount = uniqueParticipants.length;
+        const isSpotHotel = isHotel(spot.name) || spot.is_hotel;
 
-        // ホテル情報の吹き出しHTML作成
-        let hotelInfoHtml = '';
-        if (!isNearby && isSpotHotel && spot.price) {
-            hotelInfoHtml = `
-                <div style="position:absolute; bottom:100%; left:50%; transform:translateX(-50%) translateY(-8px); background:white; padding:2px 6px; border-radius:6px; font-size:10px; font-weight:bold; color:#d32f2f; white-space:nowrap; box-shadow:0 2px 4px rgba(0,0,0,0.2); display:flex; flex-direction:column; align-items:center;">
-                    <span>¥${Number(spot.price).toLocaleString()}</span>
-                    ${spot.rating ? `<span style="font-size:8px; color:#f57c00;">★${spot.rating}</span>` : ''}
-                    <div style="position:absolute; top:100%; left:50%; transform:translateX(-50%); width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:4px solid white;"></div>
-                </div>
-            `;
+        // ★ラベル決定ロジック
+        let displayLabel: string | number = "";
+        let currentFontSize = '14px';
+
+        if (isDayView && isConfirmed) {
+            const indices = spotIndicesMap.get(spot.id) || [];
+            displayLabel = indices.join(','); // ここで「1,7」になる
+            if (displayLabel.length > 2) currentFontSize = '10px';
+            if (displayLabel.length > 5) currentFontSize = '8px';
+        } else if (isConfirmed) {
+            displayLabel = spot.day || '?';
+        } else {
+            // 候補の場合は「何人からLIKEされているか」を表示
+            displayLabel = uniqueParticipants.length > 0 ? uniqueParticipants.length : '';
         }
 
-        // マーカー要素（コンテナ）の作成
-        const el = document.createElement('div'); 
-        el.className = 'marker-plan'; 
+        // 金額吹き出し
+        let hotelInfoHtml = ''; 
+        if (!isNearby && isSpotHotel && spot.price > 0) {
+            hotelInfoHtml = `<div style="position:absolute; bottom:100%; left:50%; transform:translateX(-50%) translateY(-8px); background:white; padding:2px 6px; border-radius:6px; font-size:10px; font-weight:bold; color:#d32f2f; white-space:nowrap; box-shadow:0 2px 4px rgba(0,0,0,0.2); display:flex; flex-direction:column; align-items:center;"><span>¥${Number(spot.price).toLocaleString()}</span><div style="position:absolute; top:100%; left:50%; transform:translateX(-50%); width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:4px solid white;"></div></div>`;
+        }
+
+        const el = document.createElement('div');
+        el.className = 'marker-plan';
         el.style.cursor = 'pointer';
 
-        // ピンのデザイン分岐
         if (isNearby) {
-            // ★周辺スポット用デザイン: 黒枠白丸、クエスチョンマーク
-            const nearbySize = 20;
+            // 周辺検索ピン
+            el.innerHTML = `<div style="position:relative; display:flex; flex-direction:column; align-items:center;"><div style="width:24px; height:24px; background:black; border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 5px rgba(0,0,0,0.3);"><div style="width:20px; height:20px; background:white; border-radius:50%; display:flex; align-items:center; justify-content:center; color:black; font-weight:bold; font-size:10px;">?</div></div><div style="width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:6px solid black; margin-top:-1px;"></div></div>`;
+        } else if (isConfirmed) {
+            // ★確定ピン（青色）
             el.innerHTML = `
                 <div style="position:relative; display:flex; flex-direction:column; align-items:center;">
-                    <div style="width:${nearbySize + 4}px; height:${nearbySize + 4}px; background:black; border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 5px rgba(0,0,0,0.3);">
-                        <div style="width:${nearbySize}px; height:${nearbySize}px; background:white; border-radius:50%; display:flex; align-items:center; justify-content:center; color:black; font-weight:bold; font-size:10px;">
-                           ?
+                    ${hotelInfoHtml}
+                    <div style="width:${size + 6}px; height:${size + 6}px; background:${confirmedColor}; border-radius:${isDayView ? '6px' : '50%'}; display:flex; align-items:center; justify-content:center; box-shadow:0 4px 10px rgba(0,0,0,0.5);">
+                        <div style="width:${size}px; height:${size}px; background:${confirmedColor}; border-radius:${isDayView ? '5px' : '50%'}; display:flex; align-items:center; justify-content:center; color:white; font-weight:800; font-size:${currentFontSize}; border:1px solid rgba(255,255,255,0.3);">
+                            ${displayLabel}
                         </div>
                     </div>
-                    <div style="width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:6px solid black; margin-top:-1px;"></div>
+                    <div style="width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent; border-top:7px solid ${confirmedColor}; margin-top:-1px;"></div>
                 </div>`;
-        } else if (isConfirmed) {
-            if (isDayView) {
-                // 確定(Day表示): 番号付き角丸ピン
-                // filteredSpots内でのインデックスを使うため、spot.id等で検索して正しい番号を振るのが理想ですが、
-                // ここでは簡易的に index + 1 を使用 (filteredSpotsのみが渡ってくるときはこれでOK)
-                // ※ nearbyCandidatesが混ざる場合は index の扱いを分ける必要がありますが、
-                //    isConfirmed が true の時点で nearbyCandidates ではないので安全です。
-                el.innerHTML = `<div style="position:relative; display:flex; flex-direction:column; align-items:center;">${hotelInfoHtml}<div style="width:${size + 6}px; height:${size + 6}px; background:${confirmedColor}; border-radius:6px; display:flex; align-items:center; justify-content:center; box-shadow:0 4px 10px rgba(0,0,0,0.5);"><div style="width:${size}px; height:${size}px; background:${confirmedColor}; border-radius:5px; display:flex; align-items:center; justify-content:center; color:white; font-weight:800; font-size:14px; border:1px solid rgba(255,255,255,0.3);">${index + 1}</div></div><div style="width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent; border-top:7px solid ${confirmedColor}; margin-top:-1px; filter:drop-shadow(0 1px 1px rgba(0,0,0,0.1));"></div></div>`;
-           } else {
-                // 確定(全体): 日付入り丸ピン
-                // ★修正: (spot.day || '') を (spot.day || '?') に変更
-                el.innerHTML = `<div style="position:relative; display:flex; flex-direction:column; align-items:center;">${hotelInfoHtml}<div style="width:${size + 6}px; height:${size + 6}px; background:${confirmedColor}; border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 4px 10px rgba(0,0,0,0.5);"><div style="width:${size}px; height:${size}px; background:${confirmedColor}; border-radius:50%; display:flex; align-items:center; justify-content:center; color:white; font-weight:800; font-size:12px; border:1px solid rgba(255,255,255,0.3);">${isSpotHotel ? '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4v16"/><path d="M2 8h18a2 2 0 0 1 2 2v10"/><path d="M2 17h20"/><path d="M6 8v9"/></svg>' : (spot.day || '?')}</div></div><div style="width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent; border-top:7px solid ${confirmedColor}; margin-top:-1px; filter:drop-shadow(0 1px 1px rgba(0,0,0,0.1));"></div></div>`;
-            }
         } else {
-            // 候補・宿: 投票数入り丸ピン
-            el.innerHTML = `<div style="position:relative; display:flex; flex-direction:column; align-items:center;">${hotelInfoHtml}<div style="width:${size + 6}px; height:${size + 6}px; background:${gradientString}; border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 5px rgba(0,0,0,0.3);"><div style="width:${size}px; height:${size}px; background:${baseColor}; border-radius:50%; display:flex; align-items:center; justify-content:center; color:${textColor}; font-weight:800; font-size:12px; border:1px solid rgba(0,0,0,0.1);">${isSpotHotel ? '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4v16"/><path d="M2 8h18a2 2 0 0 1 2 2v10"/><path d="M2 17h20"/><path d="M6 8v9"/></svg>' : (voteCount > 0 ? voteCount : '')}</div></div><div style="width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent; border-top:7px solid ${baseColor}; margin-top:-1px; filter:drop-shadow(0 1px 1px rgba(0,0,0,0.1));"></div></div>`;
+            // ★候補ピン（参加者カラーのグラデーション）
+            let gradientString = '#9CA3AF';
+            if (uniqueParticipants.length > 0) {
+                const segmentSize = 100 / uniqueParticipants.length;
+                const gradientParts = uniqueParticipants.map((name, i) => { 
+                    const color = getUserColor(name as string); 
+                    return `${color} ${i * segmentSize}% ${(i + 1) * segmentSize}%`; 
+                });
+                gradientString = `conic-gradient(${gradientParts.join(', ')})`;
+            }
+
+            el.innerHTML = `
+                <div style="position:relative; display:flex; flex-direction:column; align-items:center;">
+                    ${hotelInfoHtml}
+                    <div style="width:${size + 6}px; height:${size + 6}px; background:${gradientString}; border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 5px rgba(0,0,0,0.3);">
+                        <div style="width:${size}px; height:${size}px; background:${isSpotHotel ? '#FEF9C3' : '#FFFFFF'}; border-radius:50%; display:flex; align-items:center; justify-content:center; color:${isSpotHotel ? '#CA8A04' : '#1E3A8A'}; font-weight:800; font-size:12px; border:1px solid rgba(0,0,0,0.1);">
+                            ${isSpotHotel ? '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4v16"/><path d="M2 8h18a2 2 0 0 1 2 2v10"/><path d="M2 17h20"/><path d="M6 8v9"/></svg>' : displayLabel}
+                        </div>
+                    </div>
+                    <div style="width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent; border-top:7px solid ${isSpotHotel ? '#FEF9C3' : '#FFFFFF'}; margin-top:-1px;"></div>
+                </div>`;
         }
+
+        el.onclick = (e) => { e.stopPropagation(); handlePreviewSpot(spot); };
         
-        // クリックイベント (周辺スポットもプレビュー可能にする)
-        el.onclick = (e) => { 
-            e.stopPropagation(); 
-            handlePreviewSpot(spot); 
-        };
-        
-        // 3. マーカー登録 & Refに保存 (anchor: 'bottom' で位置ズレ防止)
-        // ★修正: 座標が不正な場合はスキップしてクラッシュを防ぐ
-        if (spot.coordinates && Array.isArray(spot.coordinates) && spot.coordinates.length === 2) {
+        if (spot.coordinates) {
             const marker = new mapboxgl.Marker({ element: el, anchor: 'bottom' })
                 .setLngLat(spot.coordinates as [number, number])
                 .addTo(map.current!);
-                
             planMarkersRef.current.push(marker);
         }
     });
-      
-  }, [filteredSpots, nearbyCandidates, spotVotes, currentTab, filterStatus, selectedConfirmDay]);
 
- // 認証中、または未参加（名前未入力）の場合
- // 認証中、または未参加（名前未入力）の場合
+}, [filteredSpots, displayTimeline, nearbyCandidates, spotVotes, currentTab, filterStatus, selectedConfirmDay]);
   if (isAuthLoading || (!roomId && !isJoined) || (roomId && !isJoined)) {
     return (
         <>
@@ -3558,12 +3639,15 @@ const now = new Date().toISOString(); // ★現在時刻
                                    )}
                                    
                                    {/* ★追加: 金額表示 */}
-                                   {(selectedResult.price || selectedResult.cost) && (
-                                       <div className="flex items-center gap-1 text-[10px] font-bold text-yellow-700 bg-yellow-50 px-2 py-1.5 rounded-lg border border-yellow-100 w-fit">
-                                           <Banknote size={12}/> 
-                                           <span>¥{Number(selectedResult.price || selectedResult.cost).toLocaleString()}</span>
-                                       </div>
-                                   )}
+                                  {/* page.tsx 1770行目付近：詳細パネル内 */}
+
+{/* ★修正：price が存在し、かつ 0 より大きい場合のみ表示 */}
+{(selectedResult.price && selectedResult.price > 0) && (
+    <div className="flex items-center gap-1 text-[10px] font-bold text-yellow-700 bg-yellow-50 px-2 py-1.5 rounded-lg border border-yellow-100 w-fit">
+        <Banknote size={12}/> 
+        <span>¥{Number(selectedResult.price).toLocaleString()}</span>
+    </div>
+)}
 
                                    {selectedResult.link && (
                                        <a href={selectedResult.link} target="_blank" className="flex items-center gap-1.5 text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-1.5 rounded-lg hover:bg-blue-100 transition w-fit max-w-full">
@@ -4195,11 +4279,14 @@ const now = new Date().toISOString(); // ★現在時刻
                                                                             </div>
 
                                                                             {/* 金額 (price優先) */}
-                                                                            {(spot.price || spot.cost) && (
-                                                                                <div className="flex items-center gap-1 text-[10px] font-bold text-yellow-700 bg-yellow-50 px-1.5 py-0.5 rounded border border-yellow-100 shrink-0">
-                                                                                    <Banknote size={10}/> ¥{Number(spot.price || spot.cost).toLocaleString()}
-                                                                                </div>
-                                                                            )}
+                                                                            {/* page.tsx 1850行目付近：タイムライン（確定リスト）内 */}
+
+{/* ★修正：こちらも同様に price > 0 で判定 */}
+{(spot.price && spot.price > 0) && (
+    <div className="flex items-center gap-1 text-[10px] font-bold text-yellow-700 bg-yellow-50 px-1.5 py-0.5 rounded border border-yellow-100 shrink-0">
+        <Banknote size={10}/> ¥{Number(spot.price).toLocaleString()}
+    </div>
+)}
 
                                                                             {/* ユーザー追加リンク */}
                                                                             {spot.link && (
@@ -4228,18 +4315,29 @@ const now = new Date().toISOString(); // ★現在時刻
                                                                     </div>
 
                                                                     {/* 右側: アクションボタン */}
-                                                                    <div className="flex gap-1 items-center shrink-0 mb-0.5">
-                                                                        {isSpotHotel && (
-                                                                            <button 
-                                                                                onClick={(e) => { e.stopPropagation(); window.open(getAffiliateUrl(spot), '_blank'); }}
-                                                                                className="flex items-center gap-1 bg-[#BF0000] text-white px-2 py-0.5 rounded text-[9px] font-bold hover:bg-[#900000] transition shrink-0 shadow-sm"
-                                                                            >
-                                                                                <span className="opacity-75 text-[8px] border border-white/50 px-0.5 rounded-[2px]">PR</span>
-                                                                                楽天 <ExternalLink size={8}/>
-                                                                            </button>
-                                                                        )}
-                                                                        <button onClick={(e) => { e.stopPropagation(); removeSpot(spot); }} className="text-gray-300 hover:text-red-500 transition p-1"><Trash2 size={12}/></button>
-                                                                    </div>
+                                                                   {/* page.tsx 1485行目付近：確定リストの「アクションボタン」エリアを書き換え */}
+
+<div className="flex gap-1 items-center shrink-0 mb-0.5">
+    {/* ★ 追加：地図ズームボタン */}
+    <button 
+        onClick={(e) => handleLocateOnMap(e, spot)}
+        className="text-gray-400 hover:text-indigo-600 transition p-1.5 bg-gray-50 rounded-lg border border-gray-100"
+        title="地図で場所を確認"
+    >
+        <MapPinned size={14}/>
+    </button>
+
+    {isSpotHotel && (
+        <button 
+            onClick={(e) => { e.stopPropagation(); window.open(getAffiliateUrl(spot), '_blank'); }}
+            className="flex items-center gap-1 bg-[#BF0000] text-white px-2 py-0.5 rounded text-[9px] font-bold hover:bg-[#900000] transition shrink-0 shadow-sm"
+        >
+            <span className="opacity-75 text-[8px] border border-white/50 px-0.5 rounded-[2px]">PR</span>
+            楽天 <ExternalLink size={8}/>
+        </button>
+    )}
+    <button onClick={(e) => { e.stopPropagation(); removeSpot(spot); }} className="text-gray-300 hover:text-red-500 transition p-1"><Trash2 size={12}/></button>
+</div>
                                                                 </div>
                                                             </div>
                                                         </div>
@@ -4408,46 +4506,48 @@ const now = new Date().toISOString(); // ★現在時刻
                                                             
                                                         </div>
                                                     </div>
-                                                   <div className="flex gap-2 items-center justify-end mt-1">
-                                                       {spot.comment ? (
-    <span className="text-[10px] text-gray-600 font-medium truncate flex-1 flex items-center gap-1">
-        <MessageSquare size={10} className="shrink-0 text-gray-400"/> 
-        {/* ★修正: 10文字制限を追加 */}
-        {spot.comment.length > 10 ? spot.comment.slice(0, 10) + "..." : spot.comment}
-    </span>
-) : (
-    <span className="text-[10px] text-gray-300 truncate flex-1">{spot.description}</span>
-)}
+                                                   {/* page.tsx 1665行目付近：displaySpots.map 内 */}
+<div className="flex gap-2 items-center justify-between mt-1">
+    {/* 左側：メモまたは説明文 */}
+    {spot.comment ? (
+        <span className="text-[10px] text-gray-600 font-medium truncate flex-1 flex items-center gap-1 min-w-0">
+            <MessageSquare size={10} className="shrink-0 text-gray-400"/> 
+            {spot.comment.length > 10 ? spot.comment.slice(0, 10) + "..." : spot.comment}
+        </span>
+    ) : (
+        <span className="text-[10px] text-gray-300 truncate flex-1 min-w-0">{spot.description}</span>
+    )}
 
-                                                        {/* ★追加: リンクボタン */}
-                                                        {spot.link && (
-                                                            <a 
-                                                                href={spot.link} 
-                                                                target="_blank" 
-                                                                rel="noopener noreferrer" 
-                                                                onClick={(e) => e.stopPropagation()}
-                                                                className="flex items-center gap-1 text-[10px] font-bold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100 shrink-0 hover:bg-blue-100 transition"
-                                                            >
-                                                                <LinkIcon size={10}/> リンク
-                                                            </a>
-                                                        )}
+    {/* 右側：アクションボタン（確定リストと位置を合わせる） */}
+    <div className="flex gap-1 items-center shrink-0 ml-2">
+        {/* マップジャンプボタン */}
+        <button 
+            onClick={(e) => handleLocateOnMap(e, spot)}
+            className="text-gray-400 hover:text-indigo-600 transition p-1.5 bg-gray-50 rounded-lg border border-gray-100"
+        >
+            <MapPinned size={14}/>
+        </button>
 
-                                                        {isSpotHotel && (
-                                                            <button 
-                                                                onClick={(e) => { 
-                                                                    e.stopPropagation(); 
-                                                                    // ★追加: ログ送信
-                                    logAffiliateClick(spot.name, "main_list_item");
-                                    window.open(getAffiliateUrl(spot), '_blank');
-                                                                }}
-                                                                className="flex items-center gap-1 bg-[#BF0000] text-white px-2 py-0.5 rounded text-[9px] font-bold hover:bg-[#900000] transition shrink-0 shadow-sm"
-                                                            >
-                                                                <span className="opacity-75 text-[8px] border border-white/50 px-0.5 rounded-[2px]">PR</span>
-                                                                楽天で見る <ExternalLink size={8}/>
-                                                            </button>
-                                                        )}
-                                                        <button onClick={(e) => { e.stopPropagation(); removeSpot(spot); }} className="p-1 text-gray-300 hover:text-red-500 transition"><Trash2 size={12}/></button>
-                                                    </div>
+        {isSpotHotel && (
+            <button 
+                onClick={(e) => { 
+                    e.stopPropagation(); 
+                    logAffiliateClick(spot.name, "main_list_item");
+                    window.open(getAffiliateUrl(spot), '_blank');
+                }}
+                className="flex items-center gap-1 bg-[#BF0000] text-white px-2 py-0.5 rounded text-[9px] font-bold hover:bg-[#900000] transition shrink-0 shadow-sm"
+            >
+                <span className="opacity-75 text-[8px] border border-white/50 px-0.5 rounded-[2px]">PR</span>
+                楽天 <ExternalLink size={8}/>
+            </button>
+        )}
+        
+        {/* 削除ボタン */}
+        <button onClick={(e) => { e.stopPropagation(); removeSpot(spot); }} className="p-1 text-gray-300 hover:text-red-500 transition">
+            <Trash2 size={12}/>
+        </button>
+    </div>
+</div>
                                                 </div>
                                             </div>
                                         );
