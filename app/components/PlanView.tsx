@@ -1628,12 +1628,12 @@ const onDrop = async (e: React.DragEvent, targetTimelineIndex: number) => {
                                                     </div>
                                                 )}
 
-                                                {item.spot.cost && (
-                                                    <div className="flex items-center gap-1 bg-yellow-50 px-2 py-1 rounded border border-yellow-100 text-[10px] font-bold text-yellow-700">
-                                                        <Banknote size={10}/>
-                                                        ¥{Number(item.spot.cost).toLocaleString()}
-                                                    </div>
-                                                )}
+                                                {(item.spot.cost && Number(item.spot.cost) > 0) && (
+    <div className="flex items-center gap-1 ...">
+        <Banknote size={10}/>
+        ¥{Number(item.spot.cost).toLocaleString()}
+    </div>
+)}
 
                                                 {item.spot.link && (
                                                     <a 

@@ -291,7 +291,30 @@ PREF_NORMALIZER = {
 
 # main.py の extract_and_fix_address をさらに強化
 
+# main.py の extract_and_fix_address 関数を修正
+
 def extract_and_fix_address(raw_address: str) -> str:
+    if not raw_address: return ""
+
+    # 1. クレンジング（日本、郵便番号、不要な空白を削除）
+    raw_address = re.sub(r'^(Japan|日本|〒?\d{3}-\d{4})\s*[, ]*', '', raw_address).strip()
+
+    # 2. 都道府県の補完
+    for k, v in PREF_NORMALIZER.items():
+        if k in raw_address and v not in raw_address:
+            rest = raw_address.split(k, 1)[-1]
+            rest = re.sub(r'^[県都府道]', '', rest)
+            raw_address = v + rest
+            break
+
+    # ★追加：郡（〇〇郡）の削除
+    # 都道府県の直後にある「〇〇郡」を削除して市区町村（市町村）に繋げる
+    # 例: "富山県中新川郡上市町" -> "富山県上市町"
+    raw_address = re.sub(r'([都道府憲])([^市区町村]+?郡)', r'\1', raw_address)
+    # 都道府県名がない場合（市区町村から始まる場合）の郡も削除
+    raw_address = re.sub(r'^([^市区町村]+?郡)', '', raw_address)
+
+    return raw_address
     if not raw_address: return ""
 
     # 1. クレンジング（日本、郵便番号、不要な空白を削除）
@@ -1296,32 +1319,44 @@ async def search_places(query: str, lat: Optional[float] = None, lng: Optional[f
 
 # main.py の @app.get("/api/get_spot_info") を書き換え
 
-# get_spot_info を修正
+# main.py の get_spot_info を以下に差し替え
+
 @app.get("/api/get_spot_info")
 async def get_spot_info(query: str, lat: Optional[float] = None, lng: Optional[float] = None):
     global http_client
     if http_client is None: return {}
     client = http_client
     
-    # 既存の検索処理
+    # 1. 既存のジオコーディング検索
     data = None
     if lat is not None and lng is not None:
         data = await fetch_spot_by_coordinates(client, lat, lng, query)
     if not data:
         data = await fetch_spot_coordinates(client, query, query)
 
-    # 住所が不完全（NN, 調査中, 市町村が含まれない等）な場合にAIで補完
+    # 2. 住所が不完全（NN, 調査中, 不明）または正規表現で拾えない形式なら AI で強制補完
     current_desc = data.get("description", "") if data else ""
-    is_invalid = not current_desc or "NN" in current_desc or "調査中" in current_desc or "不明" in current_desc
+    # 都道府県が含まれているかチェック
+    has_pref = any(p in current_desc for p in PREF_NORMALIZER.values())
+    
+    is_invalid = (
+        not current_desc or 
+        "NN" in current_desc or 
+        "調査中" in current_desc or 
+        "不明" in current_desc or
+        not has_pref  # 都道府県が入っていない場合も補完対象にする
+    )
     
     if is_invalid:
+        # AI にスポット名から正確な住所を割り出させる
         ai_data = await get_structured_address_by_ai(query, current_desc)
         if ai_data.get("full_address"):
             if not data:
                 data = {"name": query, "coordinates": [lng or 0.0, lat or 0.0]}
+            # AI が作った「〇〇県〇〇市...」という綺麗な住所をセット
             data["description"] = ai_data["full_address"]
 
-    # Wikipedia情報等のマージ
+    # 3. Wikipedia情報等をマージして返す
     wiki = await fetch_wikipedia_info(client, query, target_name=query)
     if data:
         data["image_url"] = data.get("image_url") or wiki.get("image_url")

@@ -812,52 +812,63 @@ const extractPrefecture = (spot: any) => {
 // page.tsx の extractCity を修正
 // page.tsx の extractCity 関数を修正
 
+// page.tsx の extractCity と isInvalidAddress を修正
+
+// page.tsx の extractCity 関数を修正
+
 const extractCity = (spot: any) => {
     const text = spot.description || spot.place_name || spot.name || "";
     let addressBody = text;
-    const pref = extractPrefecture(spot); // 前回の修正で "富山県" を返すはず
+    const pref = extractPrefecture(spot);
 
     if (pref !== "その他") {
-        // 都道府県名（富山県）で分割
         const splitByFull = text.split(pref);
         if (splitByFull.length > 1) {
             addressBody = splitByFull[1];
         } else {
-            // 都道府県名（略称：富山）で分割を試みる
             const shortPref = pref.replace(/[都府県]$/, "");
             const splitByShort = text.split(shortPref);
             if (splitByShort.length > 1) {
-                // "高岡市" の前に残った "県" などのゴミを掃除
                 addressBody = splitByShort[1].replace(/^[県都府道]/, "");
             }
         }
     }
 
-    // 市区町村の抽出（既存ロジック）
-    const cityMatch = addressBody.match(/([^0-9\s,]+?市)/);
+    // ★修正：正規表現で市・区・町・村を抽出する際、手前に「郡」があればそれを無視する
+    
+    // 1. 市の抽出
+    const cityMatch = addressBody.match(/([^0-9\s,郡]+?市)/);
     if (cityMatch) return cityMatch[1];
 
-    const wardMatch = addressBody.match(/([^0-9\s,]+?区)/);
+    // 2. 区の抽出
+    const wardMatch = addressBody.match(/([^0-9\s,郡]+?区)/);
     if (wardMatch) return wardMatch[1];
 
+    // 3. 町・村の抽出（郡が含まれていても町村名のみを抽出）
     const townMatch = addressBody.match(/([^0-9\s,]+?[町村])/);
     if (townMatch) {
         const val = townMatch[1];
-        return val.includes("郡") ? val.split("郡")[1] : val;
+        // 「〇〇郡△△町」の場合、郡の後の「△△町」だけを抽出
+        if (val.includes("郡")) {
+            return val.split("郡")[1] || val;
+        }
+        return val;
     }
 
     return pref !== "その他" ? "市町村不明" : "その他";
 };
 
-// フィルタリング対象の判定を修正
+// 判定ロジックを「AI補完が必要か」という基準にする
 const isInvalidAddress = (spot: any) => {
     const city = extractCity(spot);
     const pref = extractPrefecture(spot);
-    // 「その他」「不明」「NN」が含まれる場合は再取得が必要
+    
+    // 住所が NN や 調査中 の場合、または解析結果が「不明」「その他」なら AI 出動
     return !spot.description || 
            spot.description.includes("住所調査中") || 
            spot.description.includes("NN") || 
            city === "市町村不明" || 
+           city === "その他" ||
            pref === "その他";
 };
 
@@ -1340,33 +1351,29 @@ useEffect(() => {
 
 // page.tsx の自動修正 useEffect を強化
 // 自動修正を行う useEffect 内の判定ロジック
+// page.tsx 940行目付近の useEffect
+
 useEffect(() => {
     if (!roomId || planSpots.length === 0) return;
 
     planSpots.forEach(async (spot) => {
-        const city = extractCity(spot);
-        const pref = extractPrefecture(spot);
-        
-        // 修正が必要な条件：住所が空、NN、調査中、市町村が「不明」または「その他」
-        const needsFix = !spot.description || 
-                        spot.description.includes("住所調査中") || 
-                        spot.description.includes("NN") || 
-                        city === "市町村不明" || 
-                        pref === "その他";
-
-        if (needsFix && !attemptedAddressFetch.current.has(spot.id)) {
+        // 現在の状態が「不明」かチェック
+        if (isInvalidAddress(spot) && !attemptedAddressFetch.current.has(spot.id)) {
             attemptedAddressFetch.current.add(spot.id);
 
+            // バックエンドの AI 補完 API を叩く
             const info = await fetchSpotInfo(spot.name, spot.coordinates?.[1], spot.coordinates?.[0]);
 
-            if (info && info.description && !info.description.includes("NN")) {
-                // ローカルStateとDBを更新（updated_atを更新せず、静かに修正）
+            if (info && info.description && !info.description.includes("NN") && !info.description.includes("調査中")) {
+                // フロントの表示を即座に更新
                 setPlanSpots(prev => prev.map(s => 
-                    s.id === spot.id ? { ...s, description: info.description } : s
+                    s.id === spot.id ? { ...s, description: info.description, comment: info.comment || s.comment } : s
                 ));
 
+                // Supabase に AI が特定した正確な住所を保存する
                 await supabase.from('spots').update({ 
-                    description: info.description 
+                    description: info.description,
+                    comment: info.comment || spot.comment
                 }).eq('id', spot.id);
             }
         }
@@ -4369,11 +4376,10 @@ useEffect(() => {
                 </div>
 
                                                             {/* 詳細情報タグ (時間・金額・リンク・メモ) */}
-                                                            {(item.transport_departure || item.transport_arrival || item.cost || item.url || item.note) && (
-                                                                <div className="flex flex-col gap-1 mt-0.5">
+                                                            {!!(item.transport_departure || item.transport_arrival || item.cost || item.url || item.note) && (    <div className="flex flex-col gap-1 mt-0.5">
                                                                     <div className="flex flex-wrap gap-1 items-center">
                                                                         {/* 出発・到着時間 */}
-                                                                        {(item.transport_departure || item.transport_arrival) && (
+                                                                     {!!(item.transport_departure || item.transport_arrival || item.cost || item.url || item.note) && (
                                                                             <div className="flex items-center gap-1 text-[10px] font-bold text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100 shrink-0">
                                                                                 <Clock size={10}/>
                                                                                 {item.transport_departure && <span>{item.transport_departure}発</span>}
@@ -4383,11 +4389,13 @@ useEffect(() => {
                                                                         )}
 
                                                                         {/* 金額 */}
-                                                                        {item.cost && (
-                                                                            <div className="flex items-center gap-1 text-[10px] font-bold text-yellow-700 bg-yellow-50 px-1.5 py-0.5 rounded border border-yellow-100 shrink-0">
-                                                                                <Banknote size={10}/> ¥{Number(item.cost).toLocaleString()}
-                                                                            </div>
-                                                                        )}
+                                                                        // page.tsx 1915行目付近
+{/* 修正前: {item.cost && ( ... )} */}
+{(item.cost && Number(item.cost) > 0) && (
+    <div className="flex items-center gap-1 text-[10px] font-bold text-yellow-700 bg-yellow-50 px-1.5 py-0.5 rounded border border-yellow-100 shrink-0">
+        <Banknote size={10}/> ¥{Number(item.cost).toLocaleString()}
+    </div>
+)}
 
                                                                         {/* リンク */}
                                                                         {item.url && (
