@@ -76,21 +76,25 @@ const SpotImage = ({ src, alt, className }: { src?: string | null, alt: string, 
 };
 
 // --- 予約管理ボタンコンポーネント ---
-const ReservationButton = ({ spot, roomId, onUpdate, currentUser, compact = false }: { spot: any, roomId: string, onUpdate: (s: any) => void, currentUser?: string, compact?: boolean }) => {
-    const [showModal, setShowModal] = useState(false);
-    const [nameInput, setNameInput] = useState("");
+// --- 予約管理モーダルコンポーネント (新規追加: ロジックと表示を担当) ---
+const ReservationModal = ({ 
+    spot, 
+    roomId, 
+    onUpdate, 
+    currentUser, 
+    onClose 
+}: { 
+    spot: any, 
+    roomId: string, 
+    onUpdate: (s: any) => void, 
+    currentUser?: string, 
+    onClose: () => void 
+}) => {
+    const [nameInput, setNameInput] = useState(spot.reserved_by || currentUser || "Guest");
     const [isUpdating, setIsUpdating] = useState(false);
     const [viewMode, setViewMode] = useState<'default' | 'confirm_cancel'>('default');
 
     const isReserved = spot.reservation_status === 'reserved';
-
-    const handleOpen = (e: React.MouseEvent) => {
-        e.preventDefault();
-        e.stopPropagation();
-        setNameInput(spot.reserved_by || currentUser || "Guest");
-        setViewMode('default');
-        setShowModal(true);
-    };
 
     const handleUpdateStatus = async (status: 'reserved' | 'unreserved') => {
         if (!spot.id) return;
@@ -107,7 +111,7 @@ const ReservationButton = ({ spot, roomId, onUpdate, currentUser, compact = fals
             }
             
             onUpdate({ ...spot, ...updates });
-            setShowModal(false);
+            onClose(); // 更新成功時に閉じる
         } catch (e) {
             alert("更新エラーが発生しました");
         } finally {
@@ -115,16 +119,6 @@ const ReservationButton = ({ spot, roomId, onUpdate, currentUser, compact = fals
         }
     };
 
-    const stopPropagation = (e: React.UIEvent) => {
-        e.stopPropagation();
-    };
-    
-    const preventDrag = (e: React.DragEvent) => {
-        e.preventDefault();
-        e.stopPropagation();
-    };
-
-    // モーダル内のコンテンツ切り替え
     const renderModalContent = () => {
         if (!isReserved) {
             return (
@@ -139,7 +133,6 @@ const ReservationButton = ({ spot, roomId, onUpdate, currentUser, compact = fals
                             <input 
                                 type="text" 
                                 value={nameInput}
-                                onClick={stopPropagation}
                                 onChange={(e) => setNameInput(e.target.value)}
                                 className="w-full bg-gray-50 border border-gray-200 rounded-xl py-3 pl-10 pr-3 text-base font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition"
                                 placeholder="名前を入力"
@@ -150,14 +143,14 @@ const ReservationButton = ({ spot, roomId, onUpdate, currentUser, compact = fals
                     <div className="flex gap-3">
                         <button 
                             type="button"
-                            onClick={(e) => { e.stopPropagation(); setShowModal(false); }}
+                            onClick={onClose}
                             className="flex-1 bg-gray-100 text-gray-500 font-bold py-3 rounded-xl hover:bg-gray-200 transition"
                         >
                             キャンセル
                         </button>
                         <button 
                             type="button"
-                            onClick={(e) => { e.stopPropagation(); handleUpdateStatus('reserved'); }}
+                            onClick={() => handleUpdateStatus('reserved')}
                             disabled={!nameInput.trim() || isUpdating}
                             className="flex-1 bg-green-600 text-white font-bold py-3 rounded-xl hover:bg-green-700 transition flex items-center justify-center gap-2 shadow-md shadow-green-200"
                         >
@@ -182,14 +175,14 @@ const ReservationButton = ({ spot, roomId, onUpdate, currentUser, compact = fals
                     <div className="flex gap-3">
                         <button 
                             type="button"
-                            onClick={(e) => { e.stopPropagation(); setViewMode('default'); }}
+                            onClick={() => setViewMode('default')}
                             className="flex-1 bg-gray-100 text-gray-500 font-bold py-3 rounded-xl hover:bg-gray-200 transition"
                         >
                             いいえ
                         </button>
                         <button 
                             type="button"
-                            onClick={(e) => { e.stopPropagation(); handleUpdateStatus('unreserved'); }}
+                            onClick={() => handleUpdateStatus('unreserved')}
                             disabled={isUpdating}
                             className="flex-1 bg-red-500 text-white font-bold py-3 rounded-xl hover:bg-red-600 transition flex items-center justify-center gap-2 shadow-md shadow-red-200"
                         >
@@ -216,14 +209,14 @@ const ReservationButton = ({ spot, roomId, onUpdate, currentUser, compact = fals
                 <div className="space-y-3">
                     <button 
                         type="button"
-                        onClick={(e) => { e.stopPropagation(); setViewMode('confirm_cancel'); }}
+                        onClick={() => setViewMode('confirm_cancel')}
                         className="w-full bg-white border-2 border-red-100 text-red-500 font-bold py-3 rounded-xl hover:bg-red-50 transition flex items-center justify-center gap-2"
                     >
                         未予約に戻す
                     </button>
                     <button 
                         type="button"
-                        onClick={(e) => { e.stopPropagation(); setShowModal(false); }}
+                        onClick={onClose}
                         className="w-full text-gray-400 font-bold py-2 text-sm hover:text-gray-600"
                     >
                         閉じる
@@ -234,42 +227,51 @@ const ReservationButton = ({ spot, roomId, onUpdate, currentUser, compact = fals
     };
 
     return (
-        <>
-            <button 
-                type="button"
-                onClick={handleOpen}
-                onMouseDown={stopPropagation}
-                onTouchStart={stopPropagation}
-                onDragStart={preventDrag}
-                className={`flex items-center justify-center gap-1.5 rounded-lg font-bold shadow-sm transition-all border shrink-0 z-20 ${
-                    compact ? "px-2 py-1 text-[9px]" : "px-3 py-1.5 text-[10px]"
-                } ${
-                    isReserved 
-                    ? "bg-green-500 text-white border-green-600 hover:bg-green-600 shadow-green-200" 
-                    : "bg-white text-red-500 border-red-200 hover:bg-red-50"
-                }`}
+        <div 
+            className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 cursor-default" 
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onClose(); }}
+        >
+            <div 
+                className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm animate-in zoom-in-95" 
+                onClick={(e) => e.stopPropagation()}
             >
-                {isReserved ? <Check size={compact ? 12 : 14} strokeWidth={3}/> : <AlertCircle size={compact ? 12 : 14}/>}
-                <span>{isReserved ? "予約済" : "未予約！"}</span>
-            </button>
+                {renderModalContent()}
+            </div>
+        </div>
+    );
+};
 
-            {showModal && (
-                <div 
-                    className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 cursor-default" 
-                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                    onMouseDown={stopPropagation}
-                    onTouchStart={stopPropagation}
-                    onDragStart={preventDrag}
-                >
-                    <div 
-                        className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm animate-in zoom-in-95" 
-                        onClick={stopPropagation}
-                    >
-                        {renderModalContent()}
-                    </div>
-                </div>
-            )}
-        </>
+// --- 予約管理ボタンコンポーネント (修正版: 表示とクリックイベントのみ) ---
+const ReservationButton = ({ 
+    spot, 
+    onClick, 
+    compact = false 
+}: { 
+    spot: any, 
+    onClick: () => void, 
+    compact?: boolean 
+}) => {
+    const isReserved = spot.reservation_status === 'reserved';
+    
+    return (
+        <button 
+            type="button"
+            onClick={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                onClick();
+            }}
+            className={`flex items-center justify-center gap-1.5 rounded-lg font-bold shadow-sm transition-all border shrink-0 z-20 ${
+                compact ? "px-2 py-1 text-[9px]" : "px-3 py-1.5 text-[10px]"
+            } ${
+                isReserved 
+                ? "bg-green-500 text-white border-green-600 hover:bg-green-600 shadow-green-200" 
+                : "bg-white text-red-500 border-red-200 hover:bg-red-50"
+            }`}
+        >
+            {isReserved ? <Check size={compact ? 12 : 14} strokeWidth={3}/> : <AlertCircle size={compact ? 12 : 14}/>}
+            <span>{isReserved ? "予約済" : "未予約！"}</span>
+        </button>
     );
 };
 
@@ -339,6 +341,9 @@ export default function PlanView({
 
   const displayDays = Math.max(travelDays, 1);
   const [activeTransportMenuIndex, setActiveTransportMenuIndex] = useState<number | null>(null);
+
+  // PlanView関数の中の useState 定義付近に追加
+const [reservationTargetSpot, setReservationTargetSpot] = useState<any | null>(null);
 
   useEffect(() => {
       if (autoShowScreenshot) setShowScreenshotMode(true);
@@ -1456,6 +1461,23 @@ const onDrop = async (e: React.DragEvent, targetTimelineIndex: number) => {
           </div>
       )}
 
+      {/* ▼▼▼ 追加: 予約管理モーダルをここに配置 ▼▼▼ */}
+      {reservationTargetSpot && (
+          <ReservationModal
+              spot={reservationTargetSpot}
+              roomId={roomId}
+              currentUser={currentUser}
+              onUpdate={(updatedSpot) => {
+                  handleSpotUpdate(updatedSpot);
+                  // 必要であればここで setReservationTargetSpot(null) をしてもよいが、
+                  // ReservationModal内部の onClose で閉じるロジックにしてあるので必須ではない
+                  // (ただしModal側で onClose を呼んでいるので、ここで state を null にしないと閉じない)
+              }}
+              onClose={() => setReservationTargetSpot(null)}
+          />
+      )}
+      {/* ▲▲▲ 追加ここまで ▲▲▲ */}
+
       <div 
         ref={listRef}
         className="flex-1 overflow-y-auto relative bg-gray-50 pb-20 custom-scrollbar min-h-0"
@@ -1609,12 +1631,10 @@ const onDrop = async (e: React.DragEvent, targetTimelineIndex: number) => {
                                                 {/* ★★★ 予約管理ボタン（ホテルのみ） ★★★ */}
                                                 {item.spot.is_hotel && (
                                                     <div onClick={(e) => e.stopPropagation()}>
-                                                        <ReservationButton 
-                                                            spot={item.spot} 
-                                                            roomId={roomId} 
-                                                            onUpdate={handleSpotUpdate} 
-                                                            currentUser={currentUser}
-                                                        />
+                                                       <ReservationButton 
+    spot={item.spot} 
+    onClick={() => setReservationTargetSpot(item.spot)} // クリック時にstateにセットするだけにする
+/>
                                                     </div>
                                                 )}
 

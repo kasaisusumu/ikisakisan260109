@@ -535,6 +535,9 @@ const logAffiliateClick = async (spotName: string, source: string) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
 
+  // ★追加: ピンをタップしてフォーカス中かどうかを判定するフラグ
+const isFocusingSpotRef = useRef(false);
+
   
   // ★追加: 右端ズーム用のジェスチャー状態管理
 const rightEdgeGestureRef = useRef({
@@ -763,6 +766,12 @@ const onTimelineDrop = async (e: React.DragEvent, targetIndex: number) => {
   const attemptedAddressFetch = useRef<Set<string>>(new Set());
   const [displayTimeline, setDisplayTimeline] = useState<any[]>([]);
 
+  // ▼▼▼ 追加: 詳細モーダルのスワイプ用State ▼▼▼
+  const [modalDragY, setModalDragY] = useState(0);
+  const [isModalDragging, setIsModalDragging] = useState(false);
+  const modalDragStartRef = useRef<number>(0);
+  // ▲▲▲ 追加ここまで ▲▲▲
+
   // ★追加: タイムラインリストのDOM参照用と、スクロール制御用
 const timelineListRef = useRef<HTMLDivElement>(null);
 const timelineScrollInterval = useRef<NodeJS.Timeout | null>(null);
@@ -878,6 +887,18 @@ const getSpotArea = (spot: any, mode: 'city' | 'prefecture') => {
 
   // ...既存のuseState
   const [isSuggesting, setIsSuggesting] = useState(false);
+
+  // ★追加: 現在フォーカス（赤ピン表示）されているスポットのIDを保持
+//const [focusedSpotId, setFocusedSpotId] = useState<string | null>(null);
+
+// ★追加: 最新の状態を常に参照するためのRef
+const sheetHeightRef = useRef(sheetHeight);
+const focusedSpotIdRef = useRef<string | null>(null);
+
+// ★追加: sheetHeightが変化するたびにRefを更新
+useEffect(() => {
+    sheetHeightRef.current = sheetHeight;
+}, [sheetHeight]);
 
   // ...既存のuseState定義のあたり...
 
@@ -1591,14 +1612,15 @@ const filteredSpots = useMemo(() => {
       return Array.from(areas).sort();
   }, [planSpots, groupingMode]);
 
-  // ▼▼▼ 修正: スポット追加時などに勝手にズームアウトしないように依存配列を変更 ▼▼▼
+ // ▼▼▼ 修正: スポット追加時などに勝手にズームアウトしないように依存配列を変更 ▼▼▼
   useEffect(() => {
+      // ★追加: ピンフォーカス中（スポット選択中）なら、勝手に全体表示しない
+      if (isFocusingSpotRef.current) return;
+
       if (currentTab === 'explore' && !isSearching && !selectedResult && map.current) {
           fitBoundsToSpots(filteredSpots);
       }
-  // }, [filteredSpots, currentTab]); // ← 元のコード（データが変わるたびに動いていた）
-  }, [filterStatus, currentTab]);     // ← 修正後（フィルタ切替かタブ切替の時だけ動く）
-  // ▲▲▲ 修正ここまで ▲▲▲
+  }, [filterStatus, currentTab]); // ← 修正後（フィルタ切替かタブ切替の時だけ動く）
 
   const handleStatusChangeClick = (spot: any, newStatus: string) => {
       // ▼▼▼ 修正: 以前は 'candidate' の場合に 0 にしていましたが、spot.day をそのまま維持するように変更
@@ -2325,6 +2347,8 @@ const now = new Date().toISOString(); // ★現在時刻
     setIsFocused(false);
     // ★追加: 入力内容をクリア
     setQuery("");
+    // ★追加: フォーカスRefをリセット
+    focusedSpotIdRef.current = null;
   };
 // page.tsx の handlePreviewSpot 関数の近くに追加
 
@@ -2341,8 +2365,150 @@ const handleLocateOnMap = (e: React.MouseEvent, spot: any) => {
 
     if (navigator.vibrate) navigator.vibrate(10); // 触覚フィードバック
 };
+
+// ★修正: 現在開いているリストを優先して検索し、スクロール位置もリスト種別で可変にする
+// ★修正: 2回目タップで詳細表示、赤ピンへのクリックイベント追加
+// ★修正: StateではなくRefを参照して、常に最新の状況で判定する
+const focusSpotInList = (spot: any) => {
+    // 1. Refを使って判定（2回目タップなら詳細表示）
+    if (focusedSpotIdRef.current === String(spot.id)) {
+        handlePreviewSpot(spot);
+        return;
+    }
+
+    // フォーカスIDをRefに記録
+    focusedSpotIdRef.current = String(spot.id);
+    
+    // フォーカス処理中フラグON
+    isFocusingSpotRef.current = true;
+
+    // --- ステータス判定ロジック (変更なし) ---
+    const isSpotHotel = spot.is_hotel || isHotel(spot.name);
+    let targetStatus: FilterStatus | null = null;
+    let targetDay = 0;
+
+    if (filterStatus === 'candidate') {
+        if (spot.status === 'candidate' || (spot.status === 'confirmed' && !isSpotHotel)) {
+            targetStatus = 'candidate';
+            setSelectedCandidateArea('all');
+        }
+    } else if (filterStatus === 'hotel_candidate') {
+        if (spot.status === 'hotel_candidate' || (spot.status === 'confirmed' && isSpotHotel)) {
+            targetStatus = 'hotel_candidate';
+            targetDay = spot.day || 0;
+        }
+    } else if (filterStatus === 'confirmed') {
+        if (spot.status === 'confirmed') {
+            targetStatus = 'confirmed';
+            targetDay = spot.day || 0;
+        }
+    }
+
+    if (!targetStatus) {
+        if (spot.status === 'confirmed') {
+            targetStatus = 'confirmed';
+            targetDay = spot.day || 0;
+        } else if (spot.status === 'hotel_candidate') {
+            targetStatus = 'hotel_candidate';
+            targetDay = spot.day || 0;
+        } else {
+            targetStatus = 'candidate';
+            setSelectedCandidateArea('all');
+        }
+    }
+
+    setFilterStatus(targetStatus);
+    if (targetStatus === 'confirmed') {
+        setSelectedConfirmDay(targetDay);
+    } else if (targetStatus === 'hotel_candidate') {
+        setSelectedHotelDay(targetDay);
+    }
+
+    // --- 高さ制御: Ref (現在の本当の高さ) を使用して判定 ---
+    const MIN_OPEN_HEIGHT = 260;
+    const currentHeight = sheetHeightRef.current; // ★ここが重要
+    
+    // 現在の高さが規定より低い場合のみ広げる (既に開いていればそのまま)
+    if (currentHeight < MIN_OPEN_HEIGHT) {
+        setSheetHeight(MIN_OPEN_HEIGHT); 
+    }
+
+    // --- マーカー表示 (変更なし) ---
+    if (map.current && spot.coordinates) {
+        searchMarkersRef.current.forEach(marker => marker.remove());
+        searchMarkersRef.current = [];
+        
+        const el = document.createElement('div');
+        el.innerHTML = `<div style="width:24px; height:24px; background:#EF4444; border:3px solid white; border-radius:50%; box-shadow:0 4px 10px rgba(239,68,68,0.4);"></div>`;
+        
+        el.onclick = (e) => {
+            e.stopPropagation();
+            handlePreviewSpot(spot);
+        };
+
+        const marker = new mapboxgl.Marker({ element: el })
+            .setLngLat(spot.coordinates)
+            .addTo(map.current);
+        
+        searchMarkersRef.current.push(marker);
+    }
+
+    // --- スクロール処理 (変更なし) ---
+    setTimeout(() => {
+        const container = timelineListRef.current;
+        const element = document.getElementById(`spot-item-${spot.id}`);
+        
+        if (container && element) {
+            const offset = targetStatus === 'confirmed' ? 0 : 80;
+            const topPos = element.offsetTop - offset;
+            container.scrollTo({ top: topPos, behavior: 'smooth' });
+            
+            element.classList.add('ring-2', 'ring-red-500', 'bg-red-50');
+            setTimeout(() => {
+                element.classList.remove('ring-2', 'ring-red-500', 'bg-red-50');
+            }, 2000);
+        }
+        
+        setTimeout(() => { isFocusingSpotRef.current = false; }, 1000);
+    }, 250); 
+};
+// ▼▼▼ 追加: 詳細モーダルのスワイプ処理関数 ▼▼▼
+  const handleModalTouchStart = (e: React.TouchEvent) => {
+      // 誤作動防止のため、画像エリア（ヘッダー）でのみドラッグ開始を受け付ける
+      modalDragStartRef.current = e.touches[0].clientY;
+      setIsModalDragging(true);
+  };
+
+  const handleModalTouchMove = (e: React.TouchEvent) => {
+      if (!isModalDragging) return;
+      const currentY = e.touches[0].clientY;
+      const delta = currentY - modalDragStartRef.current;
+      
+      // 下方向（プラス）への移動のみ許可
+      if (delta > 0) {
+          // e.preventDefault(); // 必要に応じて有効化
+          setModalDragY(delta);
+      }
+  };
+
+  const handleModalTouchEnd = () => {
+      setIsModalDragging(false);
+      
+      // 100px以上スワイプしたら閉じる
+      if (modalDragY > 100) {
+          setSelectedResult(null);
+          setViewMode('default');
+      }
+      
+      // 位置をリセット（閉じる場合もアニメーション後にリセットされるのでOK）
+      setModalDragY(0);
+  };
+  // ▲▲▲ 追加ここまで ▲▲▲
  const handlePreviewSpot = (spot: any, openMemo: boolean = false) => {
     setCurrentTab('explore');
+
+    // ★追加: 詳細を開いたことをRefに記録
+    focusedSpotIdRef.current = String(spot.id);
     
     // 最新のデータを ID または 名前 で検索して取得
     const dbSpot = planSpots.find(s => (s.id && String(s.id) === String(spot.id)) || s.name === spot.name);
@@ -2936,7 +3102,11 @@ useEffect(() => {
                 </div>`;
         }
 
-        el.onclick = (e) => { e.stopPropagation(); handlePreviewSpot(spot); };
+       // ★変更: 詳細表示ではなく、リスト内の該当箇所へフォーカスする
+el.onclick = (e) => { 
+    e.stopPropagation(); 
+    focusSpotInList(spot); 
+};
         
         if (spot.coordinates) {
             const marker = new mapboxgl.Marker({ element: el, anchor: 'bottom' })
@@ -3528,16 +3698,37 @@ useEffect(() => {
             </div>
           )}
 
+         // page.tsx 1600行目付近
+
           {viewMode === 'selected' && selectedResult && (
             <div className="absolute bottom-0 left-0 w-full z-40 p-4 pb-20 pointer-events-none flex justify-center items-end h-full">
-              <div className="bg-white w-full max-w-md rounded-[2rem] shadow-2xl pointer-events-auto overflow-hidden animate-in slide-in-from-bottom-10 border border-gray-100 flex flex-col max-h-[70vh]">
-                <div className="relative h-32 shrink-0 bg-gray-200">
+              
+              {/* ▼▼▼ 修正: モーダル本体のdiv ▼▼▼ */}
+              <div 
+                  className="bg-white w-full max-w-md rounded-[2rem] shadow-2xl pointer-events-auto overflow-hidden animate-in slide-in-from-bottom-10 border border-gray-100 flex flex-col max-h-[70vh]"
+                  style={{ 
+                      transform: `translateY(${modalDragY}px)`, 
+                      transition: isModalDragging ? 'none' : 'transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1)' 
+                  }}
+              >
+                
+                {/* ▼▼▼ 修正: touch-none をクラスに追加 ▼▼▼ */}
+  <div 
+      className="relative h-32 shrink-0 bg-gray-200 cursor-grab active:cursor-grabbing touch-none" 
+      onTouchStart={handleModalTouchStart}
+      onTouchMove={handleModalTouchMove}
+      onTouchEnd={handleModalTouchEnd}
+  >
+    {/* ★追加: ドラッグ可能を示すバー（ツマミ） */}
+    <div className="absolute top-2 left-1/2 -translate-x-1/2 w-12 h-1.5 bg-white/50 rounded-full z-20 backdrop-blur-sm pointer-events-none"></div>
                   <SpotImage 
                       src={selectedResult.image_url} 
                       alt={selectedResult.text} 
                       className="w-full h-full object-cover"
                       onClick={() => selectedResult.image_url && setExpandedImage(selectedResult.image_url)}
                   />
+                  
+                  {/* ... (閉じるボタンやグラデーションなどの既存コードはそのまま) ... */}
                   <button 
                     onClick={() => { setSelectedResult(null); setViewMode('default'); }} 
                     className="absolute top-3 right-3 bg-black/40 hover:bg-black/60 text-white p-1.5 rounded-full transition backdrop-blur-sm z-10"
@@ -3545,8 +3736,10 @@ useEffect(() => {
                     <X size={16}/>
                   </button>
                   <div className="absolute bottom-0 left-0 right-0 p-4 pt-10 bg-gradient-to-t from-black/80 via-black/40 to-transparent pointer-events-none">
+                      {/* ... (タイトル等の既存コード) ... */}
                       <h2 className="text-xl font-black text-white leading-tight truncate">{selectedResult.text}</h2>
                       {isEditingDesc ? (
+                          // ...
                           <div className="flex gap-2 mt-1 pointer-events-auto">
                               <input autoFocus value={editDescValue} onChange={(e) => setEditDescValue(e.target.value)} className="flex-1 bg-white/90 text-black text-xs rounded px-2 py-1 outline-none"/>
                               <button onClick={handleSaveDescription} className="bg-blue-600 text-white px-2 py-1 rounded text-xs font-bold">保存</button>
@@ -3558,6 +3751,8 @@ useEffect(() => {
                       )}
                   </div>
                 </div>
+
+                
 
                 <div className="flex-1 overflow-y-auto p-3 space-y-2 bg-white overscroll-contain">
                   
