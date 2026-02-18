@@ -2352,16 +2352,41 @@ const now = new Date().toISOString(); // ★現在時刻
   };
 // page.tsx の handlePreviewSpot 関数の近くに追加
 
+// ★修正: リストの「地図ボタン」でも赤ピンを表示し、フォーカス状態を同期する
 const handleLocateOnMap = (e: React.MouseEvent, spot: any) => {
     e.stopPropagation(); // カード自体の「詳細を開く」イベントを止める
     if (!map.current || !spot.coordinates) return;
 
+    // 1. フォーカス状態（ID）を同期
+    // これにより、この直後に地図上の赤ピンをタップすると詳細が開くようになります
+    focusedSpotIdRef.current = String(spot.id);
+
+    // 2. マップ移動
     map.current.flyTo({
         center: spot.coordinates as [number, number],
         zoom: 16,
         // 下のシート（短冊リスト）に隠れないよう、少し上にオフセットをかける
         offset: [0, -150] 
     });
+
+    // 3. 赤ピンを表示 (focusSpotInListと同じ処理)
+    searchMarkersRef.current.forEach(marker => marker.remove());
+    searchMarkersRef.current = [];
+    
+    const el = document.createElement('div');
+    el.innerHTML = `<div style="width:24px; height:24px; background:#EF4444; border:3px solid white; border-radius:50%; box-shadow:0 4px 10px rgba(239,68,68,0.4);"></div>`;
+    
+    // 赤ピンをクリックしたら詳細を開く
+    el.onclick = (e) => {
+        e.stopPropagation();
+        handlePreviewSpot(spot);
+    };
+
+    const marker = new mapboxgl.Marker({ element: el })
+        .setLngLat(spot.coordinates)
+        .addTo(map.current);
+    
+    searchMarkersRef.current.push(marker);
 
     if (navigator.vibrate) navigator.vibrate(10); // 触覚フィードバック
 };
