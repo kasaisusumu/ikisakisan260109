@@ -1097,10 +1097,7 @@ const [arrivalModalSpots, setArrivalModalSpots] = useState<any[]>([]); // ★追
     tempDrawCoords.current = [];
   }, []);
 
-  useEffect(() => {
-    if (isDrawing) { stopDrawing(); }
-    if (currentTab !== 'agent') { setInitialSearchArea(null); }
-  }, [currentTab]);
+
 
   useEffect(() => {
       const wakeBackend = () => {
@@ -1614,13 +1611,14 @@ const filteredSpots = useMemo(() => {
 
  // ▼▼▼ 修正: スポット追加時などに勝手にズームアウトしないように依存配列を変更 ▼▼▼
   useEffect(() => {
-      // ★追加: ピンフォーカス中（スポット選択中）なら、勝手に全体表示しない
+      // ピンフォーカス中（スポット選択中）なら、勝手に全体表示しない
       if (isFocusingSpotRef.current) return;
 
       if (currentTab === 'explore' && !isSearching && !selectedResult && map.current) {
           fitBoundsToSpots(filteredSpots);
       }
-  }, [filterStatus, currentTab]); // ← 修正後（フィルタ切替かタブ切替の時だけ動く）
+      // ★修正: エリア変更(selectedCandidateArea)やDay変更時にも発火するように依存配列を追加
+  }, [filterStatus, currentTab, selectedCandidateArea, selectedConfirmDay, selectedHotelDay]);
 
   const handleStatusChangeClick = (spot: any, newStatus: string) => {
       // ▼▼▼ 修正: 以前は 'candidate' の場合に 0 にしていましたが、spot.day をそのまま維持するように変更
@@ -2353,156 +2351,9 @@ const now = new Date().toISOString(); // ★現在時刻
 // page.tsx の handlePreviewSpot 関数の近くに追加
 
 // ★修正: リストの「地図ボタン」でも赤ピンを表示し、フォーカス状態を同期する
-const handleLocateOnMap = (e: React.MouseEvent, spot: any) => {
-    e.stopPropagation(); // カード自体の「詳細を開く」イベントを止める
-    if (!map.current || !spot.coordinates) return;
 
-    // 1. フォーカス状態（ID）を同期
-    // これにより、この直後に地図上の赤ピンをタップすると詳細が開くようになります
-    focusedSpotIdRef.current = String(spot.id);
 
-    // 2. マップ移動
-    map.current.flyTo({
-        center: spot.coordinates as [number, number],
-        zoom: 16,
-        // 下のシート（短冊リスト）に隠れないよう、少し上にオフセットをかける
-        offset: [0, -150] 
-    });
 
-    // 3. 赤ピンを表示 (focusSpotInListと同じ処理)
-    searchMarkersRef.current.forEach(marker => marker.remove());
-    searchMarkersRef.current = [];
-    
-    const el = document.createElement('div');
-    el.innerHTML = `<div style="width:24px; height:24px; background:#EF4444; border:3px solid white; border-radius:50%; box-shadow:0 4px 10px rgba(239,68,68,0.4);"></div>`;
-    
-    // 赤ピンをクリックしたら詳細を開く
-    el.onclick = (e) => {
-        e.stopPropagation();
-        handlePreviewSpot(spot);
-    };
-
-    const marker = new mapboxgl.Marker({ element: el })
-        .setLngLat(spot.coordinates)
-        .addTo(map.current);
-    
-    searchMarkersRef.current.push(marker);
-
-    if (navigator.vibrate) navigator.vibrate(10); // 触覚フィードバック
-};
-
-// ★修正: 現在開いているリストを優先して検索し、スクロール位置もリスト種別で可変にする
-// ★修正: 2回目タップで詳細表示、赤ピンへのクリックイベント追加
-// ★修正: StateではなくRefを参照して、常に最新の状況で判定する
-const focusSpotInList = (spot: any) => {
-    // 1. Refを使って判定（2回目タップなら詳細表示）
-    if (focusedSpotIdRef.current === String(spot.id)) {
-        handlePreviewSpot(spot);
-        return;
-    }
-
-    // フォーカスIDをRefに記録
-    focusedSpotIdRef.current = String(spot.id);
-    
-    // フォーカス処理中フラグON
-    isFocusingSpotRef.current = true;
-
-    // --- ステータス判定ロジック (変更なし) ---
-    const isSpotHotel = spot.is_hotel || isHotel(spot.name);
-    let targetStatus: FilterStatus | null = null;
-    let targetDay = 0;
-
-    if (filterStatus === 'candidate') {
-        if (spot.status === 'candidate' || (spot.status === 'confirmed' && !isSpotHotel)) {
-            targetStatus = 'candidate';
-            setSelectedCandidateArea('all');
-        }
-    } else if (filterStatus === 'hotel_candidate') {
-        if (spot.status === 'hotel_candidate' || (spot.status === 'confirmed' && isSpotHotel)) {
-            targetStatus = 'hotel_candidate';
-            targetDay = spot.day || 0;
-        }
-    } else if (filterStatus === 'confirmed') {
-        if (spot.status === 'confirmed') {
-            targetStatus = 'confirmed';
-            targetDay = spot.day || 0;
-        }
-    }
-
-    if (!targetStatus) {
-        if (spot.status === 'confirmed') {
-            targetStatus = 'confirmed';
-            targetDay = spot.day || 0;
-        } else if (spot.status === 'hotel_candidate') {
-            targetStatus = 'hotel_candidate';
-            targetDay = spot.day || 0;
-        } else {
-            targetStatus = 'candidate';
-            setSelectedCandidateArea('all');
-        }
-    }
-
-    setFilterStatus(targetStatus);
-    if (targetStatus === 'confirmed') {
-        setSelectedConfirmDay(targetDay);
-    } else if (targetStatus === 'hotel_candidate') {
-        setSelectedHotelDay(targetDay);
-    }
-
-    // --- 高さ制御: Ref (現在の本当の高さ) を使用して判定 ---
-    const MIN_OPEN_HEIGHT = 260;
-    const currentHeight = sheetHeightRef.current; // ★ここが重要
-    
-    // 現在の高さが規定より低い場合のみ広げる (既に開いていればそのまま)
-    if (currentHeight < MIN_OPEN_HEIGHT) {
-        setSheetHeight(MIN_OPEN_HEIGHT); 
-    }
-
-    // --- マーカー表示 (変更なし) ---
-    if (map.current && spot.coordinates) {
-        searchMarkersRef.current.forEach(marker => marker.remove());
-        searchMarkersRef.current = [];
-        
-        const el = document.createElement('div');
-        el.innerHTML = `<div style="width:24px; height:24px; background:#EF4444; border:3px solid white; border-radius:50%; box-shadow:0 4px 10px rgba(239,68,68,0.4);"></div>`;
-        
-        el.onclick = (e) => {
-            e.stopPropagation();
-            handlePreviewSpot(spot);
-        };
-
-        const marker = new mapboxgl.Marker({ element: el })
-            .setLngLat(spot.coordinates)
-            .addTo(map.current);
-        
-        searchMarkersRef.current.push(marker);
-    }
-
-    // --- スクロール処理 (変更なし) ---
-    setTimeout(() => {
-        const container = timelineListRef.current;
-        const element = document.getElementById(`spot-item-${spot.id}`);
-        
-        if (container && element) {
-            const offset = targetStatus === 'confirmed' ? 0 : 80;
-            const topPos = element.offsetTop - offset;
-            container.scrollTo({ top: topPos, behavior: 'smooth' });
-            
-            element.classList.add('ring-2', 'ring-red-500', 'bg-red-50');
-            setTimeout(() => {
-                element.classList.remove('ring-2', 'ring-red-500', 'bg-red-50');
-            }, 2000);
-        }
-        
-        setTimeout(() => { isFocusingSpotRef.current = false; }, 1000);
-    }, 250); 
-};
-// ▼▼▼ 追加: 詳細モーダルのスワイプ処理関数 ▼▼▼
-  const handleModalTouchStart = (e: React.TouchEvent) => {
-      // 誤作動防止のため、画像エリア（ヘッダー）でのみドラッグ開始を受け付ける
-      modalDragStartRef.current = e.touches[0].clientY;
-      setIsModalDragging(true);
-  };
 
   const handleModalTouchMove = (e: React.TouchEvent) => {
       if (!isModalDragging) return;
@@ -2516,7 +2367,7 @@ const focusSpotInList = (spot: any) => {
       }
   };
 
-  const handleModalTouchEnd = () => {
+ const handleModalTouchEnd = () => {
       setIsModalDragging(false);
       
       // 100px以上スワイプしたら閉じる
@@ -2525,20 +2376,27 @@ const focusSpotInList = (spot: any) => {
           setViewMode('default');
       }
       
-      // 位置をリセット（閉じる場合もアニメーション後にリセットされるのでOK）
+      // 位置をリセット
       setModalDragY(0);
   };
-  // ▲▲▲ 追加ここまで ▲▲▲
- const handlePreviewSpot = (spot: any, openMemo: boolean = false) => {
-    setCurrentTab('explore');
 
+  // ★修正: ここに定義（handlePreviewSpotの外）
+  const handleModalTouchStart = (e: React.TouchEvent) => {
+      modalDragStartRef.current = e.touches[0].clientY;
+      setIsModalDragging(true);
+  };
+
+  // ★修正: handlePreviewSpot の定義（余計な focusSpotInList 定義を削除）
+  const handlePreviewSpot = (spot: any, openMemo: boolean = false) => {
+    setCurrentTab('explore');
+    
     // ★追加: 詳細を開いたことをRefに記録
     focusedSpotIdRef.current = String(spot.id);
     
     // 最新のデータを ID または 名前 で検索して取得
     const dbSpot = planSpots.find(s => (s.id && String(s.id) === String(spot.id)) || s.name === spot.name);
     
-    // 実際にプレビュー表示に使用するベースデータ（最新があればそれを使う）
+    // 実際にプレビュー表示に使用するベースデータ
     const sourceSpot = dbSpot || spot;
 
     const isSaved = planSpots.some(s => s.name === sourceSpot.name);
@@ -2556,41 +2414,27 @@ const focusSpotInList = (spot: any) => {
         });
     }
 
-    
-
-    
-
-    // 編集モード用の初期値をセット（最新データから）
+    // 編集モード用の初期値をセット
     setEditCommentValue(sourceSpot.comment || "");
     setEditLinkValue(sourceSpot.link || "");
-    // ★追加: 金額の初期値
     setEditPriceValue(sourceSpot.price ?? sourceSpot.cost ?? "");
     
     setIsEditingMemo(openMemo);
 
-    // ★修正: 最新の sourceSpot の情報を使って previewData を作る
-   // ★修正: 最新の sourceSpot の情報を使って previewData を作る
     const previewData = { 
-        ...sourceSpot, // 最新データを展開
+        ...sourceSpot, 
         id: sourceSpot.id, 
         text: sourceSpot.name, 
         place_name: sourceSpot.description, 
-        
-        // ▼▼▼ 追加: 座標(center)を確実にセット（これがないと保存時に座標なしになる） ▼▼▼
         center: sourceSpot.coordinates || sourceSpot.center,
-        
         is_saved: isSaved, 
         voters: uniqueVoters, 
         added_by: sourceSpot.added_by, 
-        
-        // 以下の項目も sourceSpot (dbSpot) から確実に取る
         image_url: sourceSpot.image_url, 
         comment: sourceSpot.comment, 
         link: sourceSpot.link, 
         day: sourceSpot.day || 0, 
         status: sourceSpot.status || 'candidate',
-        
-        // ▼▼▼ 追加: ホテル情報も引き継ぐ ▼▼▼
         is_hotel: sourceSpot.is_hotel 
     };
 
@@ -2607,6 +2451,133 @@ const focusSpotInList = (spot: any) => {
         searchMarkersRef.current.push(marker);
         setTimeout(() => { if (map.current) { map.current?.resize(); } }, 300);
     }
+  };
+
+  // ★修正: focusSpotInList をここに定義（handlePreviewSpotの後）
+  const focusSpotInList = (spot: any) => {
+    // 1. Refを使って判定（2回目タップなら詳細表示）
+    if (focusedSpotIdRef.current === String(spot.id)) {
+        handlePreviewSpot(spot);
+        return;
+    }
+
+    focusedSpotIdRef.current = String(spot.id);
+    isFocusingSpotRef.current = true;
+
+    // --- ステータス判定 ---
+    const isSpotHotel = spot.is_hotel || isHotel(spot.name);
+    let targetStatus: FilterStatus = 'candidate';
+    let targetDay = spot.day || 0;
+
+    if (filterStatus === 'candidate') {
+        const canShowInCandidate = spot.status === 'candidate' || (spot.status === 'confirmed' && !isSpotHotel);
+        if (canShowInCandidate) {
+            targetStatus = 'candidate';
+        } else {
+            if (spot.status === 'confirmed') targetStatus = 'confirmed';
+            else if (spot.status === 'hotel_candidate') targetStatus = 'hotel_candidate';
+        }
+    } else {
+        if (spot.status === 'confirmed') targetStatus = 'confirmed';
+        else if (spot.status === 'hotel_candidate') targetStatus = 'hotel_candidate';
+        else targetStatus = 'candidate';
+    }
+
+    setFilterStatus(targetStatus);
+
+    // --- Day・エリアの維持判定 ---
+    if (targetStatus === 'confirmed') {
+        setSelectedConfirmDay(targetDay);
+    } else if (targetStatus === 'hotel_candidate') {
+        setSelectedHotelDay(targetDay);
+    } else if (targetStatus === 'candidate') {
+        const spotArea = getSpotArea(spot, groupingMode);
+        const isVisibleInCurrentArea = (selectedCandidateArea === 'all') || (selectedCandidateArea === spotArea);
+        if (!isVisibleInCurrentArea) {
+            setSelectedCandidateArea(spotArea);
+        }
+    }
+
+    // --- 高さ制御 ---
+    const MIN_OPEN_HEIGHT = 260;
+    const currentHeight = sheetHeightRef.current;
+    if (currentHeight < MIN_OPEN_HEIGHT) {
+        setSheetHeight(MIN_OPEN_HEIGHT); 
+    }
+
+    // --- マーカー表示 ---
+    if (map.current && spot.coordinates) {
+        searchMarkersRef.current.forEach(marker => marker.remove());
+        searchMarkersRef.current = [];
+        
+        const el = document.createElement('div');
+        el.innerHTML = `<div style="width:24px; height:24px; background:#EF4444; border:3px solid white; border-radius:50%; box-shadow:0 4px 10px rgba(239,68,68,0.4);"></div>`;
+        
+        // 赤ピンをクリックしたら詳細を開く
+        el.onclick = (e) => {
+            e.stopPropagation();
+            handlePreviewSpot(spot);
+        };
+
+        const marker = new mapboxgl.Marker({ element: el })
+            .setLngLat(spot.coordinates)
+            .addTo(map.current);
+        
+        searchMarkersRef.current.push(marker);
+    }
+
+    // --- スクロール処理 ---
+    setTimeout(() => {
+        const container = timelineListRef.current;
+        const element = document.getElementById(`spot-item-${spot.id}`);
+        
+        if (container && element) {
+            // 確定リストの時だけ詰める、それ以外は余白を持つ
+            const offset = targetStatus === 'confirmed' ? 0 : 80;
+            const topPos = element.offsetTop - offset;
+            container.scrollTo({ top: topPos, behavior: 'smooth' });
+            
+            element.classList.add('ring-2', 'ring-red-500', 'bg-red-50');
+            setTimeout(() => {
+                element.classList.remove('ring-2', 'ring-red-500', 'bg-red-50');
+            }, 2000);
+        }
+        
+        setTimeout(() => { isFocusingSpotRef.current = false; }, 1000);
+    }, 250); 
+  };
+
+  // ★修正: handleLocateOnMap をここに定義
+  const handleLocateOnMap = (e: React.MouseEvent, spot: any) => {
+    e.stopPropagation(); 
+    if (!map.current || !spot.coordinates) return;
+
+    focusedSpotIdRef.current = String(spot.id);
+
+    map.current.flyTo({
+        center: spot.coordinates as [number, number],
+        zoom: 16,
+        offset: [0, -150] 
+    });
+
+    searchMarkersRef.current.forEach(marker => marker.remove());
+    searchMarkersRef.current = [];
+    
+    const el = document.createElement('div');
+    el.innerHTML = `<div style="width:24px; height:24px; background:#EF4444; border:3px solid white; border-radius:50%; box-shadow:0 4px 10px rgba(239,68,68,0.4);"></div>`;
+    
+    el.onclick = (e) => {
+        e.stopPropagation();
+        handlePreviewSpot(spot);
+    };
+
+    const marker = new mapboxgl.Marker({ element: el })
+        .setLngLat(spot.coordinates)
+        .addTo(map.current);
+    
+    searchMarkersRef.current.push(marker);
+
+    if (navigator.vibrate) navigator.vibrate(10);
   };
 
   const handleAutoSearch = (keyword: string) => { setQuery(keyword); setCurrentTab('explore'); };
@@ -2743,6 +2714,11 @@ const focusSpotInList = (spot: any) => {
     stopDrawing();
     setCurrentTab('agent');
   };
+
+  useEffect(() => {
+    if (isDrawing) { stopDrawing(); }
+    if (currentTab !== 'agent') { setInitialSearchArea(null); }
+  }, [currentTab]);
 
   const onTouchStart = (e: any) => { if (!isDrawing) return; if (e.originalEvent.touches && e.originalEvent.touches.length > 1) return; if (e.originalEvent) e.originalEvent.preventDefault(); tempDrawCoords.current = [[e.lngLat.lng, e.lngLat.lat]]; updateDrawSource(tempDrawCoords.current); };
   const onTouchMove = (e: any) => { if (!isDrawing) return; if (e.originalEvent.touches && e.originalEvent.touches.length > 1) return; if (e.originalEvent) e.originalEvent.preventDefault(); tempDrawCoords.current.push([e.lngLat.lng, e.lngLat.lat]); updateDrawSource(tempDrawCoords.current); };
