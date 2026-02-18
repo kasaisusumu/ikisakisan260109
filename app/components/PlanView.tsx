@@ -545,8 +545,12 @@ const [reservationTargetSpot, setReservationTargetSpot] = useState<any | null>(n
       }
 
       if (JSON.stringify(normalized) !== JSON.stringify(timeline)) {
-          setTimeline(calculateSchedule(normalized));
-      }
+        setTimeline(calculateSchedule(normalized));
+        // ▼ ここを追加：タイムラインが作成されたら表示フラグをオンにする
+        if (normalized.length > 0) {
+            setIsPlanGenerated(true);
+        }
+    }
 
   }, [activeDaySpots, timeline.length]); // 依存配列は activeDaySpots 推奨 (前の修正同様)
   // ▲▲▲▲▲ 修正ここまで ▲▲▲▲▲
@@ -1519,16 +1523,17 @@ const onDrop = async (e: React.DragEvent, targetTimelineIndex: number) => {
         </div>
 
         <div className="p-4">
-            {!isPlanGenerated ? (
-                 <div className="flex flex-col items-center justify-center py-12 text-center space-y-4 opacity-60">
-                     <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center border border-gray-200 shadow-sm"><MapPin size={24} className="text-gray-400"/></div>
-                     <div>
-                        <h2 className="text-lg font-bold text-gray-700">ルートを作成しましょう</h2>
-                        <p className="text-xs text-gray-500">Day {selectedDay} には {activeDaySpots.length}箇所のスポットがあります</p>
-                     </div>
-                 </div>
-            ) : (
-                <div className={`relative`}>
+            {/* 修正前：{!isPlanGenerated ? ( */}
+    {activeDaySpots.length === 0 ? ( // スポットが0件の時だけメッセージを出す
+         <div className="flex flex-col items-center justify-center py-12 text-center space-y-4 opacity-60">
+             <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center border border-gray-200 shadow-sm"><MapPin size={24} className="text-gray-400"/></div>
+             <div>
+                <h2 className="text-lg font-bold text-gray-700">スポットを追加してください</h2>
+                <p className="text-xs text-gray-500">まだ Day {selectedDay} にスポットがありません</p>
+             </div>
+         </div>
+    ) : (
+        <div className={`relative`}>
                     <div className="absolute left-[24px] top-4 bottom-4 w-0.5 bg-gray-200 z-0"></div>
 
                     {unusedSpots.length > 0 && (
