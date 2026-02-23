@@ -801,68 +801,117 @@ async def get_spot_image(query: str):
 
 @app.post("/api/import_rakuten_hotel")
 async def import_rakuten_hotel(req: ImportRequest):
-    if not RAKUTEN_APP_ID: return {"error": "サーバー設定エラー"}
+    if not RAKUTEN_APP_ID: 
+        return {"error": "サーバーの楽天APIキー設定が見つかりません。"}
+    
     hotel_no = None
-    final_url = req.url
+    # 入力URLの前後空白を削除
+    final_url = req.url.strip()
+    
     global http_client
-    if http_client is None: return {"error": "Server starting up..."}
+    if http_client is None: 
+        return {"error": "サーバーを準備中です。少し待ってから再度お試しください。"}
     client = http_client
 
     try:
-        cache_key = f"rakuten_import_v2:{req.url}"
+        # キャッシュの確認
+        cache_key = f"rakuten_import_v3:{final_url}"
         cached = get_cache(cache_key)
-        if cached: return cached
+        if cached: 
+            return cached
 
-        if "rakuten.co.jp" in req.url:
+        # 短縮URLやリダイレクトを考慮して実URLを取得
+        if "rakuten.co.jp" in final_url:
             try:
-                res = await fetch_with_retry(client, req.url, initial_timeout=10.0)
-                if res: final_url = str(res.url)
-            except: pass
+                # ユーザーが入力したURLに一度アクセスし、最終的なリダイレクト先URLを取得する
+                res = await fetch_with_retry(client, final_url, initial_timeout=10.0)
+                if res: 
+                    final_url = str(res.url)
+            except: 
+                pass
         
-        match = re.search(r'travel\.rakuten\.co\.jp/.*?/(\d+)', final_url)
-        if match: hotel_no = match.group(1)
-        else:
+        # 1. パス(URLの/の間の文字列)からホテルID(数字)を抽出するパターン
+        # 多様なURL形式 (HOTEL/12345, plan/12345, /12345/ など) を正規表現で網羅
+        path_patterns = [
+            r'hotelinfo/plan/(\d+)',
+            r'HOTEL/(\d+)',
+            r'hotel/(\d+)',
+            r'travel\.rakuten\.co\.jp/.*?/(\d+)'
+        ]
+        
+        for pattern in path_patterns:
+            match = re.search(pattern, final_url, re.IGNORECASE)
+            if match:
+                hotel_no = match.group(1)
+                break
+
+        # 2. パスで見つからない場合、クエリパラメータ (?no=12345 など) から抽出
+        if not hotel_no:
             parsed = urllib.parse.urlparse(final_url)
             qs = urllib.parse.parse_qs(parsed.query)
-            if "f_no" in qs: hotel_no = qs["f_no"][0]
-            elif "no" in qs: hotel_no = qs["no"][0]
+            # 楽天で使われる可能性のあるパラメータ名をすべてチェック
+            for key in ["f_no", "no", "hotelNo", "hotel_no"]:
+                if key in qs:
+                    hotel_no = qs[key][0]
+                    break
 
-        if not hotel_no: return {"error": "URLからホテルIDを特定できませんでした。"}
+        if not hotel_no: 
+            return {"error": "URLからホテルIDを特定できませんでした。ホテルのトップページやプラン一覧のURLを試してください。"}
 
-        params = {"applicationId": RAKUTEN_APP_ID, "format": "json", "hotelNo": hotel_no, "datumType": 1}
+        # 楽天トラベル API (SimpleHotelSearch) を呼び出し
+        params = {
+            "applicationId": RAKUTEN_APP_ID, 
+            "format": "json", 
+            "hotelNo": hotel_no, 
+            "datumType": 1
+        }
         api_url = "https://app.rakuten.co.jp/services/api/Travel/SimpleHotelSearch/20170426"
         res = await fetch_with_retry(client, api_url, params=params, initial_timeout=15.0)
         
-        if not res or res.status_code != 200: return {"error": "ホテル情報の取得に失敗しました。"}
+        if not res or res.status_code != 200: 
+            return {"error": f"楽天APIから情報を取得できませんでした。 (ID: {hotel_no})"}
 
         data = res.json()
-        if "hotels" not in data or not data["hotels"]: return {"error": "該当するホテルが見つかりませんでした。"}
+        if "hotels" not in data or not data["hotels"]: 
+            return {"error": "該当するホテル情報が楽天APIに見つかりませんでした。"}
 
+        # ホテル情報の解析とマッピング
         raw_hotel = data["hotels"][0]
         hotel_content = raw_hotel["hotel"] if "hotel" in raw_hotel else raw_hotel
         
         basic = None
         user_review = {}
+        
+        # APIレスポンスがリスト形式か辞書形式かによって処理を分岐
         if isinstance(hotel_content, list):
             for item in hotel_content:
-                if "hotelBasicInfo" in item: basic = item["hotelBasicInfo"]
-                if "userReview" in item: user_review = item["userReview"]
-                if "hotelRatingInfo" in item: user_review = item["hotelRatingInfo"]
+                if "hotelBasicInfo" in item: 
+                    basic = item["hotelBasicInfo"]
+                if "userReview" in item: 
+                    user_review = item["userReview"]
+                if "hotelRatingInfo" in item: 
+                    user_review = item["hotelRatingInfo"]
         else:
             basic = hotel_content.get("hotelBasicInfo")
 
-        if not basic: return {"error": "ホテル情報の解析に失敗しました。"}
+        if not basic: 
+            return {"error": "ホテル情報の解析に失敗しました。"}
 
+        # 住所の結合
         address = f"{basic.get('address1', '')}{basic.get('address2', '')}"
         
+        # フロントエンド(HotelListView.tsx)に返すデータ構造を構築
         spot_data = {
-            "id": str(basic["hotelNo"]), "name": basic["hotelName"],
+            "id": str(basic["hotelNo"]), 
+            "name": basic["hotelName"],
             "description": address, 
             "coordinates": [basic["longitude"], basic["latitude"]],
-            "image_url": basic.get("hotelImageUrl"), "url": basic.get("hotelInformationUrl"),
+            "image_url": basic.get("hotelImageUrl"), 
+            "url": basic.get("hotelInformationUrl"),
             "price": basic.get("hotelMinCharge", 0), 
             "rating": basic.get("reviewAverage", 3.0),
             
+            # レビュー詳細
             "service_rating": user_review.get("serviceAverage", 0.0),
             "location_rating": user_review.get("locationAverage", 0.0),
             "room_rating": user_review.get("roomAverage", 0.0),
@@ -870,17 +919,19 @@ async def import_rakuten_hotel(req: ImportRequest):
             "bath_rating": user_review.get("bathAverage", 0.0),
             "meal_rating": user_review.get("mealAverage", 0.0),
 
-            "source": "rakuten", "is_hotel": True, "status": "hotel_candidate",
+            "source": "rakuten", 
+            "is_hotel": True, 
+            "status": "hotel_candidate",
             "comment": basic.get("hotelSpecial", "")[:100] + "..." 
         }
         
         result = {"spot": spot_data}
-        set_cache(cache_key, result)
+        set_cache(cache_key, result) # 結果をキャッシュに保存
         return result
+
     except Exception as e:
         print(f"Import Error: {e}")
-        return {"error": "処理中にエラーが発生しました。"}
-
+        return {"error": f"取込処理中に予期せぬエラーが発生しました: {str(e)}"}
 @app.post("/api/search_hotels_vacant")
 async def search_hotels_vacant(req: VacantSearchRequest):
     if not RAKUTEN_APP_ID: return {"error": "サーバー設定エラー"}

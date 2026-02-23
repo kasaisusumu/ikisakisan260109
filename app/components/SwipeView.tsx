@@ -3,7 +3,7 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 // @ts-ignore
 import TinderCard from 'react-tinder-card';
-import { MapPin, RotateCcw, Sparkles, Loader2, Search, CheckCircle, ImageOff, Instagram, MapPinned, Globe, BrainCircuit, ScanSearch, History, Info } from 'lucide-react';
+import { MapPin, RotateCcw, Sparkles, Loader2, Search, CheckCircle, ImageOff, Instagram, MapPinned, Globe, BrainCircuit, ScanSearch, History, Info, ExternalLink } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -602,18 +602,32 @@ export default function SwipeView({
                                 </div>
                             )}
                             
-                            <div className="flex justify-between items-end pt-2 border-t border-white/20 mt-1 pointer-events-auto">
-                                <div className="flex-1"/>
-                                {spot.is_hotel && (
-                                    <button 
-                                        onTouchEnd={(e) => { e.stopPropagation(); window.open(getAffiliateUrl(spot), '_blank'); }} 
-                                        onClick={(e) => { e.stopPropagation(); window.open(getAffiliateUrl(spot), '_blank'); }} 
-                                        className="bg-gradient-to-r from-yellow-400 to-orange-500 text-black hover:scale-105 text-xs font-bold py-2 px-4 rounded-full flex items-center gap-1 shadow-lg backdrop-blur-sm transition active:scale-95"
-                                    >
-                                        <Search size={14}/> 楽天で詳細を見る
-                                    </button>
-                                )}
-                            </div>
+                           
+
+{/* SwipeView.tsx 430行目付近 */}
+
+<div className="flex justify-between items-end pt-2 border-t border-white/20 mt-1 pointer-events-auto">
+    <div className="flex-1"/>
+    {spot.is_hotel && (
+        spot.source === 'external_link' ? (
+            <button 
+                onTouchEnd={(e) => { e.stopPropagation(); window.open(spot.url, '_blank'); }} 
+                onClick={(e) => { e.stopPropagation(); window.open(spot.url, '_blank'); }} 
+                className="bg-gray-900 text-white hover:scale-105 text-xs font-bold py-2 px-4 rounded-full flex items-center gap-1 shadow-lg backdrop-blur-sm transition active:scale-95"
+            >
+                サイトで詳細を見る <ExternalLink size={14}/>
+            </button>
+        ) : (
+            <button 
+                onTouchEnd={(e) => { e.stopPropagation(); window.open(getAffiliateUrl(spot), '_blank'); }} 
+                onClick={(e) => { e.stopPropagation(); window.open(getAffiliateUrl(spot), '_blank'); }} 
+                className="bg-gradient-to-r from-yellow-400 to-orange-500 text-black hover:scale-105 text-xs font-bold py-2 px-4 rounded-full flex items-center gap-1 shadow-lg backdrop-blur-sm transition active:scale-95"
+            >
+                <Search size={14}/> 楽天で詳細を見る
+            </button>
+        )
+    )}
+</div>
                         </div>
                         </div>
                     </TinderCard>

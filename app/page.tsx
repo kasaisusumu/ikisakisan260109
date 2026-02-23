@@ -365,11 +365,8 @@ const logAffiliateClick = async (spotName: string, source: string) => {
   const [nearbyCandidates, setNearbyCandidates] = useState<any[]>([]);
   const [isSearchingNearby, setIsSearchingNearby] = useState(false);
 
-  // ▼▼▼ 追加: 周辺スポット検索関数 ▼▼▼
-  // ▼▼▼ 追加: 周辺スポット検索関数 ▼▼▼
-  // ▼▼▼ 周辺スポット検索関数 (修正版) ▼▼▼
-  // ▼▼▼ 周辺スポット検索関数 (DBキャッシュ対応版) ▼▼▼
-  // ▼▼▼ 周辺スポット検索関数 (自動フォールバック対応版) ▼▼▼
+ /// ▼▼▼ 周辺スポット検索関数 (件数確保・黒ピン表示修正版) ▼▼▼
+ // ▼▼▼ 周辺スポット検索関数 (座標正規化・重複完全排除・件数確保版) ▼▼▼
   const handleSearchNearby = async () => {
       // トグル動作：既に表示中ならクリアして終了
       if (nearbyCandidates.length > 0) {
@@ -382,106 +379,139 @@ const logAffiliateClick = async (spotName: string, source: string) => {
       
       setIsSearchingNearby(true);
       try {
-          // 1. まずは「観光地」で検索 (standard)
-          // ------------------------------------------------
-          // キャッシュキー作成 (約100m単位)
-          const latKey = Math.round(lat * 1000) / 1000;
-          const lngKey = Math.round(lng * 1000) / 1000;
-          const cacheKeyStandard = `nearby-${latKey}-${lngKey}-standard`;
+          const SEARCH_RADIUS = 10000; // 10km
+          let allCandidates: any[] = [];
           
-          let foundSpots: any[] = [];
-          let usedMode = 'standard';
-
-          // DBキャッシュ確認 (standard)
-         const { data: cachedStandard } = await supabase
-              .from('room_api_cache')
-              .select('*')
-              .eq('room_id', roomId)
-              .eq('key', cacheKeyStandard)
-              .maybeSingle();
-
-          const now = new Date().getTime();
-          const cacheDuration = 3 * 24 * 60 * 60 * 1000; // 3日
-
-          if (cachedStandard && (now - new Date(cachedStandard.created_at).getTime() < cacheDuration)) {
-              console.log("♻️ Using Cached Standard Data");
-              foundSpots = cachedStandard.data;
-          } else {
-              // APIコール (standard)
-              const res = await fetch(`${API_BASE_URL}/api/nearby_spots`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ latitude: lat, longitude: lng, radius: 5000, mode: 'standard' })
-              });
+          // -------------------------------------------------------------
+          // 【ステップ1】 「観光地」キーワード検索 (質重視)
+          // -------------------------------------------------------------
+          try {
+              const queryParams = `query=${encodeURIComponent("観光地")}&lat=${lat}&lng=${lng}`;
+              const res = await fetch(`${API_BASE_URL}/api/search_places?${queryParams}`);
               if (res.ok) {
                   const data = await res.json();
-                  foundSpots = data.spots || [];
-                  // 保存
-                  if (foundSpots.length > 0) {
-                      await supabase.from('room_api_cache').upsert({
-                          room_id: roomId, key: cacheKeyStandard, data: foundSpots, created_at: new Date().toISOString()
-                      });
+                  if (data.results && Array.isArray(data.results)) {
+                      const touristSpots = data.results.map((s: any) => ({
+                          ...s,
+                          // Mapbox形式(center)をcoordinatesに統一
+                          coordinates: s.center, 
+                          is_nearby: true,
+                          // 表示用IDを強制的にユニークにする
+                          id: `tourist-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+                      }));
+                      allCandidates = [...allCandidates, ...touristSpots];
                   }
               }
+          } catch (e) {
+              console.log("Tourist spot search failed, continuing...");
           }
 
-          // 2. もし0件なら「手当たり次第」検索 (wide)
-          // ------------------------------------------------
-          if (foundSpots.length === 0) {
-              console.log("⚠️ No spots found. Switching to WIDE mode.");
-              usedMode = 'wide';
-              const cacheKeyWide = `nearby-${latKey}-${lngKey}-wide`;
+          // -------------------------------------------------------------
+          // 【ステップ2】 結果が10件未満なら、広範囲検索('wide')も実行して混ぜる
+          // -------------------------------------------------------------
+          // ※重複排除で減ることを考慮し、多めに確保する
+          if (allCandidates.length < 10) {
+              const mode = 'wide'; 
+              const latKey = Math.round(lat * 1000) / 1000;
+              const lngKey = Math.round(lng * 1000) / 1000;
+              const cacheKey = `nearby-${latKey}-${lngKey}-${mode}`;
+              const now = new Date().getTime();
+              const cacheDuration = 3 * 24 * 60 * 60 * 1000; 
 
-              // DBキャッシュ確認 (wide)
-             // ▼▼▼ 修正: .single() → .maybeSingle() に変更 (406エラー回避) ▼▼▼
-              const { data: cachedWide } = await supabase
+              let fallbackSpots: any[] = [];
+
+              // (A) Cache Check
+              const { data: cachedData } = await supabase
                   .from('room_api_cache')
                   .select('*')
                   .eq('room_id', roomId)
-                  .eq('key', cacheKeyWide)
+                  .eq('key', cacheKey)
                   .maybeSingle();
-              if (cachedWide && (now - new Date(cachedWide.created_at).getTime() < cacheDuration)) {
-                  console.log("♻️ Using Cached Wide Data");
-                  foundSpots = cachedWide.data;
+
+              if (cachedData && (now - new Date(cachedData.created_at).getTime() < cacheDuration)) {
+                  fallbackSpots = cachedData.data;
               } else {
-                  // APIコール (wide)
+                  // (B) API Call
                   const res = await fetch(`${API_BASE_URL}/api/nearby_spots`, {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ latitude: lat, longitude: lng, radius: 5000, mode: 'wide' })
+                      body: JSON.stringify({ latitude: lat, longitude: lng, radius: SEARCH_RADIUS, mode: mode })
                   });
                   if (res.ok) {
                       const data = await res.json();
-                      foundSpots = data.spots || [];
-                      // 保存
-                      if (foundSpots.length > 0) {
+                      fallbackSpots = data.spots || [];
+                      if (fallbackSpots.length > 0) {
                           await supabase.from('room_api_cache').upsert({
-                              room_id: roomId, key: cacheKeyWide, data: foundSpots, created_at: new Date().toISOString()
+                              room_id: roomId, key: cacheKey, data: fallbackSpots, created_at: new Date().toISOString()
                           });
                       }
                   }
               }
+
+              // 補充データの正規化 (ここが重要)
+              const formattedFallback = fallbackSpots.map((s: any) => {
+                  // coordinatesがない場合、latitude/longitudeから作成
+                  let coords = s.coordinates;
+                  if (!coords && s.longitude && s.latitude) {
+                      coords = [s.longitude, s.latitude];
+                  }
+                  
+                  return {
+                      ...s,
+                      coordinates: coords,
+                      is_nearby: true,
+                      // 表示用IDを強制的にユニークにする (planSpotsのIDと被らないように)
+                      id: `fallback-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+                  };
+              });
+              
+              allCandidates = [...allCandidates, ...formattedFallback];
           }
 
-          // 3. 結果の表示処理
-          // ------------------------------------------------
-          // 座標データがないものを除外 & 既存プランにあるものを除外
-          const validSpots = foundSpots.filter((s: any) => 
-              s.coordinates && Array.isArray(s.coordinates) && 
-              !planSpots.some(p => p.name === s.name)
-          );
-
-          setNearbyCandidates(validSpots);
+          // -------------------------------------------------------------
+          // 【ステップ3】 フィルタリング (重複除去)
+          // -------------------------------------------------------------
+          const uniqueSpots: any[] = [];
           
-          if (validSpots.length === 0) {
-              alert("周辺にスポットが見つかりませんでした");
-          } else {
-              if (usedMode === 'wide') {
-                  // ワイドモードで見つかった旨を通知（トースト通知などがあればベストですが、ここではコンソールかアラート）
-                  // alert("観光スポットが見つからなかったため、周辺の商業施設などを表示します");
+          allCandidates.forEach((s: any) => {
+              // (1) 座標データが完全に欠落しているものは除外
+              if (!s.coordinates || !Array.isArray(s.coordinates) || s.coordinates.length < 2) return;
+              
+              // (2) 既存プラン(planSpots)との重複チェック (名前 または 距離)
+              const isAlreadyInPlan = planSpots.some(p => {
+                  // 名前が完全一致
+                  if (p.name === s.name) return true;
+                  // 座標があり、かつ距離が非常に近い(50m以内)なら同一とみなす
+                  if (p.coordinates && s.coordinates) {
+                      const dist = calculateDistance(p.coordinates[1], p.coordinates[0], s.coordinates[1], s.coordinates[0]);
+                      return dist < 0.05; // 50m
+                  }
+                  return false;
+              });
+              if (isAlreadyInPlan) return;
+
+              // (3) 今回の候補リスト内での重複チェック (距離100m以内)
+              const isDuplicateInCandidates = uniqueSpots.some(existing => {
+                  const dist = calculateDistance(
+                      existing.coordinates[1], existing.coordinates[0],
+                      s.coordinates[1], s.coordinates[0]
+                  );
+                  return dist < 0.1; // 100m
+              });
+
+              if (!isDuplicateInCandidates) {
+                  uniqueSpots.push(s);
               }
-              fitBoundsToSpots([...filteredSpots, ...validSpots]);
-          }
+          });
+
+          // 上位5件に絞る
+          const limitedSpots = uniqueSpots.slice(0, 5);
+          
+          setNearbyCandidates(limitedSpots);
+          
+          if (limitedSpots.length === 0) {
+              alert("周辺に新しいスポットが見つかりませんでした");
+          } 
 
       } catch (e) {
           console.error(e);
@@ -1441,8 +1471,7 @@ useEffect(() => {
       const d2 = checkOutDate.getDate();
 
       // ★ご指定のパラメータ文字列（順序・構成を完全に一致）
-      const paramString = `f_camp_id=5644483&f_syu=&f_teikei=&f_campaign=&f_flg=PLAN&f_otona_su=${adultNum}&f_heya_su=1&f_s1=0&f_s2=0&f_y1=0&f_y2=0&f_y3=0&f_y4=0&f_kin=&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_kin2=&f_hak=&f_tel=&f_tscm_flg=&f_p_no=&f_custom_code=&f_search_type=&f_static=1&f_tel=&f_service=&f_rm_equip=&f_sort=minNo`;
-
+      const paramString = `f_flg=PLAN&f_otona_su=${adultNum}&f_heya_su=1&f_kin=&f_kin2=&f_s1=0&f_s2=0&f_y1=0&f_y2=0&f_y3=0&f_y4=0&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_hak=1&f_tel=&f_tscm_flg=&f_p_no=&f_custom_code=&f_search_type=&f_service=&f_rm_equip=&f_sort=minNo`;
       // 5. 楽天IDの抽出ロジック（強化版）
       const extractRakutenId = (url: string) => {
           if (!url) return null;
@@ -1927,8 +1956,7 @@ const filteredSpots = useMemo(() => {
 useEffect(() => {
     const onTouchStart = (e: TouchEvent) => {
         // ★追加: exploreタブ（地図画面）以外ではズーム機能を無効化する
-        if (currentTab !== 'explore') return;
-
+        if (currentTab !== 'explore' || selectedResult) return;
         // 1本指以外の操作、または「かこって検索」中は無視
         if (e.touches.length !== 1 || isDrawing) return;
 
@@ -1998,7 +2026,7 @@ useEffect(() => {
         window.removeEventListener('touchcancel', onTouchEnd);
     };
     // ★依存配列に currentTab を追加するのを忘れずに！
-}, [isDrawing, isAuthLoading, isJoined, filterStatus, sheetHeight, currentTab]);
+}, [isDrawing, isAuthLoading, isJoined, filterStatus, sheetHeight, currentTab, selectedResult]); // ← selectedResult を追加
 
   useEffect(() => {
     if (selectedResult && roomId) {
@@ -2991,6 +3019,8 @@ useEffect(() => {
     const renderedSpotIds = new Set<string>();
     const spotsToRender: any[] = [];
 
+    // ▼▼▼ 修正: 基本の表示セット（現在のリスト絞り込みを反映） ▼▼▼
+    // これにより、「Day1の宿」や「京都市の候補」といった現在の絞り込みは必ず守られます
     if (isDayView) {
         displayTimeline.forEach(item => {
             if (item.type === 'spot' && !renderedSpotIds.has(String(item.spot.id))) {
@@ -3006,6 +3036,36 @@ useEffect(() => {
             }
         });
     }
+
+    // ▼▼▼ 追加: 「他方のピン」を表示するロジック ▼▼▼
+    
+    // パターンA: 宿リスト('hotel_candidate')を見ているなら、追加で「全候補」も地図に出す
+   if (filterStatus === 'hotel_candidate') {
+        planSpots.forEach(s => {
+            // まだ表示リストに入っておらず...
+            if (!renderedSpotIds.has(String(s.id))) {
+                // ▼▼▼ 修正: 「候補」または「確定」なら表示する ▼▼▼
+                if (s.status === 'candidate' || s.status === 'confirmed') {
+                    spotsToRender.push(s);
+                    renderedSpotIds.add(String(s.id));
+                }
+                // ▲▲▲ 修正ここまで ▲▲▲
+            }
+        });
+    }
+    
+    // パターンB: 候補リスト('candidate')を見ているなら、追加で「全宿」も地図に出す
+    else if (filterStatus === 'candidate') {
+        planSpots.forEach(s => {
+            const isSpotHotel = s.status === 'hotel_candidate' || s.is_hotel || isHotel(s.name);
+            // まだ表示リストに入っておらず、かつ「ホテル」とみなせるもの
+            if (!renderedSpotIds.has(String(s.id)) && isSpotHotel) {
+                spotsToRender.push(s);
+                renderedSpotIds.add(String(s.id));
+            }
+        });
+    }
+    // ▲▲▲ 追加ここまで ▲▲▲
 
     if (currentTab === 'explore') {
         nearbyCandidates.forEach(s => {
@@ -3105,9 +3165,16 @@ useEffect(() => {
 
        // ★変更: 詳細表示ではなく、リスト内の該当箇所へフォーカスする
 el.onclick = (e) => { 
-    e.stopPropagation(); 
-    focusSpotInList(spot); 
-};
+            e.stopPropagation(); 
+
+            // ★修正: 周辺スポット(isNearby)の場合は、即座に詳細を開く
+            if (isNearby) {
+                handlePreviewSpot(spot);
+            } else {
+                // それ以外の通常スポットは、今まで通りリストの場所へフォーカス
+                focusSpotInList(spot); 
+            }
+        };
         
         if (spot.coordinates) {
             const marker = new mapboxgl.Marker({ element: el, anchor: 'bottom' })
@@ -3962,15 +4029,34 @@ el.onclick = (e) => {
                           </button>
                       )}
 
-                      {(isHotel(selectedResult.text) || selectedResult.is_hotel) && (
-                        <button 
-                            onClick={() => window.open(getAffiliateUrl(selectedResult), '_blank')} 
-                            className="flex items-center gap-1 bg-[#BF0000] text-white px-3 py-2 rounded-lg text-[10px] font-bold hover:bg-[#900000] transition whitespace-nowrap shrink-0 shadow-sm"
-                        >
-                            <span className="opacity-75 text-[9px] border border-white/50 px-0.5 rounded-[2px] mr-0.5">PR</span>
-                            楽天で見る <ExternalLink size={12}/>
-                        </button>
-                      )}
+                    
+
+{/* ▼▼▼ 修正: 楽天とそれ以外でボタンを出し分け ▼▼▼ */}
+{/* ▼▼▼ 修正: 詳細モーダル内のボタン出し分け ▼▼▼ */}
+                      {/* page.tsx 1850行目付近 */}
+
+{(isHotel(selectedResult.text) || selectedResult.is_hotel) && (
+    selectedResult.source === 'external_link' ? (
+        // 外部サイト（Airbnb, 公式, etc）の場合
+        <button 
+            onClick={() => window.open(selectedResult.url, '_blank')} 
+            className="flex items-center gap-1 bg-gray-900 text-white px-3 py-2 rounded-lg text-[10px] font-bold hover:bg-gray-700 transition whitespace-nowrap shrink-0 shadow-sm"
+        >
+            元のサイトで見る <ExternalLink size={12}/>
+        </button>
+    ) : (
+        // 楽天トラベルの場合
+        <button 
+            onClick={() => window.open(getAffiliateUrl(selectedResult), '_blank')} 
+            className="flex items-center gap-1 bg-[#BF0000] text-white px-3 py-2 rounded-lg text-[10px] font-bold hover:bg-[#900000] transition whitespace-nowrap shrink-0 shadow-sm"
+        >
+            <span className="opacity-75 text-[9px] border border-white/50 px-0.5 rounded-[2px] mr-0.5">PR</span>
+            楽天で見る <ExternalLink size={12}/>
+        </button>
+    )
+)}
+                      {/* ▲▲▲ 修正ここまで ▲▲▲ */}
+{/* ▲▲▲ 修正ここまで ▲▲▲ */}
 
                       <a 
                           href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(selectedResult.text)}`} 
@@ -4749,6 +4835,9 @@ el.onclick = (e) => {
     )}
 
     {/* 右側：アクションボタン（確定リストと位置を合わせる） */}
+    
+
+    {/* 右側：アクションボタン */}
     <div className="flex gap-1 items-center shrink-0 ml-2">
         {/* マップジャンプボタン */}
         <button 
@@ -4758,19 +4847,35 @@ el.onclick = (e) => {
             <MapPinned size={14}/>
         </button>
 
+        {/* ▼▼▼ 修正: ボタンの出し分けロジックを整理 ▼▼▼ */}
         {isSpotHotel && (
-            <button 
-                onClick={(e) => { 
-                    e.stopPropagation(); 
-                    logAffiliateClick(spot.name, "main_list_item");
-                    window.open(getAffiliateUrl(spot), '_blank');
-                }}
-                className="flex items-center gap-1 bg-[#BF0000] text-white px-2 py-0.5 rounded text-[9px] font-bold hover:bg-[#900000] transition shrink-0 shadow-sm"
-            >
-                <span className="opacity-75 text-[8px] border border-white/50 px-0.5 rounded-[2px]">PR</span>
-                楽天 <ExternalLink size={8}/>
-            </button>
+            spot.source === 'external_link' ? (
+                // 汎用サイト（Airbnb, 公式など）の場合
+                <button 
+                    onClick={(e) => { 
+                        e.stopPropagation(); 
+                        window.open(spot.url, '_blank'); 
+                    }}
+                    className="flex items-center gap-1 bg-gray-900 text-white px-2 py-0.5 rounded text-[9px] font-bold hover:bg-gray-700 transition shrink-0 shadow-sm"
+                >
+                    サイト <ExternalLink size={8}/>
+                </button>
+            ) : (
+                // 楽天トラベルの場合
+                <button 
+                    onClick={(e) => { 
+                        e.stopPropagation(); 
+                        logAffiliateClick(spot.name, "main_list_item");
+                        window.open(getAffiliateUrl(spot), '_blank');
+                    }}
+                    className="flex items-center gap-1 bg-[#BF0000] text-white px-2 py-0.5 rounded text-[9px] font-bold hover:bg-[#900000] transition shrink-0 shadow-sm"
+                >
+                    <span className="opacity-75 text-[8px] border border-white/50 px-0.5 rounded-[2px]">PR</span>
+                    楽天 <ExternalLink size={8}/>
+                </button>
+            )
         )}
+        {/* ▲▲▲ 修正ここまで ▲▲▲ */}
         
         {/* 削除ボタン */}
         <button onClick={(e) => { e.stopPropagation(); removeSpot(spot); }} className="p-1 text-gray-300 hover:text-red-500 transition">
