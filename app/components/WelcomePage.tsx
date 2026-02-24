@@ -9,6 +9,8 @@ import {
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useRouter } from 'next/navigation';
+// 共通データファイルをインポート
+import { tutorialSteps } from './TutorialData';
 
 type Step = 'intro' | 'create' | 'share' | 'terms';
 type ModalType = 'none' | 'terms' | 'privacy' | 'developer';
@@ -160,15 +162,12 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
     window.open(`https://line.me/R/msg/text/?${encodeURIComponent(text)}`, '_blank');
   };
 
- // 125行目あたりにある handleJoin 関数を探して修正
-
   const handleJoin = () => {
     if (!userName && inviteRoomId) return alert('名前を入力してください');
     
-    // ▼▼▼ 追加: 規約に同意したフラグを保存（LegalModalと同じキーを使用） ▼▼▼
+    // 規約同意フラグ
     const TERMS_VERSION = 'route_hacker_agreed_v1';
     localStorage.setItem(TERMS_VERSION, 'true');
-    // ▲▲▲ 追加ここまで ▲▲▲
 
     if (inviteRoomId) {
        localStorage.setItem(`route_hacker_user_${inviteRoomId}`, userName);
@@ -267,69 +266,7 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
     </div>
   ) : null;
 
-  const onboardingSteps = [
-    {
-        title: "みんなで地図を作ろう",
-        desc: "MapWithなら、リアルタイムで\n友達と同じ地図を囲めます。\n行き先をみんなで決めよう🗺️",
-        visual: (
-            <div className="relative w-40 h-40 mx-auto flex items-center justify-center">
-                <div className="absolute inset-0 bg-emerald-100 rounded-full animate-pulse opacity-50"></div>
-                <div className="w-32 h-32 bg-white rounded-full shadow-lg flex items-center justify-center relative border-4 border-emerald-50">
-                    <MapIcon size={64} className="text-emerald-500" />
-                    <div className="absolute -bottom-2 -right-2 bg-teal-500 text-white p-3 rounded-full border-4 border-white shadow-md">
-                        <Users size={24} />
-                    </div>
-                    <div className="absolute -top-2 -left-2 bg-lime-500 text-white p-2 rounded-full border-4 border-white shadow-md">
-                        <MapPinned size={20} />
-                    </div>
-                </div>
-            </div>
-        )
-    },
-    {
-        title: "便利な機能がいっぱい",
-        desc: "AIによるスポット提案、指で囲って宿検索、\nみんなで投票機能などが使えます✨",
-        visual: (
-            <div className="relative w-40 h-40 mx-auto flex items-center justify-center">
-                <div className="w-32 h-32 bg-gradient-to-tr from-yellow-50 to-emerald-50 rounded-full shadow-lg flex items-center justify-center relative border-4 border-white">
-                    <div className="grid grid-cols-2 gap-3 p-4">
-                        <div className="flex flex-col items-center gap-1">
-                            <div className="bg-purple-400 text-white p-2 rounded-xl shadow-sm"><Sparkles size={20}/></div>
-                            <span className="text-[8px] font-bold text-purple-500">AI提案</span>
-                        </div>
-                        <div className="flex flex-col items-center gap-1">
-                            <div className="bg-orange-400 text-white p-2 rounded-xl shadow-sm"><PenTool size={20}/></div>
-                            <span className="text-[8px] font-bold text-orange-500">囲って検索</span>
-                        </div>
-                        <div className="flex flex-col items-center gap-1 col-span-2">
-                            <div className="bg-emerald-500 text-white p-2 rounded-xl shadow-sm"><ThumbsUp size={20}/></div>
-                            <span className="text-[8px] font-bold text-emerald-600">投票</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        )
-    },
-    {
-        title: "準備はOK？",
-        desc: "さあ、最高の旅行プラン作りを\nMapWithではじめましょう！✈️",
-        visual: (
-            <div className="relative w-40 h-40 mx-auto flex items-center justify-center">
-                <div className="absolute inset-0 bg-emerald-500/10 rounded-full animate-[spin_10s_linear_infinite]"></div>
-                {/* 枠線を濃くして視認性を向上 */}
-                <div className="w-32 h-32 bg-emerald-600 rounded-full shadow-xl flex items-center justify-center relative border-4 border-emerald-200 overflow-hidden group">
-                    <Plane size={64} className="text-white relative z-10" />
-                    <div className="absolute inset-0 bg-gradient-to-tr from-emerald-600 to-teal-400 opacity-80"></div>
-                    {/* Clouds */}
-                    <div className="absolute top-6 left-4 w-8 h-8 bg-white/20 rounded-full blur-md"></div>
-                    <div className="absolute bottom-8 right-6 w-10 h-10 bg-white/20 rounded-full blur-md"></div>
-                </div>
-            </div>
-        )
-    }
-  ];
-
-  // 使い方ステップの定義
+  // 使い方ステップの定義 (シンプル版)
   const usageSteps = [
     {
       step: 1,
@@ -366,72 +303,70 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
 
             {/* スクロール領域 */}
             <div className="flex-1 overflow-y-auto w-full custom-scrollbar pb-32">
-                <div className="max-w-md w-full mx-auto p-6 text-center relative z-10 animate-in fade-in slide-in-from-bottom-8 duration-700">
+                <div className="max-w-md w-full mx-auto p-4 text-center relative z-10 animate-in fade-in slide-in-from-bottom-8 duration-700">
                     
-                    {/* ヒーローセクション */}
-                    <div className="mb-12 pt-10">
-                        <div className="mb-8 flex justify-center">
-                            <div className="w-24 h-24 bg-white rounded-[2rem] shadow-xl flex items-center justify-center transform -rotate-3 border-4 border-white/50">
-                                <div className="relative w-full h-full flex items-center justify-center overflow-hidden rounded-[1.7rem]">
+                    {/* ヒーローセクション（よりコンパクトに） */}
+                    <div className="mb-4 pt-8">
+                        <div className="mb-4 flex justify-center">
+                            <div className="w-16 h-16 bg-white rounded-[1.2rem] shadow-xl flex items-center justify-center transform -rotate-3 border-4 border-white/50">
+                                <div className="relative w-full h-full flex items-center justify-center overflow-hidden rounded-[1rem]">
                                     <div className="absolute inset-0 bg-gradient-to-br from-emerald-500 to-teal-600 opacity-10"></div>
-                                    <Plane className="text-emerald-600 relative z-10" size={48} />
-                                    <MapIcon className="text-emerald-200 absolute -bottom-2 -right-2 opacity-50" size={60} />
+                                    <Plane className="text-emerald-600 relative z-10" size={32} />
+                                    <MapIcon className="text-emerald-200 absolute -bottom-1 -right-1 opacity-50" size={40} />
                                 </div>
                             </div>
                         </div>
                         
-                        <h1 className="text-4xl font-black text-slate-800 mb-4 tracking-tight leading-tight">
-                            <span className="text-emerald-600 inline-block mb-1">MapWith</span><br/>
-                            ーみんなで旅行計画ー
+                        <h1 className="text-3xl font-black text-slate-800 mb-2 tracking-tight leading-tight">
+                            <span className="text-emerald-600 inline-block">MapWith</span>
+                            <span className="text-lg text-slate-500 font-bold block mt-1">ーみんなで旅行計画ー</span>
                         </h1>
-                        <p className="text-slate-500 leading-relaxed font-medium">
-                            「どこ行く？」から「ここ行こう！」まで。<br/>
-                            MapWithは、友達と地図を囲むような<br/>
-                            新しい旅行計画サイトです。
-                        </p>
                     </div>
 
-                    {/* 機能紹介リスト */}
-                    <div className="space-y-4 text-left mb-16">
-                        <FeatureItem icon={<MapIcon size={20}/>} title="マップで直感的に" desc="気になる場所をポチッと追加" />
-                        <FeatureItem icon={<Sparkles size={20}/>} title="AIがスポットを提案" desc="人気の観光地を自動ピックアップ" />
-                        <FeatureItem icon={<Share2 size={20}/>} title="リアルタイム共有" desc="URLを送るだけで共同編集" />
-                    </div>
+                    {/* 詳細な機能紹介 - 画面上部に配置 */}
+                    <div className="space-y-4 relative mt-2">
+                         <div className="text-center">
+                            <p className="text-[10px] text-slate-400">横にスクロールして機能を見る 👉</p>
+                        </div>
 
-                    {/* 詳細な機能紹介 */}
-                    <div className="space-y-20 pb-20 border-t border-slate-200 pt-16">
-                        {onboardingSteps.map((s, i) => (
-                            <div key={i} className="flex flex-col items-center text-center space-y-4">
-                                <div className="mb-2">
-                                    {s.visual}
+                        {/* 横スクロールコンテナ */}
+                        <div className="flex overflow-x-auto pb-6 px-4 gap-4 snap-x snap-mandatory -mx-4 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:'none'] [scrollbar-width:'none']">
+                            {/* ★修正: 共通データからマップして表示 */}
+                            {tutorialSteps.map((s, i) => (
+                                // カードサイズを拡大: w-[85%] max-w-[320px]
+                                <div key={i} className="snap-center shrink-0 w-[85%] max-w-[320px] bg-white p-5 rounded-3xl shadow-md border border-slate-100 flex flex-col items-center text-center first:ml-0 last:mr-4">
+                                    {/* イラストエリアの高さを拡大: h-44 */}
+                                    <div className={`w-full h-44 rounded-2xl ${s.color} bg-opacity-10 mb-4 flex items-center justify-center relative overflow-hidden`}>
+                                        {s.visual}
+                                    </div>
+                                    <h3 className="text-base font-black text-slate-800 mb-1">{s.title}</h3>
+                                    <p className="text-[10px] text-slate-500 font-bold leading-relaxed whitespace-pre-wrap">
+                                        {s.desc}
+                                    </p>
                                 </div>
-                                <h3 className="text-2xl font-black text-slate-800">{s.title}</h3>
-                                <p className="text-sm text-slate-500 font-bold leading-relaxed whitespace-pre-wrap">
-                                    {s.desc}
-                                </p>
-                            </div>
-                        ))}
+                            ))}
+                        </div>
                     </div>
 
                     {/* 使い方セクション */}
-                    <div className="mb-16 border-t border-slate-200 pt-16">
-                        <h3 className="text-xl font-black text-slate-800 mb-8 flex items-center justify-center gap-2">
-                            <span className="bg-emerald-100 text-emerald-600 px-3 py-1 rounded-full text-xs">How to</span>
+                    <div className="mb-10 border-t border-slate-200 pt-8 mt-4">
+                        <h3 className="text-lg font-black text-slate-800 mb-6 flex items-center justify-center gap-2">
+                            <span className="bg-emerald-100 text-emerald-600 px-2 py-0.5 rounded-full text-[10px]">How to</span>
                             使い方はかんたん
                         </h3>
-                        <div className="space-y-4 relative">
+                        <div className="space-y-3 relative">
                             {usageSteps.map((item, idx) => (
-                                <div key={idx} className="bg-white/80 backdrop-blur p-5 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-4 relative overflow-hidden text-left hover:scale-[1.02] transition duration-300">
-                                    <div className={`absolute top-0 left-0 w-1.5 h-full ${item.color}`}></div>
-                                    <div className={`w-12 h-12 rounded-2xl ${item.color} flex items-center justify-center shrink-0 shadow-md rotate-3`}>
+                                <div key={idx} className="bg-white/80 backdrop-blur p-4 rounded-xl shadow-sm border border-slate-100 flex items-center gap-3 relative overflow-hidden text-left">
+                                    <div className={`absolute top-0 left-0 w-1 h-full ${item.color}`}></div>
+                                    <div className={`w-10 h-10 rounded-xl ${item.color} flex items-center justify-center shrink-0 shadow-md rotate-3`}>
                                         {item.icon}
                                     </div>
                                     <div>
-                                        <div className="flex items-center gap-2 mb-1">
-                                            <span className="text-[10px] font-black text-slate-400 bg-slate-100 px-1.5 rounded uppercase tracking-wider">STEP {item.step}</span>
+                                        <div className="flex items-center gap-2 mb-0.5">
+                                            <span className="text-[9px] font-black text-slate-400 bg-slate-100 px-1 rounded uppercase tracking-wider">STEP {item.step}</span>
                                         </div>
-                                        <h4 className="font-bold text-slate-800">{item.title}</h4>
-                                        <p className="text-[10px] text-slate-500 mt-1 leading-relaxed whitespace-pre-wrap font-medium">{item.desc}</p>
+                                        <h4 className="font-bold text-sm text-slate-800">{item.title}</h4>
+                                        <p className="text-[9px] text-slate-500 mt-0.5 leading-relaxed whitespace-pre-wrap font-medium">{item.desc}</p>
                                     </div>
                                 </div>
                             ))}
@@ -439,12 +374,12 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                     </div>
 
                     {/* フッターリンクエリア */}
-                    <div className="flex flex-wrap items-center justify-center gap-4 mt-8 mb-4 pointer-events-auto border-t border-slate-200/50 pt-8">
-                        <button onClick={() => setActiveModal('terms')} className="text-xs font-bold text-gray-400 hover:text-gray-600 transition">利用規約</button>
-                        <button onClick={() => setActiveModal('privacy')} className="text-xs font-bold text-gray-400 hover:text-gray-600 transition">プライバシーポリシー</button>
-                        <button onClick={() => setActiveModal('developer')} className="text-xs font-bold text-gray-400 hover:text-gray-600 transition">運営者情報</button>
+                    <div className="flex flex-wrap items-center justify-center gap-3 mt-4 mb-2 pointer-events-auto border-t border-slate-200/50 pt-4">
+                        <button onClick={() => setActiveModal('terms')} className="text-[10px] font-bold text-gray-400 hover:text-gray-600 transition">利用規約</button>
+                        <button onClick={() => setActiveModal('privacy')} className="text-[10px] font-bold text-gray-400 hover:text-gray-600 transition">プライバシーポリシー</button>
+                        <button onClick={() => setActiveModal('developer')} className="text-[10px] font-bold text-gray-400 hover:text-gray-600 transition">運営者情報</button>
                     </div>
-                    <div className="text-[10px] text-gray-300 font-medium">
+                    <div className="text-[9px] text-gray-300 font-medium">
                         © 2024 MapWith
                     </div>
 
@@ -452,11 +387,11 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
             </div>
 
             {/* 固定ボタンエリア */}
-            <div className="fixed bottom-0 left-0 w-full p-6 bg-gradient-to-t from-slate-50 via-slate-50/95 to-transparent z-50">
+            <div className="fixed bottom-0 left-0 w-full p-4 bg-gradient-to-t from-slate-50 via-slate-50/95 to-transparent z-50">
                 <div className="max-w-md mx-auto">
                     <button 
                         onClick={() => setStep('create')}
-                        className="w-full bg-emerald-800 text-white py-4 rounded-2xl font-bold text-lg shadow-xl hover:bg-emerald-900 hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2"
+                        className="w-full bg-emerald-800 text-white py-3.5 rounded-2xl font-bold text-lg shadow-xl hover:bg-emerald-900 hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2"
                     >
                         しおりを作る <ArrowRight size={20}/>
                     </button>

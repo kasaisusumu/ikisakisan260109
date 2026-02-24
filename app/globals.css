@@ -52,3 +52,59 @@ body {
 .animate-fade-in {
   animation: fadeIn 0.3s ease-out forwards;
 }
+
+/* Tutorial Animations */
+@keyframes swipeRight {
+  0% { transform: translateX(0) rotate(0); opacity: 1; }
+  40% { transform: translateX(60px) rotate(15deg); opacity: 1; }
+  60% { transform: translateX(80px) rotate(20deg); opacity: 0; }
+  61% { transform: translateX(0) rotate(0); opacity: 0; }
+  100% { transform: translateX(0) rotate(0); opacity: 1; }
+}
+
+@keyframes stampAppear {
+  0%, 10% { opacity: 0; transform: scale(1.5) rotate(-12deg); }
+  30% { opacity: 1; transform: scale(1) rotate(-12deg); }
+  60% { opacity: 0; }
+  100% { opacity: 0; }
+}
+
+@keyframes handMove {
+  0% { transform: translateX(0) translateY(0); opacity: 1; }
+  40% { transform: translateX(50px) translateY(-10px); opacity: 1; }
+  60% { opacity: 0; }
+  100% { transform: translateX(0) translateY(0); opacity: 0; }
+}
+
+/* --- Tutorial Animations --- */
+
+/* カードが右へスワイプされる動き */
+@keyframes cardSwipeRight {
+  0%, 15% { transform: translateX(0) rotate(0); opacity: 1; }
+  50% { transform: translateX(120%) rotate(15deg); opacity: 0; }
+  51% { transform: translateX(0) rotate(0); opacity: 0; }
+  100% { transform: translateX(0) rotate(0); opacity: 1; }
+}
+
+/* 指がスワイプする動き */
+@keyframes handSwipeGesture {
+  0% { transform: translateX(10px) translateY(10px); opacity: 0; }
+  10% { transform: translateX(0) translateY(0); opacity: 1; } /* 指出現 */
+  15% { transform: scale(0.9); opacity: 1; } /* タップ（掴む） */
+  50% { transform: translateX(80px) translateY(-10px); opacity: 0; } /* スワイプ */
+  100% { transform: translateX(10px) translateY(10px); opacity: 0; }
+}
+
+/* スタンプがポンと押される動き */
+@keyframes stampPop {
+  0%, 20% { opacity: 0; transform: scale(2) rotate(-15deg); }
+  30% { opacity: 1; transform: scale(1) rotate(-15deg); }
+  50% { opacity: 0; transform: translateX(50px); }
+  100% { opacity: 0; }
+}
+
+/* 他の要素用 */
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-5px); }
+}

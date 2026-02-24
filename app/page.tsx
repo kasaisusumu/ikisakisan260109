@@ -663,6 +663,10 @@ const onTimelineDrop = async (e: React.DragEvent, targetIndex: number) => {
   // ★追加: 旅行名用のState
   const [roomName, setRoomName] = useState("");
   const [spotToAssignDay, setSpotToAssignDay] = useState<any>(null); 
+
+  // ★追加: 複製追加（2回目以降の追加）を行うスポットを一時保持するState
+  const [spotToDuplicate, setSpotToDuplicate] = useState<any>(null);
+
   const [travelDays, setTravelDays] = useState<number>(1);
   const [isSettingsLoaded, setIsSettingsLoaded] = useState(false);
 
@@ -1116,6 +1120,7 @@ const [arrivalModalSpots, setArrivalModalSpots] = useState<any[]>([]); // ★追
 
  // page.tsx 870行目付近の useEffect (タイムライン表示用) を以下に置き換えてください
 
+// ★修正: タイムライン生成ロジック (Day変更時の即時反映対応版)
   useEffect(() => {
     // 確定リスト表示モード以外なら何もしない
     if (filterStatus !== 'confirmed' || !roomId) return;
@@ -1131,6 +1136,7 @@ const [arrivalModalSpots, setArrivalModalSpots] = useState<any[]>([]); // ★追
     // --- ここから Day 1以降のロジック ---
 
     // 1. DB上の最新スポットリストを取得 (前日の宿も含む)
+    // ★重要: ここで filter をかけるため、Dayを変更したスポットは自動的に除外されます
     let validSpotsInDB = planSpots.filter(s => s.status === 'confirmed' && s.day === day);
     
     // 前日の宿を含めるロジック
@@ -1145,7 +1151,7 @@ const [arrivalModalSpots, setArrivalModalSpots] = useState<any[]>([]); // ★追
         }
     }
 
-    // 2. ローカルストレージから「PlanViewで編集した最新のタイムライン」を取得
+    // 2. ローカルストレージから「並び順」を取得
     const storageKey = `rh_plan_${roomId}_day_${day}`;
     const savedPlanStr = localStorage.getItem(storageKey);
     
@@ -1156,83 +1162,79 @@ const [arrivalModalSpots, setArrivalModalSpots] = useState<any[]>([]); // ★追
             const savedData = JSON.parse(savedPlanStr);
             if (savedData.timeline && Array.isArray(savedData.timeline)) {
                 
-                // まずは単純にマッピング（削除されたスポットは消えるが、移動は残る状態）
                 tempTimeline = savedData.timeline.map((item: any) => {
                     if (item.type === 'spot') {
+                        // ★重要: ここでDBに存在しない（Day移動した）スポットは freshSpot が undefined になる
                         const freshSpot = validSpotsInDB.find(s => String(s.id) === String(item.spot.id));
+                        
+                        // DBにない(=移動した)スポットは null を返して消去する
                         return freshSpot ? { 
                             ...item, 
                             spot: { ...item.spot, ...freshSpot },
                             image: freshSpot.image_url || item.image 
-                        } : null; // DBにないスポットはnull
+                        } : null; 
                     }
-                    return item; // 移動は一旦そのまま返す
+                    return item; 
                 }).filter(Boolean); // nullを除去
             }
         } catch(e) { console.error("Parse error", e); }
     }
 
-    // ★★★ 修正: タイムラインの正規化（クリーニング）処理 ★★★
-    // 「移動」が連続したり、先頭・末尾に来ないように整理する
-   // ★★★ 修正: タイムラインの正規化（クリーニング）処理 ★★★
+    // クリーニング処理
     const cleanTimeline: any[] = [];
     tempTimeline.forEach((item) => {
         if (item.type === 'spot') {
             if (cleanTimeline.length > 0 && cleanTimeline[cleanTimeline.length - 1].type === 'spot') {
-        cleanTimeline.push({ type: 'travel', duration_min: null, transport_mode: 'walk' });
-     }
+                cleanTimeline.push({ type: 'travel', duration_min: null, transport_mode: 'walk' });
+            }
             cleanTimeline.push(item);
         } else if (item.type === 'travel') {
-            // ▼▼▼ 修正: 連続移動を許可（重複チェック削除） ▼▼▼
-            if (cleanTimeline.length > 0 && cleanTimeline[cleanTimeline.length - 1].type === 'spot') {
-                cleanTimeline.push(item);
-            } else if (cleanTimeline.length > 0 && cleanTimeline[cleanTimeline.length - 1].type === 'travel') {
-                // 連続する移動も許可
-                cleanTimeline.push(item);
+            if (cleanTimeline.length > 0) {
+                 cleanTimeline.push(item);
             }
         }
     });
-    // 末尾が移動なら削除
     if (cleanTimeline.length > 0 && cleanTimeline[cleanTimeline.length - 1].type === 'travel') {
         cleanTimeline.pop();
     }
     
     let finalTimeline = cleanTimeline;
 
-   // page.tsx 900行目付近の useEffect 内
-
-    // 3. ローカルストレージになかった、または空だった場合はDBのorder順で初期生成
+    // 3. 新規またはDB順での初期生成
     if (finalTimeline.length === 0 && validSpotsInDB.length > 0) {
-        // order順にソート
         validSpotsInDB.sort((a, b) => (a.order || 0) - (b.order || 0));
-        
         validSpotsInDB.forEach((spot, i) => {
              finalTimeline.push({ type: 'spot', spot, stay_min: spot.stay_time || null });
             if (i < validSpotsInDB.length - 1) { 
-         finalTimeline.push({ type: 'travel', duration_min: null, transport_mode: 'walk' }); 
-     }
+                 finalTimeline.push({ type: 'travel', duration_min: null, transport_mode: 'walk' }); 
+            }
          });
-         // ★初期生成時は 09:00 で計算してOK
          finalTimeline = calculateSimpleSchedule(finalTimeline, "09:00");
     } else {
-        // 4. 新規追加されたスポット(DBにはあるがタイムラインにない)を末尾に追加
+        // DBにあるのにタイムラインにない（新しくこのDayに移動してきた）スポットを追加
         const timelineSpotIds = new Set(finalTimeline.filter(t => t.type === 'spot').map(t => String(t.spot.id)));
         const newSpots = validSpotsInDB.filter(s => !timelineSpotIds.has(String(s.id)));
 
         if (newSpots.length > 0) {
             newSpots.forEach(s => {
                 if (finalTimeline.length > 0) {
-         finalTimeline.push({ type: 'travel', duration_min: null, transport_mode: 'walk' });
-     }
+                     finalTimeline.push({ type: 'travel', duration_min: null, transport_mode: 'walk' });
+                }
                finalTimeline.push({ type: 'spot', spot: s, stay_min: null });
             });
-            
-            // ★削除: ここで再計算すると既存の時間がリセットされるため削除します
-            // finalTimeline = calculateSimpleSchedule(finalTimeline); 
         }
     }
 
     setDisplayTimeline(finalTimeline);
+
+    // ★追加: 最新の状態（移動して消えた状態など）を即座にローカルストレージへ保存
+    // これにより、リロードしても「移動前の日」にスポットが残るのを防ぐ
+    if (finalTimeline.length > 0 || validSpotsInDB.length === 0) {
+        localStorage.setItem(storageKey, JSON.stringify({ 
+            timeline: finalTimeline, 
+            updatedAt: Date.now() 
+        }));
+    }
 
   }, [filterStatus, selectedConfirmDay, planSpots, roomId, currentTab]);
   const fetchSpotImage = async (name: string) => {
@@ -1634,16 +1636,45 @@ const candidateAreas = useMemo(() => {
       if(day > 0) setSelectedConfirmDay(day);
   };
 
+  // ★追加: 日程を指定して複製（新規追加）を実行する関数
+  const confirmDuplicateSpot = async (day: number) => {
+      if (!spotToDuplicate) return;
+
+      // addSpotを呼び出して新規追加（IDはaddSpot内で新しく生成されるため別物になる）
+      await addSpot({
+          name: spotToDuplicate.text || spotToDuplicate.name,
+          description: spotToDuplicate.place_name || spotToDuplicate.description,
+          coordinates: spotToDuplicate.center || spotToDuplicate.coordinates,
+          image_url: spotToDuplicate.image_url,
+          is_hotel: spotToDuplicate.is_hotel,
+          status: 'confirmed', // 最初から確定にする
+          day: day             // 指定したDayを入れる
+      });
+
+      setSpotToDuplicate(null);
+      
+      // 追加した日のリストを表示
+      if (day > 0) {
+          setFilterStatus('confirmed');
+          setSelectedConfirmDay(day);
+      }
+  };
   // ★★★ 追加: ここに挿入してください ★★★
+// ★修正: 名前での一致判定を削除し、IDでの厳密な判定にする
   const handleSpotUpdate = (updatedSpot: any) => {
       setPlanSpots(prev => prev.map(s => {
-          if ((s.id && String(s.id) === String(updatedSpot.id)) || s.name === updatedSpot.name) {
+          // IDが存在し、かつ一致する場合のみ更新する
+          if (s.id && String(s.id) === String(updatedSpot.id)) {
               return { ...s, ...updatedSpot };
           }
+          // IDがない（一時的なスポット）場合のみ名前で判定するなどの救済措置を残すなら以下
+          // if (!s.id && s.name === updatedSpot.name) return { ...s, ...updatedSpot };
+          
           return s;
       }));
+      
       // 選択中の詳細表示も更新
-      if (selectedResult && (selectedResult.id === updatedSpot.id || selectedResult.name === updatedSpot.name)) {
+      if (selectedResult && String(selectedResult.id) === String(updatedSpot.id)) {
           setSelectedResult((prev: any) => ({ ...prev, ...updatedSpot }));
       }
   };
@@ -1685,16 +1716,46 @@ const candidateAreas = useMemo(() => {
 
   // ... 既存のコード ...
 
+// ★修正: Day変更時の処理（ID判定・通知・キャッシュ整合性を強化）
   const updateSpotDay = async (spot: any, newDay: number) => {
-      if (!roomId) return;
+      if (!roomId || !spot.id) return;
+      if (spot.day === newDay) return; // 変更がなければ終了
       
-      const now = new Date().toISOString(); // ★現在時刻
+      const now = new Date().toISOString();
 
-      setPlanSpots(prev => prev.map(s => s.id === spot.id ? { ...s, day: newDay, updated_at: now } : s));
-      if (selectedResult && selectedResult.id === spot.id) { setSelectedResult((prev: any) => ({ ...prev, day: newDay })); }
+      // 1. 楽観的UI更新 (Optimistic Update)
+      // IDが完全に一致するものだけを更新することで、同名の別スポットを巻き込まない
+      setPlanSpots(prev => prev.map(s => {
+          if (String(s.id) === String(spot.id)) {
+              return { ...s, day: newDay, updated_at: now };
+          }
+          return s;
+      }));
+
+      // 2. 詳細モーダルを開いている場合、その表示も新しいDayに更新
+      if (selectedResult && String(selectedResult.id) === String(spot.id)) { 
+          setSelectedResult((prev: any) => ({ ...prev, day: newDay })); 
+      }
       
-      const { error } = await supabase.from('spots').update({ day: newDay, updated_at: now }).eq('id', spot.id);
-      if (error) { console.error("Day update failed:", error); loadRoomData(roomId); }
+      // 3. ユーザーへのフィードバック (通知)
+      const dayLabel = newDay === 0 ? "未定リスト" : `Day ${newDay}`;
+      setNotification({ 
+          text: `「${spot.name}」を ${dayLabel} に移動しました`, 
+          color: 'bg-indigo-600' 
+      });
+      setTimeout(() => setNotification(null), 3000);
+
+      // 4. データベース更新
+      const { error } = await supabase
+          .from('spots')
+          .update({ day: newDay, updated_at: now })
+          .eq('id', spot.id); // 名前ではなくIDで指定
+      
+      if (error) { 
+          console.error("Day update failed:", error); 
+          // エラー時は強制リロードして整合性を保つ
+          loadRoomData(roomId); 
+      }
   };
 
 
@@ -1712,25 +1773,63 @@ const candidateAreas = useMemo(() => {
 
   const handleToggleVote = async (spotId: string | number) => {
     if (!userName || !roomId) return alert("名前を入力してください");
-    const targetId = String(spotId);
-    const myVote = spotVotes.find(v => String(v.spot_id) === targetId && v.user_name === userName);
 
-    if (myVote) {
-        if (myVote.vote_type === 'like') {
-            const newVote = { ...myVote, vote_type: 'nope' };
-            setSpotVotes(prev => prev.map(v => v.id === myVote.id ? newVote : v));
-            await supabase.from('votes').update({ vote_type: 'nope' }).eq('id', myVote.id);
-        } else {
-            const newVote = { ...myVote, vote_type: 'like' };
-            setSpotVotes(prev => prev.map(v => v.id === myVote.id ? newVote : v));
-            await supabase.from('votes').update({ vote_type: 'like' }).eq('id', myVote.id);
+    // 対象のスポット情報を特定
+    const targetSpot = planSpots.find(s => String(s.id) === String(spotId));
+    if (!targetSpot) return;
+
+    const targetName = targetSpot.name;
+
+    // ★重要: 同じ名前のスポットIDを全て取得する
+    const sameNameSpots = planSpots.filter(s => s.name === targetName);
+    const sameNameSpotIds = sameNameSpots.map(s => String(s.id));
+
+    // 現在のスポットに対して自分が投票しているか確認
+    const myVote = spotVotes.find(v => String(v.spot_id) === String(spotId) && v.user_name === userName && v.vote_type === 'like');
+    const isLiking = !myVote; // 投票がないなら「いいね」する、あるなら「解除」する
+
+    // 1. 楽観的UI更新
+    if (isLiking) {
+        // 全ての同名スポットに投票を追加
+        const newVotes = sameNameSpots.map(s => ({
+            id: `temp-${s.id}-${Date.now()}`,
+            room_id: roomId,
+            spot_id: s.id,
+            user_name: userName,
+            vote_type: 'like',
+            created_at: new Date().toISOString()
+        }));
+        setSpotVotes(prev => [...prev, ...newVotes]);
+    } else {
+        // 全ての同名スポットから自分の投票を削除
+        setSpotVotes(prev => prev.filter(v => 
+            !(sameNameSpotIds.includes(String(v.spot_id)) && v.user_name === userName)
+        ));
+    }
+
+    // 2. データベース更新 (並列実行)
+    if (isLiking) {
+        // まだ投票していないIDのみ抽出してINSERT
+        // (既に投票済みのIDに対して重複投票しないようチェック)
+        const votesToInsert = sameNameSpots
+            .filter(s => !spotVotes.some(v => String(v.spot_id) === String(s.id) && v.user_name === userName))
+            .map(s => ({
+                room_id: roomId,
+                spot_id: s.id,
+                user_name: userName,
+                vote_type: 'like'
+            }));
+            
+        if (votesToInsert.length > 0) {
+            await supabase.from('votes').insert(votesToInsert);
         }
     } else {
-        const tempVote = { id: `temp-${Date.now()}`, room_id: roomId, spot_id: spotId, user_name: userName, vote_type: 'like' };
-        setSpotVotes(prev => [...prev, tempVote]);
-        const { data, error } = await supabase.from('votes').insert({ room_id: roomId, spot_id: spotId, user_name: userName, vote_type: 'like' }).select().single();
-        if (error) setSpotVotes(prev => prev.filter(v => v.id !== tempVote.id)); 
-        else if (data) setSpotVotes(prev => prev.map(v => v.id === tempVote.id ? data : v));
+        // 同名のスポットIDに対する自分の投票を全て削除
+        await supabase.from('votes')
+            .delete()
+            .eq('room_id', roomId)
+            .eq('user_name', userName)
+            .in('spot_id', sameNameSpotIds);
     }
   };
 
@@ -1992,18 +2091,30 @@ useEffect(() => {
     // ★依存配列に currentTab を追加するのを忘れずに！
 }, [isDrawing, isAuthLoading, isJoined, filterStatus, sheetHeight, currentTab, selectedResult]); // ← selectedResult を追加
 
+  // ★修正: 詳細画面を開いている時のリアルタイム同期もID優先にする
   useEffect(() => {
     if (selectedResult && roomId) {
-      const currentSpot = planSpots.find(s => s.name === selectedResult.text) || selectedResult; 
+      // 【修正点】ここも名前検索(text)ではなく、IDでの一致を最優先にする
+      let currentSpot = null;
+      if (selectedResult.id) {
+          currentSpot = planSpots.find(s => String(s.id) === String(selectedResult.id));
+      }
+      if (!currentSpot) {
+          currentSpot = planSpots.find(s => s.name === selectedResult.text);
+      }
+      // 見つからなければ今の表示を維持
+      currentSpot = currentSpot || selectedResult;
+
       const spotId = currentSpot.id || selectedResult.id;
       const voters = spotVotes.filter(v => String(v.spot_id) === String(spotId) && v.vote_type === 'like').map(v => v.user_name);
       const uniqueVoters = Array.from(new Set(voters));
-      const isSaved = planSpots.some(s => s.name === selectedResult.text);
+      
+      // 保存済み判定もID優先で
+      const isSaved = planSpots.some(s => s.id ? String(s.id) === String(spotId) : s.name === selectedResult.text);
 
       if (isSaved && currentSpot && !isEditingMemo) {
           if (currentSpot.comment !== editCommentValue) setEditCommentValue(currentSpot.comment || "");
           if (currentSpot.link !== editLinkValue) setEditLinkValue(currentSpot.link || "");
-          // ★追加: 金額の同期
           const currentPrice = currentSpot.price ?? currentSpot.cost ?? "";
           if (String(currentPrice) !== String(editPriceValue)) setEditPriceValue(String(currentPrice));
       }
@@ -2015,8 +2126,9 @@ useEffect(() => {
         is_saved: isSaved,
         comment: currentSpot.comment,
         link: currentSpot.link,
-        day: currentSpot.day || 0,
-        status: currentSpot.status || 'candidate'
+        day: currentSpot.day || 0, // ここで正しいDayが反映されるようになる
+        status: currentSpot.status || 'candidate',
+        price: currentSpot.price // priceも同期
       }));
     }
   }, [spotVotes, planSpots, isEditingMemo]);
@@ -2215,6 +2327,9 @@ const loadRoomData = async (id: string) => {
       //return;
     //}
 const now = new Date().toISOString(); // ★現在時刻
+
+// ★追加: 既存の同名スポットがあれば、メモ・リンク・金額・画像を引き継ぐ
+    const existingSpot = planSpots.find(s => s.name === spot.name);
     // データベースに送るデータを作成
     const newSpotPayload = {
       // ... (既存プロパティ)
@@ -2281,8 +2396,10 @@ const now = new Date().toISOString(); // ★現在時刻
         // ▲▲▲ 置換ここまで ▲▲▲
 
         // 自分が追加したものは自動で「いいね」
+       // ★追加: 自分が追加したものは自動で「いいね」するが、
+        // ここでも「同名共有」のロジックを一応意識しておく（handleToggleVote任せでも良いが念のため）
         if (userName) {
-            const { data: voteData } = await supabase.from('votes').insert({ 
+             const { data: voteData } = await supabase.from('votes').insert({ 
                 room_id: roomId, 
                 spot_id: data.id, 
                 user_name: userName, 
@@ -2316,13 +2433,30 @@ const now = new Date().toISOString(); // ★現在時刻
   };
  
 
+ // ★修正: 削除処理もIDで厳密に判定する
   const removeSpot = async (spot: any) => {
     if (!roomId) return;
     if (!spot.id) return; 
+    
+    // 確認メッセージ
     if (!confirm(`本当に「${spot.name || spot.text}」をリストから削除しますか？`)) return;
-    setPlanSpots(prev => prev.filter(s => s.id !== spot.id));
-    await supabase.from('spots').delete().eq('id', spot.id);
-    if (selectedResult?.id === spot.id) setSelectedResult(null); 
+
+    const targetId = String(spot.id);
+
+    // 1. ローカルStateから削除 (ID不一致のものだけ残す)
+    setPlanSpots(prev => prev.filter(s => String(s.id) !== targetId));
+
+    // 2. 削除対象を閲覧中だった場合、詳細モーダルを閉じる
+    if (selectedResult && String(selectedResult.id) === targetId) {
+        setSelectedResult(null);
+        setViewMode('default');
+    }
+
+    // 3. データベースから削除
+    // (一時IDやAI提案IDでない場合のみDB削除を実行)
+    if (!targetId.startsWith('temp-') && !targetId.startsWith('ai-')) {
+        await supabase.from('spots').delete().eq('id', spot.id);
+    }
   };
 
   const updateSpots = (newSpots: any[]) => { setPlanSpots(newSpots); };
@@ -2379,24 +2513,30 @@ const now = new Date().toISOString(); // ★現在時刻
   };
 
   // ★修正: handlePreviewSpot の定義（余計な focusSpotInList 定義を削除）
+  // ★修正: ID優先で特定するロジックに変更
+ // ★修正: 詳細を開く際、IDが一致するものを最優先で探す
   const handlePreviewSpot = (spot: any, openMemo: boolean = false) => {
     setCurrentTab('explore');
-    
-    // ★追加: 詳細を開いたことをRefに記録
     focusedSpotIdRef.current = String(spot.id);
     
-    // 最新のデータを ID または 名前 で検索して取得
-    const dbSpot = planSpots.find(s => (s.id && String(s.id) === String(spot.id)) || s.name === spot.name);
+    // 【重要】まずIDで完全一致するスポットを探す
+    let dbSpot = null;
+    if (spot.id) {
+        dbSpot = planSpots.find(s => String(s.id) === String(spot.id));
+    }
+    // 見つからない場合のみ名前で探す（救済措置）
+    if (!dbSpot) {
+        dbSpot = planSpots.find(s => s.name === spot.name);
+    }
     
-    // 実際にプレビュー表示に使用するベースデータ
     const sourceSpot = dbSpot || spot;
 
-    const isSaved = planSpots.some(s => s.name === sourceSpot.name);
+    // ... (以下変更なし)
+    const isSaved = planSpots.some(s => s.id ? String(s.id) === String(sourceSpot.id) : s.name === sourceSpot.name);
     const spotId = sourceSpot.id; 
     const voters = spotVotes.filter(v => String(v.spot_id) === String(spotId) && v.vote_type === 'like').map(v => v.user_name);
     const uniqueVoters = Array.from(new Set(voters));
     
-    // 画像がない場合のフェッチ処理
     if (!sourceSpot.image_url && !attemptedImageFetch.current.has(sourceSpot.id)) {
         fetchSpotImage(sourceSpot.name).then(url => {
             if (url) {
@@ -2406,7 +2546,6 @@ const now = new Date().toISOString(); // ★現在時刻
         });
     }
 
-    // 編集モード用の初期値をセット
     setEditCommentValue(sourceSpot.comment || "");
     setEditLinkValue(sourceSpot.link || "");
     setEditPriceValue(sourceSpot.price ?? sourceSpot.cost ?? "");
@@ -2415,7 +2554,7 @@ const now = new Date().toISOString(); // ★現在時刻
 
     const previewData = { 
         ...sourceSpot, 
-        id: sourceSpot.id, 
+        id: sourceSpot.id, // IDを確実に渡す
         text: sourceSpot.name, 
         place_name: sourceSpot.description, 
         center: sourceSpot.coordinates || sourceSpot.center,
@@ -2427,7 +2566,8 @@ const now = new Date().toISOString(); // ★現在時刻
         link: sourceSpot.link, 
         day: sourceSpot.day || 0, 
         status: sourceSpot.status || 'candidate',
-        is_hotel: sourceSpot.is_hotel 
+        is_hotel: sourceSpot.is_hotel,
+        price: sourceSpot.price 
     };
 
     setSelectedResult(previewData);
@@ -2580,34 +2720,45 @@ const now = new Date().toISOString(); // ★現在時刻
       setCandidates(spotsWithIds);
   };
 
-  const handleSaveMemo = async () => {
+ const handleSaveMemo = async () => {
       if (!selectedResult || !roomId) return;
       
-      // ★追加: 金額の変換 (空文字ならnull)
       const priceVal = editPriceValue === "" ? null : parseInt(editPriceValue, 10);
-      
-      const updated = { 
-          ...selectedResult, 
+      const targetName = selectedResult.text || selectedResult.name; // ★名前を取得
+
+      // 1. ローカルStateの更新（名前が一致するものを全て更新）
+      setPlanSpots(prev => prev.map(s => {
+          if (s.name === targetName) {
+              return { 
+                  ...s, 
+                  comment: editCommentValue, 
+                  link: editLinkValue,
+                  price: priceVal 
+              };
+          }
+          return s;
+      }));
+
+      // 詳細モーダル自身の表示も更新
+      setSelectedResult((prev: any) => ({ 
+          ...prev, 
           comment: editCommentValue, 
           link: editLinkValue,
-          price: priceVal // ★追加
-      };
-      
-      setSelectedResult(updated);
-      setPlanSpots(prev => prev.map(s => s.id === updated.id ? { 
-          ...s, 
-          comment: editCommentValue, 
-          link: editLinkValue,
-          price: priceVal // ★追加
-      } : s));
-      
-      await supabase.from('spots').update({ 
-          comment: editCommentValue, 
-          link: editLinkValue,
-          price: priceVal // ★追加
-      }).eq('id', updated.id);
+          price: priceVal 
+      }));
       
       setIsEditingMemo(false);
+
+      // 2. データベースの更新（ルームID と 名前 で一括更新）
+      // これにより、Dayが違っても同じ名前なら全て書き換わります
+      await supabase.from('spots')
+          .update({ 
+              comment: editCommentValue, 
+              link: editLinkValue,
+              price: priceVal 
+          })
+          .eq('room_id', roomId)
+          .eq('name', targetName);
   };
 
   const handleSaveDescription = () => {
@@ -3506,6 +3657,58 @@ el.onclick = (e) => {
         </div>
       )}
 
+      {/* 既存の spotToAssignDay モーダルの閉じタグの後に以下を追加 */}
+
+      {/* ★追加: 複製追加時の日程選択モーダル */}
+      {spotToDuplicate && (
+        <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-200" onClick={() => setSpotToDuplicate(null)}>
+          <div className="bg-white w-full max-w-sm rounded-[2rem] p-8 shadow-2xl relative flex flex-col gap-4" onClick={e => e.stopPropagation()}>
+            <div className="text-center">
+                <h3 className="text-lg font-black text-gray-900 mb-1">いつ行きますか？</h3>
+                <p className="text-xs text-gray-500 font-bold truncate px-4">「{spotToDuplicate.text || spotToDuplicate.name}」を追加</p>
+            </div>
+
+            <div className="grid grid-cols-1 gap-2 max-h-[60vh] overflow-y-auto pr-1">
+               {/* 候補（未定）として追加するボタン */}
+               <button 
+                  onClick={() => confirmDuplicateSpot(0)} 
+                  className="w-full py-3 rounded-xl font-bold text-xs transition flex items-center justify-center gap-2 bg-yellow-500 text-white shadow-md hover:bg-yellow-600"
+               >
+                  未定に追加
+               </button>
+               
+               {/* Dayボタン */}
+               {Array.from({ length: travelDays }).map((_, i) => {
+                   const dayNum = i + 1;
+                   const isTargetHotel = spotToDuplicate.is_hotel || isHotel(spotToDuplicate.text || spotToDuplicate.name);
+                   
+                   // 宿の場合、最終日は表示しない
+                   if (isTargetHotel && dayNum === travelDays) return null;
+                   
+                   const dayLabel = isTargetHotel ? `Day ${dayNum} - ${dayNum+1} (宿)` : `Day ${dayNum}`;
+                   
+                   return (
+                       <button 
+                           key={i}
+                           onClick={() => confirmDuplicateSpot(dayNum)} 
+                           className="w-full py-3 rounded-xl font-bold text-sm transition flex items-center justify-center gap-2 border bg-white border-gray-200 text-gray-600 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200"
+                       >
+                           <Calendar size={16}/> {dayLabel}
+                       </button>
+                   );
+               })}
+            </div>
+
+            <button 
+                onClick={() => setSpotToDuplicate(null)} 
+                className="w-full py-3 text-gray-400 font-bold text-xs hover:text-gray-600 transition mt-2"
+            >
+                キャンセル
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="flex-1 relative overflow-hidden flex flex-col md:flex-row">
         <div className={`relative h-full w-full md:flex-1 ${currentTab === 'explore' ? 'block' : 'hidden md:block'}`}>
           <div ref={mapContainer} className="absolute top-0 left-0 w-full h-full z-0" style={{ touchAction: isDrawing ? 'none' : 'auto' }} />
@@ -4059,17 +4262,8 @@ el.onclick = (e) => {
                       <div className="flex gap-2">
                           <button 
                               onClick={() => { 
-                                  addSpot({ 
-                                      name: selectedResult.text, 
-                                      description: selectedResult.place_name, 
-                                      coordinates: selectedResult.center || selectedResult.coordinates, 
-                                      image_url: selectedResult.image_url,
-                                      is_hotel: selectedResult.is_hotel,
-                                      // ★修正: 固定の 'candidate' ではなく、現在のステータスを引き継ぐ
-                                      status: selectedResult.status || 'candidate',
-                                      // ★追加: 日付も引き継ぐ（確定リストの場合、同じ日に2つ目を入れたいはずなので）
-                                      day: selectedResult.day || 0
-                                  }); 
+                                  // ★修正: いきなり addSpot せず、複製用Stateにセットしてモーダルを出す
+                                  setSpotToDuplicate(selectedResult);
                               }} 
                               className="flex-1 bg-blue-600 text-white py-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 hover:bg-blue-700 transition active:scale-95 shadow-lg"
                           >
@@ -4079,11 +4273,13 @@ el.onclick = (e) => {
                           
                           <button 
                               onClick={() => removeSpot(selectedResult)} 
+                              // ... (削除ボタンのclassなどはそのまま)
                               className="w-1/3 bg-white text-red-500 border border-red-100 py-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 hover:bg-red-50 transition active:scale-95 shadow-sm"
                           >
                               <Trash2 size={14}/> 削除
                           </button>
                       </div>
+                      /* ▲▲▲ 修正ここまで ▲▲▲ */
                       /* ▲▲▲ 修正ここまで ▲▲▲ */
                   ) : (
                      <button
@@ -4404,9 +4600,10 @@ el.onclick = (e) => {
 
                                              return (
                                                     <div 
-                                                        key={`spot-${idx}`} 
-                                                        // ★追加: スクロール用のID
-                                                        id={`spot-item-${spot.id}`}
+                                                       // ★修正: keyは必ず一意なIDを使う（無ければidxだが、基本ID推奨）
+                key={spot.id ? `spot-${spot.id}` : `spot-idx-${idx}`} 
+                id={`spot-item-${spot.id}`}
+                                                       
                                                         className={`relative z-10 mb-4 pl-8 group transition-all duration-200 ${
                                                             draggedTimelineIndex === idx ? 'opacity-40 scale-[0.98]' : 'opacity-100'
                                                         }`}
@@ -4722,9 +4919,9 @@ el.onclick = (e) => {
                                         return (
                                             <div 
                                                // <div 
-                                                key={spot.id || idx} 
-                                                // ★追加: スクロール用のID
-                                                id={`spot-item-${spot.id}`}
+                                                // ★修正: ここもIDを優先キーにする
+            key={spot.id ? `list-${spot.id}` : `list-idx-${idx}`} 
+            id={`spot-item-${spot.id}`}
                                                 //className={`rounded-xl shadow-sm border overflow-hidden flex h-16 transition active:scale-[0.98] animate-in slide-in-from-bottom-2 fade-in relative ${ 
                                                 /* ▼▼▼ 修正: 背景色のクラス判定を変更 ▼▼▼ */
                                                 className={`rounded-xl shadow-sm border overflow-hidden flex h-16 transition active:scale-[0.98] animate-in slide-in-from-bottom-2 fade-in relative ${
