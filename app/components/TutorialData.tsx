@@ -3,7 +3,7 @@ import {
   Map as MapIcon, Users, Sparkles, MoveHorizontal, ArrowRight,
   Lightbulb, ListChecks, BedDouble, PenTool, GripVertical, Check,
   ThumbsUp, ThumbsDown, Star, MousePointer2, Hand, Search,
-  TrendingUp, DollarSign, Smile
+  TrendingUp, DollarSign, Smile, Heart
 } from 'lucide-react';
 
 export interface TutorialStep {
@@ -38,6 +38,56 @@ export const tutorialSteps: TutorialStep[] = [
         </div>
         <div className="absolute bottom-[5%] left-[5%] bg-orange-100 p-[3%] rounded-full shadow-sm animate-pulse delay-700">
           <Users className="text-orange-600 w-6 h-6 md:w-8 md:h-8" />
+        </div>
+      </div>
+    )
+  },
+  {
+    // ★追加: 投票機能の説明カード
+    title: "みんなで投票！",
+    desc: "気になったスポットには「いいね」で投票。\nみんなの意見を参考にして、\n行く場所を決めよう👍",
+    color: "bg-orange-500",
+    visual: (
+      <div className="relative w-full h-full flex items-center justify-center overflow-hidden">
+        {/* Central Card (Spot) */}
+        <div className="relative w-[60%] h-[50%] bg-white rounded-xl shadow-xl border-2 border-orange-100 flex flex-col items-center justify-center z-10 animate-[float_3s_infinite]">
+           <div className="w-[80%] h-2 bg-gray-100 rounded-full mb-2"></div>
+           <div className="w-[50%] h-2 bg-gray-100 rounded-full mb-4"></div>
+           
+           {/* Vote Badge */}
+           <div className="flex items-center gap-1 bg-orange-50 px-3 py-1 rounded-full border border-orange-200">
+              <ThumbsUp size={14} className="text-orange-500 fill-orange-500" />
+              <span className="text-xs font-black text-orange-600">3</span>
+           </div>
+        </div>
+
+        {/* User 1 (Left Top) */}
+        <div className="absolute top-[15%] left-[10%] flex flex-col items-center animate-[bounce_2.5s_infinite]">
+           <div className="w-8 h-8 md:w-10 md:h-10 bg-blue-100 rounded-full flex items-center justify-center border-2 border-white shadow-md">
+              <Users size={16} className="text-blue-500" />
+           </div>
+           {/* Pop-up Like */}
+           <div className="absolute -top-4 -right-4 bg-white p-1 rounded-full shadow-sm border border-blue-100 animate-pulse">
+              <ThumbsUp size={10} className="text-blue-500 fill-blue-500" />
+           </div>
+        </div>
+
+        {/* User 2 (Right Bottom) */}
+        <div className="absolute bottom-[15%] right-[10%] flex flex-col items-center animate-[bounce_3s_infinite] delay-100">
+           <div className="w-8 h-8 md:w-10 md:h-10 bg-green-100 rounded-full flex items-center justify-center border-2 border-white shadow-md">
+              <Users size={16} className="text-green-500" />
+           </div>
+           {/* Pop-up Like */}
+           <div className="absolute -top-4 -left-4 bg-white p-1 rounded-full shadow-sm border border-green-100 animate-pulse delay-75">
+              <ThumbsUp size={10} className="text-green-500 fill-green-500" />
+           </div>
+        </div>
+
+        {/* User 3 (Left Bottom - Hidden/Small) */}
+        <div className="absolute bottom-[20%] left-[15%] opacity-50 scale-75 animate-pulse">
+           <div className="w-6 h-6 bg-purple-100 rounded-full flex items-center justify-center">
+              <Users size={12} className="text-purple-500" />
+           </div>
         </div>
       </div>
     )
