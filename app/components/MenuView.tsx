@@ -4,11 +4,13 @@ import { useState, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { 
   Copy, Check, FileText, Shield, Mail, HelpCircle, 
-  ExternalLink, User, Clock, Trash2, Plus, MessageCircle 
+  ExternalLink, User, Clock, Trash2, Plus, MessageCircle,
+  PlayCircle // ★追加
 } from 'lucide-react';
 
 interface Props {
   spots: any[]; 
+  onOpenTutorial: () => void; // ★追加: チュートリアルを開く関数を受け取る
 }
 
 type RoomHistoryItem = {
@@ -17,7 +19,7 @@ type RoomHistoryItem = {
     lastVisited: number;
 };
 
-export default function MenuView({ spots }: Props) {
+export default function MenuView({ spots, onOpenTutorial }: Props) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const currentRoomId = searchParams.get('room'); // URLから現在のルームIDを取得
@@ -190,7 +192,7 @@ export default function MenuView({ spots }: Props) {
 
           {/* 履歴リストエリア */}
           {roomHistory.length > 0 ? (
-              <div className="space-y-2 max-h-[160px] overflow-y-auto pr-1">
+              <div className="space-y-2 max-h-[160px] overflow-y-auto pr-1 custom-scrollbar">
                   {roomHistory.map((room) => {
                       // 現在のルームかどうか判定
                       const isCurrent = room.id === currentRoomId;
@@ -245,7 +247,20 @@ export default function MenuView({ spots }: Props) {
 
       {/* 3. 使い方ガイド */}
       <div className="mb-6">
-        <h3 className="font-bold text-gray-800 mb-3 flex items-center gap-2 text-sm"><HelpCircle size={16}/> 使い方</h3>
+        {/* ★修正: ヘッダー部分をflexにしてボタンを追加 */}
+        <div className="flex items-center justify-between mb-3">
+            <h3 className="font-bold text-gray-800 flex items-center gap-2 text-sm">
+                <HelpCircle size={16}/> 使い方
+            </h3>
+            {/* ★追加: もう一度見るボタン */}
+            <button 
+                onClick={onOpenTutorial}
+                className="flex items-center gap-1 bg-white text-blue-600 text-[10px] font-bold px-3 py-1.5 rounded-full border border-blue-100 shadow-sm hover:bg-blue-50 transition active:scale-95"
+            >
+                <PlayCircle size={12}/> もう一度見る
+            </button>
+        </div>
+        
         <div className="space-y-2 text-xs text-gray-600 bg-white p-4 rounded-xl shadow-sm border border-gray-100">
           <div className="flex gap-3">
             <span className="bg-blue-100 text-blue-600 w-5 h-5 flex items-center justify-center rounded-full font-bold text-[10px] shrink-0">1</span>

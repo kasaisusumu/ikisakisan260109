@@ -19,7 +19,7 @@ import {
   Banknote, ExternalLink as ExternalLinkIcon, StickyNote, Sparkles,Bus,
   CalendarCheck, CalendarX, User, AlertCircle, Check // ← ★これらを追加 // ← ★ここに追加
 } from 'lucide-react';
-
+import TutorialModal from './components/TutorialModal'; // ★追加
 import BottomNav from './components/BottomNav';
 import HotelListView from './components/HotelListView';
 import PlanView from './components/PlanView';
@@ -192,133 +192,7 @@ const calculateSimpleSchedule = (items: any[], startTime: string = "") => {
 };
 
 // --- オンボーディング（機能紹介）モーダル ---
-const OnboardingModal = ({ onClose }: { onClose: () => void }) => {
-    const [step, setStep] = useState(0);
-    const [dontShow, setDontShow] = useState(false);
 
-    const handleNext = () => {
-        if (step < 2) {
-            setStep(s => s + 1);
-        } else {
-            handleComplete();
-        }
-    };
-
-    const handleComplete = () => {
-        if (dontShow) {
-            localStorage.setItem('rh_onboarding_seen', 'true');
-        }
-        onClose();
-    };
-
-    const steps = [
-        {
-            title: "みんなで地図を作ろう",
-            desc: "リアルタイムで地図にピンを立てて、\n旅行の行き先をみんなで決めよう🗺️",
-            visual: (
-                <div className="relative w-40 h-40 mx-auto flex items-center justify-center">
-                    <div className="absolute inset-0 bg-blue-100 rounded-full animate-pulse opacity-50"></div>
-                    <div className="w-32 h-32 bg-white rounded-full shadow-lg flex items-center justify-center relative border-4 border-blue-50">
-                        <MapIcon size={64} className="text-blue-500" />
-                        <div className="absolute -bottom-2 -right-2 bg-green-500 text-white p-3 rounded-full border-4 border-white shadow-md">
-                            <Users size={24} />
-                        </div>
-                        <div className="absolute -top-2 -left-2 bg-indigo-500 text-white p-2 rounded-full border-4 border-white shadow-md">
-                            <MapPinned size={20} />
-                        </div>
-                    </div>
-                </div>
-            )
-        },
-        {
-            title: "便利な機能がいっぱい",
-            desc: "AIによるスポット提案、指で囲って宿検索、\nみんなで投票機能などが使えます✨",
-            visual: (
-                <div className="relative w-40 h-40 mx-auto flex items-center justify-center">
-                    <div className="w-32 h-32 bg-gradient-to-tr from-yellow-100 to-orange-100 rounded-full shadow-lg flex items-center justify-center relative border-4 border-white">
-                        <div className="grid grid-cols-2 gap-3 p-4">
-                            <div className="flex flex-col items-center gap-1">
-                                <div className="bg-purple-500 text-white p-2 rounded-xl shadow-sm"><Sparkles size={20}/></div>
-                                <span className="text-[8px] font-bold text-purple-600">AI提案</span>
-                            </div>
-                            <div className="flex flex-col items-center gap-1">
-                                <div className="bg-red-500 text-white p-2 rounded-xl shadow-sm"><PenTool size={20}/></div>
-                                <span className="text-[8px] font-bold text-red-600">囲って検索</span>
-                            </div>
-                            <div className="flex flex-col items-center gap-1 col-span-2">
-                                <div className="bg-blue-500 text-white p-2 rounded-xl shadow-sm"><ThumbsUp size={20}/></div>
-                                <span className="text-[8px] font-bold text-blue-600">投票</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            )
-        },
-        {
-            title: "準備はOK？",
-            desc: "さあ、最高の旅行プラン作りを\nはじめましょう！✈️",
-            visual: (
-                <div className="relative w-40 h-40 mx-auto flex items-center justify-center">
-                    <div className="absolute inset-0 bg-blue-500/10 rounded-full animate-[spin_10s_linear_infinite]"></div>
-                    <div className="w-32 h-32 bg-blue-600 rounded-full shadow-xl flex items-center justify-center relative border-4 border-blue-100 overflow-hidden group">
-                        <Plane size={64} className="text-white relative z-10 group-hover:translate-x-2 group-hover:-translate-y-2 transition-transform duration-500" />
-                        <div className="absolute inset-0 bg-gradient-to-tr from-blue-600 to-cyan-400 opacity-80"></div>
-                        {/* Clouds */}
-                        <div className="absolute top-6 left-4 w-8 h-8 bg-white/20 rounded-full blur-md"></div>
-                        <div className="absolute bottom-8 right-6 w-10 h-10 bg-white/20 rounded-full blur-md"></div>
-                    </div>
-                </div>
-            )
-        }
-    ];
-
-    return (
-        <div className="fixed inset-0 z-[300] bg-black/70 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-300">
-            <div className="bg-white w-full max-w-sm rounded-[2.5rem] p-8 shadow-2xl relative overflow-hidden flex flex-col items-center text-center">
-                
-                {/* ステップインジケーター */}
-                <div className="flex gap-2 mb-8">
-                    {steps.map((_, i) => (
-                        <div key={i} className={`h-1.5 rounded-full transition-all duration-300 ${i === step ? 'w-8 bg-blue-600' : 'w-2 bg-gray-200'}`}></div>
-                    ))}
-                </div>
-
-                {/* コンテンツエリア (アニメーション付き切り替え) */}
-                <div className="w-full mb-8 min-h-[280px] flex flex-col justify-between animate-in slide-in-from-right-4 fade-in duration-300" key={step}>
-                    <div className="mb-6">
-                        {steps[step].visual}
-                    </div>
-                    <div>
-                        <h3 className="text-2xl font-black text-gray-800 mb-4">{steps[step].title}</h3>
-                        <p className="text-sm text-gray-500 font-bold leading-relaxed whitespace-pre-wrap">
-                            {steps[step].desc}
-                        </p>
-                    </div>
-                </div>
-
-                {/* フッターアクション */}
-                <div className="w-full space-y-4">
-                    <button 
-                        onClick={handleNext}
-                        className="w-full bg-gray-900 text-white py-4 rounded-2xl font-bold text-lg hover:scale-[1.02] active:scale-95 transition shadow-lg flex items-center justify-center gap-2"
-                    >
-                        {step === 2 ? 'はじめる' : '次へ'} <ArrowRight size={20}/>
-                    </button>
-
-                    <div 
-                        className="flex items-center justify-center gap-2 cursor-pointer py-2" 
-                        onClick={() => setDontShow(!dontShow)}
-                    >
-                        <div className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-colors ${dontShow ? 'bg-blue-600 border-blue-600' : 'border-gray-300 bg-white'}`}>
-                            {dontShow && <Check size={14} className="text-white"/>}
-                        </div>
-                        <span className="text-xs font-bold text-gray-400 select-none">今後表示しない</span>
-                    </div>
-                </div>
-            </div>
-        </div>
-    );
-};
 
 function HomeContent() {
   const router = useRouter();
@@ -535,21 +409,30 @@ const logAffiliateClick = async (spotName: string, source: string) => {
 
   // ...existing.useState
   
-  // ★追加: オンボーディング表示用
-  const [showOnboarding, setShowOnboarding] = useState(false);
+// ★修正: チュートリアルモーダル表示用
+  const [showTutorial, setShowTutorial] = useState(false);
+  const [forceGuideTutorial, setForceGuideTutorial] = useState(false); // ★追加
 
-  // ★追加: 初回ロード時にフラグチェック
+  // ★修正: 初回ロード時にフラグチェック (招待者向け)
   useEffect(() => {
-      // ルームに参加済み、かつローカルストレージにフラグがない場合に表示
+      // ルームに参加済み (isJoined && roomId) の場合のみチェック
       if (isJoined && roomId) {
-          const hasSeen = localStorage.getItem('rh_onboarding_seen');
+          // TutorialModal.tsx で保存するキーと同じものを使う ('rh_tutorial_seen')
+          const hasSeen = localStorage.getItem('rh_tutorial_seen');
+          
           if (!hasSeen) {
               // 少し遅らせて表示することで、画面遷移の違和感を減らす
-              const timer = setTimeout(() => setShowOnboarding(true), 1000);
+              const timer = setTimeout(() => setShowTutorial(true), 1500);
               return () => clearTimeout(timer);
           }
       }
   }, [isJoined, roomId]);
+
+  // ★追加: メニューから呼び出すための関数
+  const openTutorialFromMenu = () => {
+      setForceGuideTutorial(true); // メニューからは「いきなりガイド」モードで
+      setShowTutorial(true);
+  };
 
   const [isEditingMemo, setIsEditingMemo] = useState(false); 
   const [editCommentValue, setEditCommentValue] = useState("");
@@ -855,6 +738,7 @@ const extractPrefecture = (spot: any) => {
 
 // page.tsx の extractCity 関数を修正
 
+// 正規表現で「郡」を削除し、「市」を最優先で抽出するロジック
 const extractCity = (spot: any) => {
     const text = spot.description || spot.place_name || spot.name || "";
     let addressBody = text;
@@ -873,26 +757,20 @@ const extractCity = (spot: any) => {
         }
     }
 
-    // ★修正：正規表現で市・区・町・村を抽出する際、手前に「郡」があればそれを無視する
-    
-    // 1. 市の抽出
-    const cityMatch = addressBody.match(/([^0-9\s,郡]+?市)/);
-    if (cityMatch) return cityMatch[1];
+    // 郡を削除
+    let cleanBody = addressBody.replace(/[一-龠ぁ-んァ-ン]{1,6}郡/g, '');
 
-    // 2. 区の抽出
-    const wardMatch = addressBody.match(/([^0-9\s,郡]+?区)/);
+    // 市を優先
+    const cityMatch = cleanBody.match(/([一-龠ぁ-んァ-ン]{1,6}市)/);
+    if (cityMatch) return cityMatch[1]; 
+
+    // 区
+    const wardMatch = cleanBody.match(/([一-龠ぁ-んァ-ン]{1,6}区)/);
     if (wardMatch) return wardMatch[1];
 
-    // 3. 町・村の抽出（郡が含まれていても町村名のみを抽出）
-    const townMatch = addressBody.match(/([^0-9\s,]+?[町村])/);
-    if (townMatch) {
-        const val = townMatch[1];
-        // 「〇〇郡△△町」の場合、郡の後の「△△町」だけを抽出
-        if (val.includes("郡")) {
-            return val.split("郡")[1] || val;
-        }
-        return val;
-    }
+    // 町村
+    const townMatch = cleanBody.match(/([一-龠ぁ-んァ-ン]{1,6}[町村])/);
+    if (townMatch) return townMatch[1];
 
     return pref !== "その他" ? "市町村不明" : "その他";
 };
@@ -918,12 +796,58 @@ const getSpotArea = (spot: any, mode: 'city' | 'prefecture') => {
   // ...既存のuseState
   const [isSuggesting, setIsSuggesting] = useState(false);
 
+  // ...既存のuseStateなどの下に追加...
+
+    // ★追加: 全スポットを見てエリア名を「名寄せ」するロジック
+    // 例: リスト内に「富山市」と「科学博物館富山市」がある場合、短い「富山市」に統一する
+    const normalizedCityMap = useMemo(() => {
+        const map = new Map<string, string>(); // spotId -> 統一されたエリア名
+        if (!planSpots || planSpots.length === 0) return map;
+
+        // 1. まず全スポットの生のエリア名を抽出
+        const tempMap = new Map<string, string>();
+        const uniqueCities = new Set<string>();
+
+        planSpots.forEach(s => {
+            const city = extractCity(s);
+            tempMap.set(s.id, city);
+            if (city !== "市町村不明" && city !== "その他") {
+                uniqueCities.add(city);
+            }
+        });
+
+        const sortedUniqueCities = Array.from(uniqueCities).sort((a, b) => a.length - b.length);
+
+        // 2. 名寄せ処理 (包含関係チェック)
+        planSpots.forEach(s => {
+            let city = tempMap.get(s.id) || "その他";
+
+            if (city !== "市町村不明" && city !== "その他") {
+                // 自分より短くて、自分の名前に含まれている「きれいな都市名」が他にあるか探す
+                // 例: city="科学博物館富山市", candidate="富山市" -> endsWithでマッチ -> "富山市"を採用
+                const betterCity = sortedUniqueCities.find(candidate => 
+                    candidate !== city && city.endsWith(candidate)
+                );
+                
+                if (betterCity) {
+                    city = betterCity;
+                }
+            }
+            map.set(s.id, city);
+        });
+
+        return map;
+    }, [planSpots]);
+
   // ★追加: 現在フォーカス（赤ピン表示）されているスポットのIDを保持
 //const [focusedSpotId, setFocusedSpotId] = useState<string | null>(null);
 
 // ★追加: 最新の状態を常に参照するためのRef
 const sheetHeightRef = useRef(sheetHeight);
 const focusedSpotIdRef = useRef<string | null>(null);
+
+// 1. 変数の定義エリア（180行目あたり、他のuseRefの近く）に追加
+const searchRequestId = useRef(0); // ★追加: 通信の競合を防ぐためのID管理
 
 // ★追加: sheetHeightが変化するたびにRefを更新
 useEffect(() => {
@@ -1585,7 +1509,15 @@ const filteredSpots = useMemo(() => {
         
         // エリア絞り込み
         if (selectedCandidateArea !== 'all') {
-            candidateSpots = candidateSpots.filter(s => getSpotArea(s, groupingMode) === selectedCandidateArea);
+            candidateSpots = candidateSpots.filter(s => {
+                // ★修正: 名寄せ後のエリア名と比較する
+                if (groupingMode === 'city') {
+                    const normalizedArea = normalizedCityMap.get(s.id) || extractCity(s);
+                    return normalizedArea === selectedCandidateArea;
+                } else {
+                    return extractPrefecture(s) === selectedCandidateArea;
+                }
+            });
         }
 
         // ★ 並び替えロジック
@@ -1622,21 +1554,46 @@ const filteredSpots = useMemo(() => {
     }
     
     return spots;
-  }, [planSpots, filterStatus, selectedConfirmDay, selectedCandidateArea, selectedHotelDay, groupingMode, lastVisited]); 
+  }, [planSpots, filterStatus, selectedConfirmDay, selectedCandidateArea, selectedHotelDay, groupingMode, lastVisited, normalizedCityMap]); 
+  // ★重要: 依存配列の最後に normalizedCityMap を追加しました
   // ↑依存配列に lastVisited を追加して、既読時に並び順が更新されるようにします
 // ▼▼▼ 修正: candidateAreas の生成ロジック ▼▼▼
   // ▼▼▼ 修正: candidateAreas の生成ロジック (確定スポットも含める) ▼▼▼
 // ▼▼▼ 修正: candidateAreas の生成ロジック (確定スポットも含めるが、ホテルは除外) ▼▼▼
-  const candidateAreas = useMemo(() => {
-      // 候補(candidate) または 確定(confirmed) のスポットを対象にする（ただしホテルは除く）
-      const targetSpots = planSpots.filter(s => 
-          s.status === 'candidate' || 
-          (s.status === 'confirmed' && !s.is_hotel && !isHotel(s.name))
-      );
-      
-      const areas = new Set(targetSpots.map(s => getSpotArea(s, groupingMode)));
-      return Array.from(areas).sort();
-  }, [planSpots, groupingMode]);
+// ★追加: 全スポットを見てエリア名を「名寄せ」するロジック
+
+
+// ★追加: 名寄せ後のエリアでグループ化（これが spotsByCity）
+const spotsByCity = useMemo(() => {
+    const groups: Record<string, any[]> = {};
+    
+    // 候補リストに表示すべきスポットのみを対象にする
+    const targetSpots = planSpots.filter(s => 
+        s.status === 'candidate' || 
+        (s.status === 'confirmed' && !s.is_hotel && !isHotel(s.name))
+    );
+
+    targetSpots.forEach(spot => {
+        // groupingModeが 'prefecture' なら県名、'city' なら名寄せ済みの市名を使う
+        let area = "その他";
+        if (groupingMode === 'prefecture') {
+            area = extractPrefecture(spot);
+        } else {
+            // ★ここで508行目で定義した normalizedCityMap を参照します
+            area = normalizedCityMap.get(spot.id) || extractCity(spot);
+        }
+        
+        if (!groups[area]) groups[area] = [];
+        groups[area].push(spot);
+    });
+    
+    return groups;
+}, [planSpots, normalizedCityMap, groupingMode]);
+
+// ★修正: spotsByCity のキーを使ってエリアリストを生成
+const candidateAreas = useMemo(() => {
+    return Object.keys(spotsByCity).sort();
+}, [spotsByCity]);
 
  // ▼▼▼ 修正: スポット追加時などに勝手にズームアウトしないように依存配列を変更 ▼▼▼
   useEffect(() => {
@@ -1777,53 +1734,60 @@ const filteredSpots = useMemo(() => {
     }
   };
 
- const handleSearch = async (overrideQuery?: string) => {
-      const activeQuery = overrideQuery || query; 
-      if(!activeQuery) return;
-      setIsSearching(true);
-      try {
-        let results: any[] = [];
-        
-        // 1. ルーム内キャッシュ検索（変更なし）
-        if (roomId) {
-            const { data: cached } = await supabase.from('room_search_cache').select('*').eq('room_id', roomId).ilike('text', `%${activeQuery}%`).limit(5);
-            if (cached && cached.length > 0) {
-                const cachedResults = cached.map(item => ({ id: item.id, name: item.text, place_name: item.place_name || item.text, center: item.center, image_url: item.image_url, is_room_cache: true }));
-                results = [...cachedResults];
-            }
-        }
+ // 2. handleSearch 関数を以下のように修正（880行目付近）
+const handleSearch = async (overrideQuery?: string) => {
+    const activeQuery = overrideQuery || query; 
+    if(!activeQuery) return;
 
-        // ▼▼▼ 変更: バックエンドAPI経由に変更 (現在地バイアス追加) ▼▼▼
-        // これにより main.py と同じ正規化・リトライ・キャッシュロジックが適用されます
-        
-        // ベースのクエリパラメータを作成
-        let queryParams = `query=${encodeURIComponent(activeQuery)}`;
+    // ★追加: リクエストIDを発行・更新
+    const currentRequestId = ++searchRequestId.current;
+
+    setIsSearching(true);
+    try {
+      let results: any[] = [];
       
-        // 地図が表示されている場合、その中心座標を渡して周辺検索を優先させる
-        if (map.current) {
-            const { lng, lat } = map.current.getCenter();
-            queryParams += `&lat=${lat}&lng=${lng}`;
-        }
-
-        const res = await fetch(`${API_BASE_URL}/api/search_places?${queryParams}`);
-        
-        if (res.ok) {
-            const data = await res.json();
-            if (data.results && Array.isArray(data.results)) {
-                // 既存の結果（キャッシュなど）と重複しないものだけを追加
-                const newSuggestions = data.results.filter((s: any) => !results.some(r => r.name === s.name));
-                results = [...results, ...newSuggestions];
-            }
-        }
-        // ▲▲▲ 変更ここまで ▲▲▲
-
-        setSearchResults(results);
-      } catch (e) { 
-          console.error("Search failed", e); 
-      } finally { 
-          setIsSearching(false); 
+      // ルーム内キャッシュ検索（変更なし）
+      if (roomId) {
+          const { data: cached } = await supabase.from('room_search_cache').select('*').eq('room_id', roomId).ilike('text', `%${activeQuery}%`).limit(5);
+          if (cached && cached.length > 0) {
+              const cachedResults = cached.map(item => ({ id: item.id, name: item.text, place_name: item.place_name || item.text, center: item.center, image_url: item.image_url, is_room_cache: true }));
+              results = [...cachedResults];
+          }
       }
-  };
+
+      // ベースのクエリパラメータを作成
+      let queryParams = `query=${encodeURIComponent(activeQuery)}`;
+    
+      if (map.current) {
+          const { lng, lat } = map.current.getCenter();
+          queryParams += `&lat=${lat}&lng=${lng}`;
+      }
+
+      const res = await fetch(`${API_BASE_URL}/api/search_places?${queryParams}`);
+      
+      if (res.ok) {
+          const data = await res.json();
+          if (data.results && Array.isArray(data.results)) {
+              const newSuggestions = data.results.filter((s: any) => !results.some(r => r.name === s.name));
+              results = [...results, ...newSuggestions];
+          }
+      }
+
+      // ★重要: ここで「この処理が最新のリクエストか？」を確認
+      // もし処理中に新しい検索(currentRequestIdが増えている)が始まっていたら、この古い結果は捨てる
+      if (currentRequestId === searchRequestId.current) {
+          setSearchResults(results);
+      }
+
+    } catch (e) { 
+        console.error("Search failed", e); 
+    } finally { 
+        // ★ローディング解除も、最新のリクエストの場合のみ行う
+        if (currentRequestId === searchRequestId.current) {
+            setIsSearching(false); 
+        }
+    }
+};
 
   const showResultOnMap = (name: string, desc: string, center: number[], isSaved: boolean) => {
       if (!map.current) return;
@@ -3224,7 +3188,12 @@ el.onclick = (e) => {
             )}
 
             {/* ★追加: オンボーディングモーダル (他の警告より手前に表示したい場合は順序調整) */}
-      {showOnboarding && <OnboardingModal onClose={() => setShowOnboarding(false)} />}
+   {showTutorial && (
+                <TutorialModal 
+                    onClose={() => setShowTutorial(false)} 
+                    forceGuide={forceGuideTutorial} 
+                />
+            )}
       
       {/* ★追加: スワイプチュートリアルモーダル */}
       {showSwipeTutorial && (
@@ -4208,11 +4177,12 @@ el.onclick = (e) => {
 
                                           {/* ▼▼▼ 修正: エリア別ボタンリスト (確定ホテルを除外してカウント) ▼▼▼ */}
                                           {candidateAreas.map((area) => {
-                                              const isActive = selectedCandidateArea === area;
-                                              const count = planSpots.filter(s => (s.status === 'candidate' || (s.status === 'confirmed' && !s.is_hotel && !isHotel(s.name))) && getSpotArea(s, groupingMode) === area).length;
-                                              
-                                              return (
-                                                  <button 
+    const isActive = selectedCandidateArea === area;
+    // ★修正: spotsByCity から直接長さを取得（高速＆名寄せ反映）
+    const count = spotsByCity[area]?.length || 0;
+    
+    return (
+        <button
                                                       key={area}
 // ... (後略)
                                                       // ... (省略) ...
@@ -4933,7 +4903,14 @@ el.onclick = (e) => {
                         />
                    </div>
                )}
-               {currentTab === 'menu' && <div className="w-full h-full"><MenuView spots={planSpots} /></div>}
+               {currentTab === 'menu' && (
+                   <div className="w-full h-full">
+                       <MenuView 
+                           spots={planSpots} 
+                           onOpenTutorial={openTutorialFromMenu} 
+                       />
+                   </div>
+               )}
                
                {currentTab === 'swipe' && (
                    <div className="w-full h-full bg-gray-50">
