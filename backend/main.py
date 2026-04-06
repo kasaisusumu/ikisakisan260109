@@ -121,6 +121,9 @@ class VacantSearchRequest(BaseModel):
     adult_num: int = 2
     meal_type: Optional[str] = None
     polygon: Optional[List[List[float]]] = None 
+    min_rating: Optional[float] = 4.0
+    min_reviews: Optional[int] = 50
+    hotel_type: Optional[str] = "all"
 
 class ImportRequest(BaseModel):
     url: str
@@ -142,6 +145,7 @@ class Spot(BaseModel):
     image_url: Optional[str] = None
     price: Optional[int] = None
     rating: Optional[float] = None
+    detailed_ratings: Optional[Dict[str, float]] = None # ← これを追加
     url: Optional[str] = None
     source: str = "ai" 
     is_jalan: bool = False 
@@ -717,24 +721,34 @@ async def import_rakuten_hotel(req: ImportRequest):
         raw_hotel = data["hotels"][0]
         hotel_content = raw_hotel["hotel"] if "hotel" in raw_hotel else raw_hotel
         basic = None
-        user_review = {}
+        user_review = {} # ← レビュー情報格納用
         if isinstance(hotel_content, list):
             for item in hotel_content:
                 if "hotelBasicInfo" in item: basic = item["hotelBasicInfo"]
-                if "userReview" in item: user_review = item["userReview"]
-                if "hotelRatingInfo" in item: user_review = item["hotelRatingInfo"]
+                if "hotelRatingInfo" in item: user_review = item["hotelRatingInfo"] # ← 詳細評価を取得
         else: basic = hotel_content.get("hotelBasicInfo")
 
         if not basic: return {"error": "ホテル情報の解析に失敗しました。"}
         address = f"{basic.get('address1', '')}{basic.get('address2', '')}"
-        # ★ここでも住所正規化を通す
         address = re.sub(r'[一-龠ぁ-んァ-ン]{1,6}郡', '', address)
+
+        # ▼ 詳細評価の辞書を作成
+        detailed_ratings = {
+            "room": user_review.get("roomAverage", 0),
+            "bath": user_review.get("bathAverage", 0),
+            "meal": user_review.get("mealAverage", 0),
+            "service": user_review.get("serviceAverage", 0),
+            "location": user_review.get("locationAverage", 0),
+            "equipment": user_review.get("equipmentAverage", 0)
+        }
 
         spot_data = {
             "id": str(basic["hotelNo"]), "name": basic["hotelName"], "description": address, 
             "coordinates": [basic["longitude"], basic["latitude"]], "image_url": basic.get("hotelImageUrl"), 
             "url": basic.get("hotelInformationUrl"), "price": basic.get("hotelMinCharge", 0), 
-            "rating": basic.get("reviewAverage", 3.0), "source": "rakuten", "is_hotel": True, "status": "hotel_candidate",
+            "rating": basic.get("reviewAverage", 3.0),
+            "detailed_ratings": detailed_ratings, # ← これを追加
+            "source": "rakuten", "is_hotel": True, "status": "hotel_candidate",
             "comment": basic.get("hotelSpecial", "")[:100] + "..." 
         }
         result = {"spot": spot_data}
@@ -750,7 +764,9 @@ async def search_hotels_vacant(req: VacantSearchRequest):
     global http_client
     if http_client is None: return {"error": "Server starting up..."}
     client = http_client
-    cache_key = f"rakuten_vacant_v4:{req.latitude}:{req.longitude}:{req.checkin_date}:{req.checkout_date}:{req.adult_num}:{req.min_price}:{req.max_price}:{req.meal_type}:{hashlib.md5(str(req.polygon).encode()).hexdigest() if req.polygon else 'all'}"
+
+    # キャッシュキーの作成
+    cache_key = f"rakuten_vacant_v5:{req.latitude}:{req.longitude}:{req.checkin_date}:{req.checkout_date}:{req.adult_num}:{req.min_price}:{req.max_price}:{req.meal_type}:{req.hotel_type}:{req.min_rating}:{hashlib.md5(str(req.polygon).encode()).hexdigest() if req.polygon else 'all'}"
     cached = get_cache(cache_key)
     if cached: return cached
 
@@ -759,79 +775,120 @@ async def search_hotels_vacant(req: VacantSearchRequest):
     c_in = req.checkin_date or (today + timedelta(days=30)).strftime("%Y-%m-%d")
     c_out = req.checkout_date or (date.fromisoformat(c_in) + timedelta(days=1)).strftime("%Y-%m-%d")
 
+    # 1. 楽天API用パラメータの構築
     base_params = {
-        "applicationId": RAKUTEN_APP_ID, "format": "json", "latitude": req.latitude, "longitude": req.longitude,
-        "searchRadius": safe_radius, "datumType": 1, "hits": 30, "sort": "standard",
-        "checkinDate": c_in, "checkoutDate": c_out, "adultNum": req.adult_num,
+        "applicationId": RAKUTEN_APP_ID, 
+        "format": "json", 
+        "latitude": req.latitude, 
+        "longitude": req.longitude,
+        "searchRadius": safe_radius, 
+        "datumType": 1, 
+        "hits": 30, 
+        "sort": "standard",
+        "checkinDate": c_in, 
+        "checkoutDate": c_out, 
+        "adultNum": req.adult_num,
     }
+
     if req.max_price: base_params["maxCharge"] = req.max_price
     if req.min_price: base_params["minCharge"] = req.min_price
-    if req.meal_type == 'room_only': base_params["breakfastFlag"] = 0; base_params["dinnerFlag"] = 0
-    elif req.meal_type == 'breakfast': base_params["breakfastFlag"] = 1; base_params["dinnerFlag"] = 0 
-    elif req.meal_type == 'half_board': base_params["breakfastFlag"] = 1; base_params["dinnerFlag"] = 1
+    
+    # 食事条件の反映
+    if req.meal_type == 'room_only': 
+        base_params["breakfastFlag"] = 0
+        base_params["dinnerFlag"] = 0
+    elif req.meal_type == 'breakfast': 
+        base_params["breakfastFlag"] = 1
+        base_params["dinnerFlag"] = 0 
+    elif req.meal_type == 'half_board': 
+        base_params["breakfastFlag"] = 1
+        base_params["dinnerFlag"] = 1
 
     url = "https://app.rakuten.co.jp/services/api/Travel/VacantHotelSearch/20170426"
 
     async def fetch_page(page_num):
         try:
-            p = base_params.copy(); p["page"] = page_num
+            p = base_params.copy()
+            p["page"] = page_num
             res = await fetch_with_retry(client, url, params=p, initial_timeout=15.0, retries=5)
             if res and res.status_code == 200: return res.json()
         except: pass
         return None
 
     try:
+        # 並列で5ページ分取得
         results = await asyncio.gather(*[fetch_page(i) for i in range(1, 6)])
         all_hotels = []
         seen_ids = set()
+
         for data in results:
             if not data or "hotels" not in data: continue
             for h_group in data["hotels"]:
                 try:
                     hotel_content = h_group["hotel"] if "hotel" in h_group else h_group
                     if not isinstance(hotel_content, list) or len(hotel_content) == 0: continue
-                    basic = None
-                    for item in hotel_content:
-                        if "hotelBasicInfo" in item: basic = item["hotelBasicInfo"]
+                    
+                    basic = next((item["hotelBasicInfo"] for item in hotel_content if "hotelBasicInfo" in item), None)
                     if not basic: continue
+                    
                     hotel_id = str(basic["hotelNo"])
                     if hotel_id in seen_ids: continue
+                    
+                    # ポリゴン（囲った範囲）内かチェック
                     if req.polygon and not is_inside_polygon(basic["latitude"], basic["longitude"], req.polygon): continue
 
-                    best_price = float('inf'); best_plan_id, best_room_class = None, None; found_valid_plan = False
+                    # 2. 取得した宿の中から最適なプランを探す
+                    best_price = float('inf')
+                    found_valid_plan = False
                     for j in range(1, len(hotel_content)):
                         r_info = hotel_content[j].get("roomInfo")
                         if isinstance(r_info, list) and len(r_info) >= 2:
                             r_basic = r_info[0].get("roomBasicInfo", {})
-                            if req.meal_type == 'room_only' and (r_basic.get("withBreakfastFlag") == 1 or r_basic.get("withDinnerFlag") == 1): continue
-                            elif req.meal_type == 'breakfast' and r_basic.get("withBreakfastFlag") != 1: continue
-                            elif req.meal_type == 'half_board' and (r_basic.get("withBreakfastFlag") != 1 or r_basic.get("withDinnerFlag") != 1): continue
                             r_charge = r_info[1].get("dailyCharge")
-                            if r_charge and r_charge.get("total", 0) > 0 and r_charge["total"] < best_price:
-                                best_price = r_charge["total"]
-                                best_plan_id = r_info[0].get("roomBasicInfo", {}).get("planId")
-                                best_room_class = r_info[0].get("roomBasicInfo", {}).get("roomClass")
-                                found_valid_plan = True
+                            
+                            if r_charge and r_charge.get("total", 0) > 0:
+                                if r_charge["total"] < best_price:
+                                    best_price = r_charge["total"]
+                                    found_valid_plan = True
 
                     if not found_valid_plan: continue
-                    if req.min_price and best_price < req.min_price: continue
-                    if req.max_price and best_price > req.max_price: continue
                     
+                    # 3. UI側で設定された「評価」と「レビュー数」でフィルタリング
+                    rating = basic.get("reviewAverage") or 0.0
+                    reviews = basic.get("reviewCount") or 0
+                    if rating < (req.min_rating or 0) or reviews < (req.min_reviews or 0):
+                        continue
+
+                    # 宿種別の簡易フィルタ（ホテル名に含まれるかで判定）
+                    h_name = basic["hotelName"]
+                    if req.hotel_type == "hotel" and "旅館" in h_name: continue
+                    if req.hotel_type == "ryokan" and "ホテル" in h_name: continue
+
                     address = f"{basic.get('address1', '')}{basic.get('address2', '')}"
                     address = re.sub(r'[一-龠ぁ-んァ-ン]{1,6}郡', '', address)
 
                     all_hotels.append({
-                        "id": hotel_id, "name": basic["hotelName"], "description": address, 
-                        "coordinates": [basic["longitude"], basic["latitude"]], "image_url": basic.get("hotelImageUrl"), 
-                        "url": basic.get("hotelInformationUrl"), "price": int(best_price), "rating": basic.get("reviewAverage") or 0.0,
-                        "source": "rakuten", "is_hotel": True, "plan_id": best_plan_id, "room_class": best_room_class, 
-                        "status": "hotel_candidate", "comment": basic.get("hotelSpecial", "")[:60] + "..." 
+                        "id": hotel_id, 
+                        "name": h_name, 
+                        "description": address, 
+                        "coordinates": [basic["longitude"], basic["latitude"]], 
+                        "image_url": basic.get("hotelImageUrl"), 
+                        "url": basic.get("hotelInformationUrl"), 
+                        "price": int(best_price), 
+                        "rating": rating,
+                        "review_count": reviews,
+                        "source": "rakuten", 
+                        "is_hotel": True, 
+                        "status": "hotel_candidate", 
+                        "comment": basic.get("hotelSpecial", "")[:60] + "..." 
                     })
                     seen_ids.add(hotel_id)
                 except: continue
-        result = {"hotels": all_hotels}
-        if all_hotels: set_cache(cache_key, result)
-        return result
+
+        final_result = {"hotels": all_hotels}
+        if all_hotels: set_cache(cache_key, final_result)
+        return final_result
+
     except Exception as e:
         traceback.print_exc()
         return {"error": f"システムエラー: {str(e)}"}

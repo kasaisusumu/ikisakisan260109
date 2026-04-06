@@ -146,35 +146,54 @@ export default function MenuView({ spots, onOpenTutorial }: Props) {
         ⚙️ メニュー & 設定
       </h2>
 
-      {/* 1. 招待リンク共有 */}
-      <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 mb-6">
-        <h3 className="font-bold text-gray-700 mb-2 text-sm">友達を招待する</h3>
-        <div className="flex gap-2">
-          <input 
-            readOnly 
-            value={typeof window !== 'undefined' ? window.location.href : ''} 
-            className="flex-1 bg-gray-100 text-xs p-3 rounded-lg text-gray-500 outline-none"
-          />
-          {/* コピーボタン */}
+     {/* 1. 招待リンク共有 または ルーム作成への誘導 */}
+      {currentRoomId ? (
+        <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 mb-6">
+          <h3 className="font-bold text-gray-700 mb-2 text-sm">友達を招待する</h3>
+          <div className="flex gap-2">
+            <input 
+              readOnly 
+              value={typeof window !== 'undefined' ? window.location.href : ''} 
+              className="flex-1 bg-gray-100 text-xs p-3 rounded-lg text-gray-500 outline-none"
+            />
+            {/* コピーボタン */}
+            <button 
+              onClick={handleCopyLink}
+              className={`px-4 rounded-lg font-bold text-white transition flex items-center gap-2 ${copied ? 'bg-green-500' : 'bg-blue-600 hover:bg-blue-700'}`}
+              title="リンクをコピー"
+            >
+              {copied ? <Check size={16}/> : <Copy size={16}/>}
+            </button>
+            
+            {/* LINE共有ボタン */}
+            <button 
+              onClick={handleShareLine}
+              className="px-4 rounded-lg font-bold text-white transition flex items-center gap-2 bg-[#06C755] hover:bg-[#05b34c]"
+              title="LINEで送る"
+            >
+              <MessageCircle size={16}/>
+            </button>
+          </div>
+          <p className="text-[10px] text-gray-400 mt-2">このURLをLINEなどで送って、友達を招待しましょう。</p>
+        </div>
+      ) : (
+        <div className="bg-blue-50 p-5 rounded-xl shadow-sm border border-blue-100 mb-6 flex flex-col items-center text-center animate-in fade-in duration-300">
+          <div className="w-12 h-12 bg-white text-blue-500 rounded-full flex items-center justify-center mb-3 shadow-sm">
+              <User size={24} />
+          </div>
+          <h3 className="font-black text-blue-900 mb-2 text-sm">友達とシェアしませんか？</h3>
+          <p className="text-xs text-blue-700/80 mb-4 leading-relaxed font-bold">
+              ルームを作成すると専用のリンクが発行され、<br/>
+              友達と一緒にプランを編集できるようになります！
+          </p>
           <button 
-            onClick={handleCopyLink}
-            className={`px-4 rounded-lg font-bold text-white transition flex items-center gap-2 ${copied ? 'bg-green-500' : 'bg-blue-600 hover:bg-blue-700'}`}
-            title="リンクをコピー"
+              onClick={() => router.push('/')}
+              className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold text-sm shadow-md shadow-blue-200 hover:bg-blue-700 hover:scale-[1.02] active:scale-95 transition"
           >
-            {copied ? <Check size={16}/> : <Copy size={16}/>}
-          </button>
-          
-          {/* LINE共有ボタン */}
-          <button 
-            onClick={handleShareLine}
-            className="px-4 rounded-lg font-bold text-white transition flex items-center gap-2 bg-[#06C755] hover:bg-[#05b34c]"
-            title="LINEで送る"
-          >
-            <MessageCircle size={16}/>
+              部屋を作ってシェアする
           </button>
         </div>
-        <p className="text-[10px] text-gray-400 mt-2">このURLをLINEなどで送って、友達を招待しましょう。</p>
-      </div>
+      )}
 
       {/* 2. 新しい旅を作成 & 最近見た旅 */}
       <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 mb-6 animate-in slide-in-from-left-4">

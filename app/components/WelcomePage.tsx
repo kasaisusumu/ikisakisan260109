@@ -8,11 +8,14 @@ import {
   FileText, User, Lock, X, Plus
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 // 共通データファイルをインポート
 import { tutorialSteps } from './TutorialData';
+// お試しマップ検索コンポーネントをインポート
+// import WelcomeMapSearch from './WelcomeMapSearch';
+import HotelListView from './HotelListView';
 
-type Step = 'intro' | 'create' | 'share' | 'terms';
+type Step = 'intro' | 'create' | 'share' | 'terms' | 'mapSearch';
 type ModalType = 'none' | 'terms' | 'privacy' | 'developer';
 
 interface WelcomePageProps {
@@ -33,9 +36,12 @@ const generateUUID = () => {
 
 export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
   const router = useRouter();
+  const searchParams = useSearchParams(); // ★追加
+  const isDirectCreate = searchParams.get('step') === 'create'; // ★追加
   
   // ステート管理
-  const [step, setStep] = useState<Step>(inviteRoomId ? 'terms' : 'intro');
+  // ★変更: URLに step=create があれば直接作成画面へ
+  const [step, setStep] = useState<Step>(inviteRoomId ? 'terms' : (isDirectCreate ? 'create' : 'intro'));
   const [isLoading, setIsLoading] = useState(false);
   const [roomName, setRoomName] = useState(''); 
   const [userName, setUserName] = useState(''); 
@@ -54,8 +60,45 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
   // モーダル表示管理
   const [activeModal, setActiveModal] = useState<ModalType>('none');
 
-  // シークレットモード警告用
-  const [showIncognitoWarning, setShowIncognitoWarning] = useState(true);
+  // ▼▼▼ 変更: シークレットモード警告用ステートと検知ロジック ▼▼▼
+  const [showIncognitoWarning, setShowIncognitoWarning] = useState(false);
+  const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
+
+  // 指定のアクションを実行する前にシークレットモードをチェックする関数
+  const checkIncognitoAndExecute = async (action: () => void) => {
+    let isIncognito = false;
+    if ('storage' in navigator && 'estimate' in navigator.storage) {
+        try {
+            const { quota } = await navigator.storage.estimate();
+            if (quota && quota < 120 * 1024 * 1024) isIncognito = true;
+        } catch (e) {}
+    }
+    if (!isIncognito) {
+        try {
+            const testKey = '__test_incognito__';
+            localStorage.setItem(testKey, '1');
+            localStorage.removeItem(testKey);
+        } catch (e) {
+            isIncognito = true;
+        }
+    }
+
+    if (isIncognito) {
+        setPendingAction(() => action);
+        setShowIncognitoWarning(true);
+    } else {
+        action();
+    }
+  };
+
+  const handleAcceptWarning = () => {
+      setShowIncognitoWarning(false);
+      if (pendingAction) {
+          pendingAction();
+          setPendingAction(null);
+      }
+  };
+  // ▲▲▲ 変更ここまで ▲▲▲
 
   // 招待された場合のデータ取得
   useEffect(() => {
@@ -109,6 +152,51 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
       alert(`エラーが発生しました: ${error.message}`);
       setIsLoading(false);
       return;
+    }
+
+    // お試しデータの引き継ぎ処理
+    try {
+      const trialSpotsStr = localStorage.getItem('rh_trial_spots');
+      if (trialSpotsStr) {
+        const trialSpots = JSON.parse(trialSpotsStr);
+        if (Array.isArray(trialSpots) && trialSpots.length > 0) {
+          const now = new Date().toISOString();
+          
+          const spotsToInsert = trialSpots.map((spot: any, index: number) => {
+            const { id, room_id, ...rest } = spot; 
+            return {
+              ...rest,
+              room_id: newRoomId, // 新しいルームIDに紐付け
+              added_by: userName, // 自分の名前で登録
+              created_at: now,
+              updated_at: now,
+              order: index
+            };
+          });
+          
+          const { data: insertedSpots, error: insertError } = await supabase
+            .from('spots')
+            .insert(spotsToInsert)
+            .select();
+
+          if (insertError) {
+            console.error("Trial spots import error:", insertError);
+          } else if (insertedSpots && insertedSpots.length > 0) {
+            const votesToInsert = insertedSpots.map(spot => ({
+              room_id: newRoomId,
+              spot_id: spot.id,
+              user_name: userName,
+              vote_type: 'like'
+            }));
+            await supabase.from('votes').insert(votesToInsert);
+
+            localStorage.removeItem('rh_trial_spots');
+            localStorage.removeItem('rh_trial_votes');
+          }
+        }
+      }
+    } catch (e) {
+      console.error("Failed to import trial data", e);
     }
 
     // ローカルストレージにも保存
@@ -191,7 +279,7 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                 必ずURLをコピーして控えておくか、<br/>通常モードでご利用ください。
             </p>
             <button 
-                onClick={() => setShowIncognitoWarning(false)} 
+                onClick={handleAcceptWarning} 
                 className="w-full py-4 bg-gray-200 text-gray-600 rounded-2xl font-bold text-sm hover:bg-gray-300 transition"
             >
                 理解してはじめる
@@ -302,10 +390,10 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
             <div className="fixed bottom-[-10%] left-[-10%] w-96 h-96 bg-teal-200 rounded-full blur-3xl opacity-30 pointer-events-none"></div>
 
             {/* スクロール領域 */}
-            <div className="flex-1 overflow-y-auto w-full custom-scrollbar pb-32">
+            <div className="flex-1 overflow-y-auto w-full custom-scrollbar pb-36">
                 <div className="max-w-md w-full mx-auto p-4 text-center relative z-10 animate-in fade-in slide-in-from-bottom-8 duration-700">
                     
-                    {/* ヒーローセクション（よりコンパクトに） */}
+                    {/* ヒーローセクション */}
                     <div className="mb-4 pt-8">
                         <div className="mb-4 flex justify-center">
                             <div className="w-16 h-16 bg-white rounded-[1.2rem] shadow-xl flex items-center justify-center transform -rotate-3 border-4 border-white/50">
@@ -323,19 +411,15 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                         </h1>
                     </div>
 
-                    {/* 詳細な機能紹介 - 画面上部に配置 */}
+                    {/* 詳細な機能紹介 */}
                     <div className="space-y-4 relative mt-2">
                          <div className="text-center">
                             <p className="text-[10px] text-slate-400">横にスクロールして機能を見る 👉</p>
                         </div>
 
-                        {/* 横スクロールコンテナ */}
                         <div className="flex overflow-x-auto pb-6 px-4 gap-4 snap-x snap-mandatory -mx-4 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:'none'] [scrollbar-width:'none']">
-                            {/* ★修正: 共通データからマップして表示 */}
                             {tutorialSteps.map((s, i) => (
-                                // カードサイズを拡大: w-[85%] max-w-[320px]
                                 <div key={i} className="snap-center shrink-0 w-[85%] max-w-[320px] bg-white p-5 rounded-3xl shadow-md border border-slate-100 flex flex-col items-center text-center first:ml-0 last:mr-4">
-                                    {/* イラストエリアの高さを拡大: h-44 */}
                                     <div className={`w-full h-44 rounded-2xl ${s.color} bg-opacity-10 mb-4 flex items-center justify-center relative overflow-hidden`}>
                                         {s.visual}
                                     </div>
@@ -388,18 +472,26 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
 
             {/* 固定ボタンエリア */}
             <div className="fixed bottom-0 left-0 w-full p-4 bg-gradient-to-t from-slate-50 via-slate-50/95 to-transparent z-50">
-                <div className="max-w-md mx-auto">
+                <div className="max-w-md mx-auto space-y-3">
                     <button 
-                        onClick={() => setStep('create')}
+                        onClick={() => checkIncognitoAndExecute(() => setStep('create'))}
                         className="w-full bg-emerald-800 text-white py-3.5 rounded-2xl font-bold text-lg shadow-xl hover:bg-emerald-900 hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2"
                     >
                         しおりを作る <ArrowRight size={20}/>
+                    </button>
+
+                    {/* お試しマップ検索ボタン */}
+                    <button 
+                        onClick={() => checkIncognitoAndExecute(() => router.push('/?trial=true'))}
+                        className="w-full bg-white text-emerald-800 border-2 border-emerald-100 py-3.5 rounded-2xl font-bold text-sm shadow-sm hover:bg-emerald-50 active:scale-95 transition-all flex items-center justify-center gap-2"
+                    >
+                        <MapPinned size={18}/>
+                        ログイン不要でマップ検索を試す
                     </button>
                 </div>
             </div>
         </div>
 
-        {/* モーダル群 (ルートの最後に配置して最前面に表示) */}
         {warningModal}
         {infoModal}
       </>
@@ -589,7 +681,7 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                 </div>
 
                 <button 
-                    onClick={handleJoin}
+                    onClick={() => checkIncognitoAndExecute(handleJoin)}
                     disabled={!!inviteRoomId && !userName}
                     className={`w-full py-4 rounded-2xl font-bold text-lg shadow-lg transition-all
                     ${(inviteRoomId && !userName) ? 'bg-slate-200 text-slate-400' : 'bg-emerald-600 text-white hover:bg-emerald-700 hover:scale-[1.02] active:scale-95'}

@@ -4,11 +4,13 @@ import { supabase } from '@/lib/supabase';
 import { useState, useMemo, useEffect, useRef } from 'react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
+import HotelCompareView from './HotelCompareView';
+import RadarChart from './RadarChart'; // ※パスはフォルダ構成に合わせて微調整してください（例: '@/components/RadarChart'）
 import { 
-  Search, ExternalLink, MapPin, 
+  Search, ExternalLink, MapPin, ArrowLeft,
   X, TrendingUp, DollarSign,
   Star, Loader2, PenTool, Trash2, Plus, Calendar, Users, SlidersHorizontal, Link as LinkIcon, Download, ChevronUp, ChevronDown, Check, AlertTriangle, BedDouble,
-  Utensils 
+  Utensils , Info, Map as MapIcon
 } from 'lucide-react';
 
 // ==========================================
@@ -26,6 +28,9 @@ const getUDColor = (name: string) => {
   return UD_COLORS[Math.abs(hash) % UD_COLORS.length];
 };
 
+// === レーダーチャート用コンポーネントを追加 ===
+
+
 const isHotel = (name: string) => {
     const keywords = ['ホテル', '旅館', '宿', '民宿', 'Hotel', 'Inn', 'Guest House', 'ホステル', 'リゾート'];
     return keywords.some(k => name.includes(k));
@@ -40,7 +45,6 @@ const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: numbe
     return R * c;
 };
 
-// 円のポリゴンGeoJSONを生成する関数
 const createGeoJSONCircle = (center: [number, number], radiusInKm: number, points = 64) => {
     const coords = { latitude: center[1], longitude: center[0] };
     const km = radiusInKm;
@@ -79,6 +83,10 @@ interface SearchConditions {
     adults: number;
     budgetMax: number;
     mealType: 'none' | 'room_only' | 'breakfast' | 'half_board';
+    // ▼▼▼ この3行を追加 ▼▼▼
+    minRating: number;
+    minReviewCount: number;
+    hotelType: 'all' | 'hotel' | 'ryokan';
 }
 
 interface Props {
@@ -91,11 +99,17 @@ interface Props {
   onPreviewSpot?: (spot: any) => void;
   initialSearchArea?: AreaSearchParams | null;
   travelDays: number;
+  isTrial?: boolean;
+  onBack?: () => void;
 }
 
-export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot, roomId, initialSearchArea, travelDays }: Props) {
-  // ログ送信関数
+export default function HotelListView({ 
+  spots, spotVotes, currentUser, onAddSpot, roomId, initialSearchArea, travelDays, 
+  isTrial, onBack, onPreviewSpot, onAutoSearch 
+}: Props) {
+  
   const logAffiliateClick = async (spotName: string, source: string) => {
+    if (isTrial || !roomId) return; 
       await supabase.from('affiliate_logs').insert({
           room_id: roomId,
           user_name: currentUser || 'Guest',
@@ -119,7 +133,24 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
   const [isMapLoaded, setIsMapLoaded] = useState(false);
   const [viewedHotelIds, setViewedHotelIds] = useState<Set<string>>(new Set());
 
-  // ズーム機能用のStateとRef
+  const [displayDay, setDisplayDay] = useState(0);
+
+  const [reviewModalData, setReviewModalData] = useState<{ spot: any, key: string, label: string } | null>(null);
+
+  // 既存のStateの下あたりに追加
+const [fetchingSpotIds, setFetchingSpotIds] = useState<Set<string>>(new Set());
+const [detailModalHotel, setDetailModalHotel] = useState<any>(null);
+
+// ▼ 既存のStateの下に追加
+  const [showMapInResult, setShowMapInResult] = useState(false);
+
+  // ▼ 地図の表示・非表示が切り替わったときにMapboxをリサイズして崩れを防ぐ
+  useEffect(() => {
+      if (map.current) {
+          setTimeout(() => map.current?.resize(), 400); // アニメーション終了後にリサイズ
+      }
+  }, [hotels.length, showMapInResult]);
+
   const rightEdgeGestureRef = useRef({
       isActive: false,
       startY: 0,
@@ -128,7 +159,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
   const [showZoomUI, setShowZoomUI] = useState(false);
   const zoomKnobRef = useRef<HTMLDivElement>(null);
 
-  // 検索条件の初期化
   const [conditions, setConditions] = useState<SearchConditions>(() => {
       const today = new Date();
       const nextMonth = new Date(today);
@@ -144,6 +174,10 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
           adults: 2,
           budgetMax: 50000,
           mealType: 'half_board' as const, 
+          // ▼▼▼ この3行を追加 ▼▼▼
+          minRating: 0,
+          minReviewCount: 0,
+          hotelType: 'all' as const,
       };
 
       if (typeof window !== 'undefined' && roomId) {
@@ -161,12 +195,11 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
 
   const [searchedAdults, setSearchedAdults] = useState(conditions.adults);
 
-  // 検索条件が変更されたら保存
   useEffect(() => {
-      if (roomId) {
+      if (!isTrial && roomId) { 
           localStorage.setItem(`rh_hotel_conditions_${roomId}`, JSON.stringify(conditions));
       }
-  }, [conditions, roomId]);
+  }, [conditions, roomId, isTrial]);
 
   const [showSettings, setShowSettings] = useState(false);
   const [searchArea, setSearchArea] = useState<AreaSearchParams | null>(null);
@@ -206,7 +239,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
       }
   }, [hotels, activeHotelId, searchedAdults]); 
 
-  // 検索範囲（ポリゴン）の描画
   useEffect(() => {
       if (!map.current || !searchArea || !isMapLoaded) return;
       const source: any = map.current.getSource('search-area-source');
@@ -233,7 +265,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
       }
   }, [searchArea, isMapLoaded]);
 
-  // ズームジェスチャーのロジック
   useEffect(() => {
     const container = mapContainer.current;
     if (!container) return;
@@ -252,10 +283,8 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                 startZoom: map.current?.getZoom() || 14
             };
             
-            // UIを表示
             setShowZoomUI(true);
             
-            // ツマミをタッチ位置へ移動
             if (zoomKnobRef.current) {
                 zoomKnobRef.current.style.transform = `translateY(${touch.clientY}px)`;
             }
@@ -275,7 +304,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
         
         map.current.setZoom(newZoom);
 
-        // ツマミの位置を更新
         if (zoomKnobRef.current) {
             zoomKnobRef.current.style.transform = `translateY(${touch.clientY}px)`;
         }
@@ -283,7 +311,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
 
     const onTouchEnd = () => {
         rightEdgeGestureRef.current.isActive = false;
-        // UIを非表示
         setShowZoomUI(false);
     };
 
@@ -300,26 +327,58 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
     };
   }, [isDrawing]);
 
-  const handleSelectHotel = (hotel: any) => {
-      setActiveHotelId(hotel.id);
-      setViewedHotelIds(prev => {
-          const next = new Set(prev);
-          next.add(hotel.id);
-          return next;
-      });
+  
+const handleSelectHotel = async (hotel: any) => {
+    setActiveHotelId(hotel.id);
+    
+    // viewedHotelIds に追加（これでカードが蓄積されます）
+    setViewedHotelIds(prev => {
+        const next = new Set(prev);
+        next.add(hotel.id);
+        return next;
+    });
 
-      setSelectedHotel(hotel);
-      
-      if (map.current) {
-          map.current.flyTo({ 
-              center: hotel.coordinates, 
-              zoom: 16, 
-              offset: [0, -window.innerHeight * 0.35], 
-              duration: 1000 
-          });
-      }
-      if (isExpanded) setIsExpanded(false);
-  };
+    if (map.current) {
+        map.current.flyTo({ 
+            center: hotel.coordinates, 
+            zoom: 16, 
+            offset: [0, -window.innerHeight * 0.1], // モーダルがフルスクリーンではないので少し下げる
+            duration: 1000 
+        });
+    }
+    if (isExpanded) setIsExpanded(false);
+
+    // ▼ レーダーチャート用の詳細データがなければ取得する処理
+    if (!hotel.detailed_ratings && !fetchingSpotIds.has(hotel.id)) {
+        setFetchingSpotIds(prev => new Set([...prev, hotel.id]));
+        try {
+            const res = await fetch(`${API_BASE_URL}/api/import_rakuten_hotel`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotel.id}` })
+            });
+            if (res.ok) {
+                const data = await res.json();
+                if (data.spot && data.spot.detailed_ratings) {
+                    // 該当ホテルのデータを更新
+                    setHotels(prev => prev.map(h => 
+                        h.id === hotel.id ? { ...h, detailed_ratings: data.spot.detailed_ratings, comment: data.spot.comment } : h
+                    ));
+                }
+            }
+        } catch (e) {
+            console.error(e);
+        } finally {
+            setFetchingSpotIds(prev => {
+                const next = new Set(prev);
+                next.delete(hotel.id);
+                return next;
+            });
+        }
+    }
+};
+
+
 
   const handleAddCandidate = (hotel: any) => {
       setPendingHotel(hotel);
@@ -366,14 +425,12 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
     const otonaSu = conditions.adults || 2;
     const hotelId = hotel.id;
 
-    // ★ご指定のパラメータ文字列（順序・構成を完全に一致）
     const paramString = `f_syu=&f_teikei=&f_campaign=&f_flg=PLAN&f_otona_su=${otonaSu}&f_heya_su=1&f_s1=0&f_s2=0&f_y1=0&f_y2=0&f_y3=0&f_y4=0&f_kin=&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_kin2=&f_hak=&f_tel=&f_tscm_flg=&f_p_no=&f_custom_code=&f_search_type=&f_static=1&f_tel=&f_service=&f_rm_equip=&f_sort=minNo`;
 
     if (hotelId) {
          return `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotelId}?${paramString}`;
     }
     
-    // フォールバック
     return `https://search.travel.rakuten.co.jp/ds/hotel/search?f_query=${encodeURIComponent(hotel.name)}&${paramString}`;
   };
 
@@ -410,7 +467,13 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
     const paddingLeft = 40; const paddingBottom = 30; const paddingRight = 10; const paddingTop = 10;
     const width = 300; const height = 200; 
     
-    const minRating = 3.0; const maxRating = 5.0;
+   // 1. 横軸の最小値を、検索条件（または実際の最低評価）に合わせて動的に変更
+    const baseMinRating = conditions.minRating > 0 ? conditions.minRating : 3.0;
+    // 念のため、実際の検索結果の中にベースより低い評価があればそれに合わせる（見切れ防止）
+    const actualMinRating = hotels.length > 0 ? Math.min(...hotels.map(h => h.rating || 3.0)) : 3.0;
+    const minRating = Math.min(baseMinRating, actualMinRating); 
+    const maxRating = 5.0;
+
     const prices = hotels.map(h => Math.round(h.price / Math.max(1, searchedAdults))).filter(p => p > 0);
     
     const minP = prices.length ? Math.min(...prices) * 0.9 : 0;
@@ -418,10 +481,21 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
     
     const maxReviews = useMemo(() => Math.max(...hotels.map(h => h.review_count || 0), 1), [hotels]);
 
-    const getX = (rating: number) => paddingLeft + ((rating - minRating) / (maxRating - minRating)) * (width - paddingLeft - paddingRight);
+    // プロットが左にはみ出さないように Math.max でガード
+    const getX = (rating: number) => paddingLeft + ((Math.max(rating, minRating) - minRating) / (maxRating - minRating)) * (width - paddingLeft - paddingRight);
     const getY = (price: number) => (height - paddingBottom) - ((price - minP) / (maxP - minP)) * (height - paddingBottom - paddingTop);
     
-    const ratingTicks = [3.0, 3.5, 4.0, 4.5, 5.0];
+    // 2. 最小値に合わせて、メモリ（縦線の間隔と数値）を最適化
+    let ratingTicks: number[] = [];
+    if (minRating >= 4.5) {
+        ratingTicks = [4.5, 4.6, 4.7, 4.8, 4.9, 5.0]; // 0.1刻み
+    } else if (minRating >= 4.0) {
+        ratingTicks = [4.0, 4.2, 4.4, 4.6, 4.8, 5.0]; // 0.2刻み
+    } else if (minRating >= 3.5) {
+        ratingTicks = [3.5, 3.8, 4.1, 4.4, 4.7, 5.0]; // 0.3刻み
+    } else {
+        ratingTicks = [3.0, 3.5, 4.0, 4.5, 5.0];      // 0.5刻み（デフォルト）
+    }
     const priceTicks = [Math.floor(minP), Math.floor((minP + maxP) / 2), Math.floor(maxP)];
 
     return (
@@ -520,8 +594,8 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
     
     setSearchedAdults(conditions.adults);
 
-    setIsLoading(true); setHotels([]); setSelectedHotel(null); setActiveHotelId(null);
-    setShowSettings(false); 
+    setIsLoading(true); setHotels([]); setActiveHotelId(null); setViewedHotelIds(new Set()); // 追加
+     setShowSettings(false); 
     try {
         const mealTypeParam = conditions.mealType === 'none' ? undefined : conditions.mealType;
 
@@ -534,7 +608,11 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
             checkin_date: conditions.checkin, 
             checkout_date: conditions.checkout, 
             adult_num: conditions.adults,
-            meal_type: mealTypeParam
+            meal_type: mealTypeParam,
+            // ▼▼▼ APIへの送信パラメータに追加 ▼▼▼
+            min_rating: conditions.minRating > 0 ? conditions.minRating : undefined,
+            min_review_count: conditions.minReviewCount > 0 ? conditions.minReviewCount : undefined,
+            hotel_type: conditions.hotelType !== 'all' ? conditions.hotelType : undefined,
         };
         
         console.log("Searching with:", body); 
@@ -543,19 +621,39 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
         });
         const data = await res.json();
+        
         if (data.hotels?.length > 0) { 
-            setHotels(data.hotels); 
-            if (map.current) {
-                const bounds = new mapboxgl.LngLatBounds();
-                searchArea.polygon.forEach(coord => bounds.extend(coord as [number, number]));
-                map.current.fitBounds(bounds, { padding: 80, duration: 1500 });
+            // ▼▼▼ フロントエンドでの絞り込み（API側が未対応の場合の保険） ▼▼▼
+            let filteredHotels = data.hotels;
+            
+            if (conditions.minRating > 0) {
+                filteredHotels = filteredHotels.filter((h: any) => (h.rating || 0) >= conditions.minRating);
+            }
+            if (conditions.minReviewCount > 0) {
+                filteredHotels = filteredHotels.filter((h: any) => (h.review_count || 0) >= conditions.minReviewCount);
+            }
+            if (conditions.hotelType === 'hotel') {
+                filteredHotels = filteredHotels.filter((h: any) => !h.name.includes('旅館') && !h.name.includes('民宿'));
+            } else if (conditions.hotelType === 'ryokan') {
+                filteredHotels = filteredHotels.filter((h: any) => h.name.includes('旅館') || h.name.includes('民宿') || h.name.includes('和') || h.name.includes('温泉'));
+            }
+            // ▲▲▲ 追加ここまで ▲▲▲
+
+            if (filteredHotels.length > 0) {
+                setHotels(filteredHotels); 
+                if (map.current) {
+                    const bounds = new mapboxgl.LngLatBounds();
+                    searchArea.polygon.forEach(coord => bounds.extend(coord as [number, number]));
+                    map.current.fitBounds(bounds, { padding: 80, duration: 1500 });
+                }
+            } else {
+                alert("条件（評価やレビュー数など）に合う宿が範囲内に見つかりませんでした。");
+                setShowSettings(true);
             }
         }
         else {
-            // ▼▼▼ 修正: 見つからなかった場合、設定画面を再表示する ▼▼▼
             alert("条件に合う宿が見つかりませんでした。\n条件を変更して再検索してください。");
             setShowSettings(true);
-            // ▲▲▲ 修正ここまで ▲▲▲
         }
     } catch (e) { 
         alert("通信エラーが発生しました"); 
@@ -640,8 +738,17 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
   return (
     <div className="relative w-full h-full bg-slate-50 flex flex-col font-sans overflow-hidden">
       
-      {/* 1. マップセクション */}
-      <div className={`absolute inset-0 z-0 transition-all duration-500 ${hotels.length > 0 ? 'h-1/2' : 'h-full'}`}>
+    {isTrial && onBack && (
+        <div className="absolute top-4 left-4 z-50">
+            <button onClick={onBack} className="w-10 h-10 bg-white/90 backdrop-blur rounded-full flex items-center justify-center shadow-lg hover:scale-105 active:scale-95 transition">
+                <ArrowLeft size={20} className="text-gray-700"/>
+            </button>
+        </div>
+    )}
+
+      {/* 上半分：マップエリア */}
+      {/* 修正箇所: h-1/2 の部分を (showMapInResult ? 'h-1/2' : 'h-0') に変更 */}
+      <div className={`absolute inset-0 z-0 transition-all duration-500 ${hotels.length > 0 ? (showMapInResult ? 'h-1/2' : 'h-0') : 'h-full'}`}>
          <div ref={mapContainer} className="w-full h-full" style={{ touchAction: isDrawing ? 'none' : 'auto' }} />
          
          {!selectedHotel && (
@@ -656,199 +763,336 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
          )}
       </div>
 
-      {/* 2. メイン操作パネル */}
-      <div className={`absolute bottom-0 left-0 right-0 z-30 bg-white rounded-t-[2.5rem] shadow-[0_-10px_60px_rgba(0,0,0,0.15)] flex flex-col transition-all duration-500 overflow-hidden ${hotels.length > 0 ? 'h-1/2' : 'h-auto max-h-[85vh]'}`}>
+      {/* 下半分（または全画面）：検索結果・メニューエリア */}
+      {/* 修正箇所: rounded-t や h-1/2 の条件分岐を変更 */}
+      <div className={`absolute bottom-0 left-0 right-0 z-30 bg-white shadow-[0_-10px_60px_rgba(0,0,0,0.15)] flex flex-col transition-all duration-500 overflow-hidden ${
+          hotels.length > 0 
+          ? (showMapInResult ? 'h-1/2 rounded-t-[2.5rem]' : 'h-full rounded-none pt-4') 
+          : 'h-auto max-h-[85vh] rounded-t-[2.5rem]'
+      }`}>      
           <div className="w-12 h-1.5 bg-gray-100 rounded-full mx-auto mt-4 mb-2 shrink-0" />
+          
           <div className="flex-1 overflow-y-auto px-8 pb-32">
-             {hotels.length === 0 ? (
-                <div className="flex flex-col gap-6 pt-4 animate-in fade-in slide-in-from-bottom-4">
-                    <div className="text-center space-y-2">
-                        <div className="inline-block p-3 bg-blue-50 rounded-2xl text-blue-600 mb-2">
-                            <BedDouble size={32} />
-                        </div>
-                        <h2 className="text-2xl font-black text-gray-800 tracking-tight">宿泊先を検討する</h2>
-                        <p className="text-sm text-gray-500 font-medium leading-relaxed">
-                            あなたの旅にぴったりの宿を見つけて、<br />候補リストに追加しましょう。
-                        </p>
-                    </div>
+            {hotels.length === 0 ? (
+                (() => {
+                    const allAddedHotels = spots.filter(s => 
+                        s.status === 'hotel_candidate' || 
+                        (s.status === 'confirmed' && (s.is_hotel || isHotel(s.name)))
+                    );
 
-                    <div className="grid grid-cols-1 gap-3">
-                        <div className="bg-white border border-gray-100 p-4 rounded-2xl shadow-sm flex items-start gap-3">
-                            <div className="w-8 h-8 bg-black text-white rounded-full flex items-center justify-center font-bold text-sm shrink-0">1</div>
-                            <div>
-                                <p className="text-sm font-bold text-gray-800">範囲を囲って探す</p>
-                                <p className="text-[11px] text-gray-500 leading-normal">右上のペンツールでマップ上のエリアを囲むと、その付近の空室状況を検索できます。</p>
-                            </div>
-                        </div>
+                    if (allAddedHotels.length > 0) {
+                        const filteredByDay = allAddedHotels.filter(s => (s.day || 0) === displayDay);
 
-                        <div className="bg-blue-50/50 border border-blue-100 p-4 rounded-2xl shadow-sm flex items-start gap-3">
-                            <div className="w-8 h-8 bg-blue-600 text-white rounded-full flex items-center justify-center font-bold text-sm shrink-0">2</div>
-                            <div className="flex-1">
-                                <p className="text-sm font-bold text-blue-900">楽天トラベルから直接取り込む</p>
-                                <p className="text-[11px] text-blue-700/70 leading-normal mb-3">お気に入りの宿のURLを貼り付けるだけで、写真や詳細を自動でリストに追加できます。</p>
+                        return (
+                            <div className="pt-20 animate-in fade-in">
                                 
-                                <div className="flex gap-2">
-                                    <input 
-                                        type="text" 
-                                        value={importUrl} 
-                                        onChange={(e) => setImportUrl(e.target.value)} 
-                                        placeholder="https://hotel.travel.rakuten.co.jp/..." 
-                                        className="flex-1 bg-white border border-blue-200 rounded-xl px-3 py-2.5 text-xs outline-none focus:ring-2 focus:ring-blue-300 transition shadow-inner"
-                                    />
+                                <div className="flex gap-2 overflow-x-auto no-scrollbar mb-8 pb-2 mask-gradient">
                                     <button 
-                                        onClick={executeImport} 
-                                        disabled={isImporting || !importUrl} 
-                                        className="bg-blue-600 text-white px-4 rounded-xl font-bold text-xs disabled:opacity-50 shadow-md active:scale-95 transition"
+                                        onClick={() => setDisplayDay(0)}
+                                        className={`px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition border ${displayDay === 0 ? 'bg-orange-500 text-white border-orange-500 shadow-md' : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'}`}
                                     >
-                                        {isImporting ? <Loader2 size={16} className="animate-spin"/> : "追加"}
+                                        未定 ({allAddedHotels.filter(s => !s.day || s.day === 0).length})
+                                    </button>
+                                    {Array.from({ length: travelDays }).map((_, i) => {
+                                        const d = i + 1;
+                                        if (d === travelDays) return null;
+                                        const count = allAddedHotels.filter(s => s.day === d).length;
+                                        return (
+                                            <button 
+                                                key={d}
+                                                onClick={() => setDisplayDay(d)}
+                                                className={`px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition border ${displayDay === d ? 'bg-orange-500 text-white border-orange-500 shadow-md' : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'}`}
+                                            >
+                                                Day {d}-{d+1} ({count})
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+
+                                {filteredByDay.length > 0 ? (
+                                    <HotelCompareView 
+                                        spots={filteredByDay} 
+                                        onSelectHotel={(spot) => onPreviewSpot && onPreviewSpot(spot)} 
+                                        adultNum={searchedAdults}
+                                    />
+                                ) : (
+                                    <div className="text-center py-12 bg-slate-50 rounded-[2rem] border border-dashed border-gray-200 mb-4">
+                                        <div className="w-12 h-12 bg-white rounded-full flex items-center justify-center mx-auto mb-3 shadow-sm">
+                                            <Calendar className="text-gray-300" size={24}/>
+                                        </div>
+                                        <p className="text-xs text-gray-400 font-bold">この日の宿はまだ追加されていません</p>
+                                    </div>
+                                )}
+                                
+                                <div className="mt-4 px-2">
+                                    <button 
+                                        onClick={() => setShowSettings(true)}
+                                        className="w-full bg-slate-100 text-gray-600 py-4 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 hover:bg-slate-200 transition"
+                                    >
+                                        <Search size={18}/> 新しい条件で宿を検索する
                                     </button>
                                 </div>
                             </div>
+                        );
+                    }
+
+                    return (
+                        <div className="flex flex-col gap-6 pt-16 animate-in fade-in slide-in-from-bottom-4">
+                            <div className="text-center space-y-2">
+                                <div className="inline-block p-3 bg-blue-50 rounded-2xl text-blue-600 mb-2">
+                                    <BedDouble size={32} />
+                                </div>
+                                <h2 className="text-2xl font-black text-gray-800 tracking-tight">宿泊先を検討する</h2>
+                                <p className="text-sm text-gray-500 font-medium leading-relaxed">
+                                    あなたの旅にぴったりの宿を見つけて、<br />候補リストに追加しましょう。
+                                </p>
+                            </div>
+
+                            <div className="grid grid-cols-1 gap-3">
+                                <div className="bg-white border border-gray-100 p-4 rounded-2xl shadow-sm flex items-start gap-3">
+                                    <div className="w-8 h-8 bg-black text-white rounded-full flex items-center justify-center font-bold text-sm shrink-0">1</div>
+                                    <div>
+                                        <p className="text-sm font-bold text-gray-800">範囲を囲って探す</p>
+                                        <p className="text-[11px] text-gray-500 leading-normal">右上のペンツールでマップ上のエリアを囲むと、その付近の空室状況を検索できます。</p>
+                                    </div>
+                                </div>
+
+                                {!isTrial && (
+                                    <div className="bg-blue-50/50 border border-blue-100 p-4 rounded-2xl shadow-sm flex items-start gap-3">
+                                        <div className="w-8 h-8 bg-blue-600 text-white rounded-full flex items-center justify-center font-bold text-sm shrink-0">2</div>
+                                        <div className="flex-1">
+                                            <p className="text-sm font-bold text-blue-900">楽天トラベルから直接取り込む</p>
+                                            <p className="text-[11px] text-blue-700/70 leading-normal mb-3">お気に入りの宿のURLを貼り付けるだけで、写真や詳細を自動でリストに追加できます。</p>
+                                            
+                                            <div className="flex gap-2">
+                                                <input 
+                                                    type="text" 
+                                                    value={importUrl} 
+                                                    onChange={(e) => setImportUrl(e.target.value)} 
+                                                    placeholder="https://hotel.travel.rakuten.co.jp/..." 
+                                                    className="flex-1 bg-white border border-blue-200 rounded-xl px-3 py-2.5 text-xs outline-none focus:ring-2 focus:ring-blue-300 transition shadow-inner"
+                                                />
+                                                <button 
+                                                    onClick={executeImport} 
+                                                    disabled={isImporting || !importUrl} 
+                                                    className="bg-blue-600 text-white px-4 rounded-xl font-bold text-xs disabled:opacity-50 shadow-md active:scale-95 transition"
+                                                >
+                                                    {isImporting ? <Loader2 size={16} className="animate-spin"/> : "追加"}
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="space-y-3 pb-10">
+                                <p className="text-[10px] font-black text-gray-400 text-center uppercase tracking-widest">Or Search on Web</p>
+                                <a 
+                                    href={rakutenHomeUrl} 
+                                    target="_blank" 
+                                    rel="noopener noreferrer"
+                                    onClick={() => logAffiliateClick("楽天トラベルトップ", "hotel_search_banner")}
+                                    className="w-full bg-[#BF0000] text-white py-4 rounded-2xl font-black text-center flex items-center justify-center gap-3 shadow-lg active:scale-95 transition-transform"
+                                >
+                                    楽天トラベルで探す <ExternalLink size={18}/>
+                                </a>
+                            </div>
                         </div>
+                    );
+                })()
+            ) : (
+                <div className="flex flex-col gap-6 pt-20 animate-in fade-in pb-10">
+                    
+<div className="flex justify-between items-center">
+    <h3 className="text-xl font-black text-gray-800 flex items-center gap-2">
+        <TrendingUp size={22} className="text-blue-500"/> 
+        分析結果 
+        <span className="text-sm font-bold text-gray-500 ml-1">({hotels.length}件)</span>
+    </h3>
+    <div className="flex items-center gap-2">
+        {/* ▼ 地図切り替えボタンを追加 */}
+        <button 
+            onClick={() => setShowMapInResult(!showMapInResult)} 
+            className={`px-3 py-1.5 rounded-full text-[11px] font-bold flex items-center gap-1.5 transition-colors ${showMapInResult ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-100 text-gray-600 hover:bg-slate-200'}`}
+        >
+            <MapIcon size={14}/> {showMapInResult ? '地図を隠す' : '地図で表示'}
+        </button>
+        {/* ▲ ここまで */}
+        <button onClick={() => setShowSettings(true)} className="p-2 bg-slate-100 rounded-full text-gray-600 hover:bg-slate-200 transition-colors"><SlidersHorizontal size={18}/></button>
+    </div>
+</div>
+                    <div className="w-full aspect-[4/3] bg-slate-50 rounded-[2rem] border border-gray-100 relative overflow-hidden shadow-inner shrink-0">
+                        <ScatterPlot />
+                    </div>
+                   
+
+{/* 蓄積されたホテルカードの横スクロール表示 */}
+{viewedHotelIds.size > 0 ? (
+    <div className="flex gap-4 overflow-x-auto px-2 pb-4 no-scrollbar mask-gradient" style={{ scrollBehavior: 'smooth' }}>
+        {/* 新しくクリックしたものが一番左に来るように reverse() しています */}
+        {Array.from(viewedHotelIds).reverse().map((id) => {
+            const hotel = hotels.find(h => h.id === id);
+            if (!hotel) return null;
+            
+            const unitPrice = Math.round(hotel.price / Math.max(1, searchedAdults));
+            const isSelected = activeHotelId === hotel.id;
+            const isLoading = fetchingSpotIds.has(hotel.id);
+            const targetUrl = getAffiliateUrl(hotel);
+
+            return (
+                <div 
+                    key={hotel.id} 
+                    className={`min-w-[260px] bg-white rounded-3xl p-4 flex flex-col gap-4 relative cursor-pointer active:scale-[0.98] transition-all duration-300 ${
+                        isSelected 
+                        ? 'border-2 border-red-500 shadow-md ring-2 ring-red-100 transform -translate-y-1'
+                        : 'border border-gray-100 shadow-sm'
+                    }`}
+                    onClick={() => handleSelectHotel(hotel)}
+                >
+                    <div className="w-full h-32 bg-gray-100 rounded-2xl overflow-hidden shrink-0 relative">
+                        {hotel.image_url ? (
+                            <img src={hotel.image_url} className="w-full h-full object-cover" alt="" />
+                        ) : (
+                            <div className="flex h-full items-center justify-center text-gray-300"><BedDouble size={32}/></div>
+                        )}
+                        {hotel.rating > 0 && (
+                            <div className={`absolute top-2 right-2 backdrop-blur-md text-white px-2 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 ${isSelected ? 'bg-red-500/90' : 'bg-black/60'}`}>
+                                <Star size={10} className="text-yellow-400" fill="currentColor"/> {hotel.rating}
+                            </div>
+                        )}
                     </div>
 
-                    <div className="space-y-3">
-                        <p className="text-[10px] font-black text-gray-400 text-center uppercase tracking-widest">Or Search on Web</p>
-                        <a 
-                            href={rakutenHomeUrl} 
-                            target="_blank" 
-                            rel="noopener noreferrer"
-                            // onClickでログ送信
-                            onClick={() => logAffiliateClick("楽天トラベルトップ", "hotel_search_banner")}
-                            className="w-full bg-[#BF0000] text-white py-4 rounded-2xl font-black text-center flex items-center justify-center gap-3 shadow-lg active:scale-95 transition-transform"
+                    <div>
+                        <h4 className={`font-black text-sm line-clamp-2 leading-tight mb-1 ${isSelected ? 'text-red-600' : 'text-gray-800'}`}>{hotel.name}</h4>
+                        <div className="flex items-center gap-1 text-[10px] text-gray-400 font-bold mb-2">
+                            <MapPin size={10} className="shrink-0"/> <span className="truncate">{hotel.description || "エリア検索結果"}</span>
+                        </div>
+                        {hotel.price > 0 && (
+                            <p className="text-orange-500 font-black text-lg leading-none mt-1">
+                                ¥{unitPrice.toLocaleString()}<span className="text-[10px] text-gray-400 font-bold ml-1">~ /人</span>
+                            </p>
+                        )}
+                    </div>
+
+                    {/* レーダーチャート */}
+                    <div className={`flex items-center justify-center rounded-2xl py-2 h-[160px] transition-colors ${isSelected ? 'bg-red-50' : 'bg-gray-50/50'}`}>
+                       <RadarChart ratings={hotel.detailed_ratings} color={isSelected ? "#EF4444" : "#F97316"} isLoading={isLoading} onLabelClick={(key, label) => setReviewModalData({ spot: hotel, key, label })} /> </div>
+
+                    <div className="flex gap-2 mt-auto pt-2">
+                        <button 
+                            onClick={(e) => { e.stopPropagation(); setDetailModalHotel(hotel); }}
+                            className="flex-[1] bg-gray-800 text-white py-3 rounded-xl font-bold text-[11px] flex items-center justify-center gap-1 hover:bg-gray-700 transition-colors"
                         >
-                            楽天トラベルで探す <ExternalLink size={18}/>
-                        </a>
+                            <Info size={14} /> 詳細
+                        </button>
+                        <button 
+                            onClick={(e) => { e.stopPropagation(); handleAddCandidate(hotel); }}
+                            className="flex-[1.2] bg-blue-600 text-white py-3 rounded-xl font-bold text-[11px] flex items-center justify-center gap-1 hover:bg-blue-700 transition-colors"
+                        >
+                            <Plus size={14} /> 候補に追加
+                        </button>
                     </div>
                 </div>
-            ) : (
-                  <div className="flex flex-col gap-6 pt-2 animate-in fade-in">
-                      <div className="flex justify-between items-center">
-                          <h3 className="text-xl font-black text-gray-800 flex items-center gap-2">
-                              <TrendingUp size={22} className="text-blue-500"/> 
-                              分析結果 
-                              <span className="text-sm font-bold text-gray-500 ml-1">({hotels.length}件)</span>
-                          </h3>
-                          <button onClick={() => setShowSettings(true)} className="p-2 bg-slate-100 rounded-full text-gray-600"><SlidersHorizontal size={18}/></button>
-                      </div>
-                      <div className="w-full aspect-[4/3] bg-slate-50 rounded-[2rem] border border-gray-100 relative overflow-hidden shadow-inner shrink-0">
-                          <ScatterPlot />
-                      </div>
-                      <div className="space-y-4 pb-12">
-                          {hotels.slice(0, 8).map((hotel, i) => {
-                              const unitPrice = Math.round(hotel.price / Math.max(1, searchedAdults));
-                              return (
-                                  <div key={i} className="bg-white p-4 rounded-2xl border border-gray-100 flex items-center gap-4 active:bg-slate-50 transition shadow-sm" onClick={() => handleSelectHotel(hotel)}>
-                                      <div className="w-14 h-14 bg-slate-100 rounded-xl overflow-hidden shrink-0">
-                                          {hotel.image_url ? <img src={hotel.image_url} className="w-full h-full object-cover" alt=""/> : <LinkIcon size={20} className="m-auto mt-4 text-gray-300"/>}
-                                      </div>
-                                      <div className="flex-1 min-w-0">
-                                          <h4 className="font-bold text-gray-800 text-xs truncate">{hotel.name}</h4>
-                                          <p className="text-red-500 font-black text-sm">¥{unitPrice.toLocaleString()}<span className="text-[10px] text-gray-400 font-normal"> / 人</span></p>
-                                      </div>
-                                      <button onClick={(e)=>{e.stopPropagation(); handleAddCandidate(hotel)}} className="p-2 bg-blue-50 text-blue-600 rounded-full transition active:scale-90 shadow-sm"><Plus size={18}/></button>
-                                  </div>
-                              );
-                          })}
-                      </div>
-                  </div>
-              )}
+            );
+        })}
+    </div>
+) : (
+    <div className="text-center py-8 bg-slate-50/50 rounded-3xl border border-dashed border-gray-200 mt-2 mx-2">
+        <p className="text-[11px] text-gray-400 font-bold leading-relaxed">
+            上のグラフの点やマップのピンをタップすると<br/>ここにホテルの比較カードが追加されます
+        </p>
+    </div>
+)}
+                </div>
+            )}
           </div>
       </div>
 
-      {/* 詳細カード */}
-      {selectedHotel && (
-          <div className="absolute inset-x-0 bottom-0 h-auto max-h-[85dvh] z-[100] bg-white/90 backdrop-blur-xl rounded-t-[2.5rem] shadow-[0_-20px_60px_rgba(0,0,0,0.3)] border-t border-white/50 animate-in slide-in-from-bottom-10 duration-500 flex flex-col relative">
-              
-              {/* ▼▼▼ 閉じるボタンを画像外に配置 ▼▼▼ */}
-              <button 
-                  onClick={() => setSelectedHotel(null)} 
-                  className="absolute top-5 right-6 p-2.5 bg-slate-100/80 hover:bg-slate-200/80 backdrop-blur-md rounded-full text-gray-500 transition-all active:scale-90 z-50 shadow-sm"
-              >
-                  <X size={20}/>
-              </button>
+      
 
-              <div className="w-12 h-1.5 bg-gray-300/50 rounded-full mx-auto mt-3 mb-1 shrink-0" />
-              
-              <div className="flex-1 overflow-y-auto px-6 pb-8 overscroll-contain">
-                  {/* ▼▼▼ 修正: aspect-[4/3] に変更して写真の縦幅を確保 ▼▼▼ */}
-                  <div className="relative w-full aspect-[4/3] rounded-[2rem] overflow-hidden shadow-xl mt-4 mb-5 group shrink-0">
-                      {selectedHotel.image_url ? (
-                          <img src={selectedHotel.image_url} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" alt=""/>
-                      ) : (
-                          <div className="w-full h-full flex items-center justify-center bg-slate-100 text-slate-300"><LinkIcon size={48}/></div>
-                      )}
-                      
-                      <div className="absolute bottom-3 left-3 flex gap-2">
-                          <div className="flex items-center gap-1 bg-white/95 backdrop-blur-sm px-2.5 py-1 rounded-full shadow-lg border border-white/50">
-                              <Star size={12} fill="#F59E0B" className="text-orange-500"/>
-                              <span className="text-xs font-black text-gray-800">{selectedHotel.rating}</span>
-                          </div>
-                          {selectedHotel.review_count > 0 && (
-                              <div className="flex items-center gap-1 bg-black/60 backdrop-blur-md px-2.5 py-1 rounded-full text-white shadow-lg">
-                                  <span className="text-[9px] font-bold tracking-wider">{selectedHotel.review_count} REVIEWS</span>
-                              </div>
-                          )}
-                      </div>
-                  </div>
+{detailModalHotel && (
+    <div 
+        className="fixed inset-0 z-[200] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in"
+        onClick={() => setDetailModalHotel(null)}
+    >
+        <div 
+            className="bg-gray-50 w-full sm:max-w-md h-[85vh] sm:h-auto sm:max-h-[90vh] rounded-t-3xl sm:rounded-3xl flex flex-col overflow-hidden animate-in slide-in-from-bottom-8 shadow-2xl relative"
+            onClick={(e) => e.stopPropagation()}
+        >
+            <div className="w-full h-56 relative shrink-0 bg-gray-200">
+                <button 
+                    onClick={() => setDetailModalHotel(null)}
+                    className="absolute top-4 left-4 z-10 bg-black/50 backdrop-blur-md px-4 py-2 rounded-full flex items-center gap-2 text-white hover:bg-black/70 transition-colors text-xs font-bold shadow-lg"
+                >
+                    <ArrowLeft size={16} /> 戻る
+                </button>
 
-                  <div className="space-y-5">
-                      <div className="pr-8"> 
-                          <h3 className="font-black text-gray-900 text-xl leading-tight mb-2">{selectedHotel.name}</h3>
-                          <div className="flex items-center gap-1.5 text-gray-500 text-[10px] font-bold">
-                              <MapPin size={12} />
-                              <span className="truncate">{selectedHotel.description ? selectedHotel.description.substring(0, 30) + "..." : "エリア検索結果"}</span>
-                          </div>
-                      </div>
+                {detailModalHotel.image_url ? (
+                    <img src={detailModalHotel.image_url} className="w-full h-full object-cover" alt="" />
+                ) : (
+                    <div className="flex h-full items-center justify-center text-gray-400"><BedDouble size={48}/></div>
+                )}
+                
+                <div className="absolute bottom-3 right-3 bg-black/60 backdrop-blur-md text-white px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-lg">
+                    <Star size={12} className="text-yellow-400" fill="currentColor"/> 
+                    {detailModalHotel.rating > 0 ? detailModalHotel.rating : "評価なし"}
+                </div>
+            </div>
 
-                      <div className="bg-gradient-to-br from-slate-50 to-slate-100 p-4 rounded-[1.5rem] border border-white shadow-sm flex items-center justify-between relative overflow-hidden shrink-0">
-                          <div className="relative z-10">
-                              <p className="text-[9px] text-gray-400 font-black uppercase tracking-widest mb-0.5">Lowest Price</p>
-                              <div className="flex items-baseline gap-1">
-                                  <span className="font-black text-2xl text-gray-900">
-                                      ¥{Math.round(selectedHotel.price / Math.max(1, searchedAdults)).toLocaleString()}
-                                  </span>
-                                  <span className="text-[10px] text-gray-400 font-bold">~ / 人</span>
-                              </div>
-                          </div>
-                          <div className="w-10 h-10 bg-white rounded-full flex items-center justify-center shadow-sm text-blue-600">
-                              <DollarSign size={20} />
-                          </div>
-                      </div>
+            <div className="flex-1 overflow-y-auto p-5 space-y-6">
+                <div>
+                    <h3 className="text-xl font-black text-gray-800 leading-tight mb-2">{detailModalHotel.name}</h3>
+                    <div className="flex items-start gap-1.5 text-xs text-gray-500 font-medium mb-3">
+                        <MapPin size={14} className="shrink-0 mt-0.5 text-orange-500"/> 
+                        <span>{detailModalHotel.description}</span>
+                    </div>
+                    {detailModalHotel.price > 0 && (
+                        <p className="text-orange-600 font-black text-2xl leading-none">
+                            ¥{Math.round(detailModalHotel.price / Math.max(1, searchedAdults)).toLocaleString()}<span className="text-xs text-gray-400 font-bold ml-1">~ /人</span>
+                        </p>
+                    )}
+                </div>
 
-                      {selectedHotel.description && (
-                          <div className="px-1">
-                              <p className="text-xs text-gray-500 leading-relaxed font-medium line-clamp-3">
-                                  {selectedHotel.description}
-                              </p>
-                          </div>
-                      )}
+                <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+                    <h4 className="text-xs font-bold text-gray-500 mb-2 flex items-center gap-1"><TrendingUp size={14}/> 評価バランス</h4>
+                    <div className="flex justify-center h-[180px]">
+                      <RadarChart ratings={detailModalHotel.detailed_ratings} color="#F97316" isLoading={fetchingSpotIds.has(detailModalHotel.id)} onLabelClick={(key, label) => setReviewModalData({ spot: detailModalHotel, key, label })} /> </div>
+                </div>
 
-                      <div className="flex gap-3 pt-2 pb-6">
-                          <button 
-                              onClick={() => { handleAddCandidate(selectedHotel); setSelectedHotel(null); }} 
-                              className="flex-[2] bg-gray-900 text-white py-3.5 rounded-[1.25rem] font-bold text-sm active:scale-95 transition-all shadow-xl shadow-gray-200 flex items-center justify-center gap-2 hover:bg-gray-800"
-                          >
-                              <Plus size={18} strokeWidth={3}/> 
-                              <span>候補に追加</span>
-                          </button>
-                          
-                          <a 
-                              href={getAffiliateUrl(selectedHotel)} 
-                              target="_blank" 
-                              onClick={() => logAffiliateClick(selectedHotel.name, "hotel_search_detail")}
-                              className="flex-1 bg-white text-gray-900 py-3.5 rounded-[1.25rem] border border-gray-200 font-bold text-sm active:scale-95 transition-all shadow-sm flex items-center justify-center gap-2 hover:bg-gray-50"
-                          >
-                              <span className="text-[10px]">詳細</span>
-                              <ExternalLink size={16}/>
-                          </a>
-                      </div>
-                  </div>
-              </div>
-          </div>
-      )}
+                {detailModalHotel.comment && (
+                    <div className="bg-orange-50/50 rounded-2xl p-4 border border-orange-100">
+                        <h4 className="text-xs font-bold text-orange-800 mb-2 flex items-center gap-1"><Info size={14}/> プラン・ホテルの特徴</h4>
+                        <p className="text-sm text-gray-700 leading-relaxed font-medium whitespace-pre-wrap">
+                            {detailModalHotel.comment.replace(/<[^>]*>?/gm, '')}
+                        </p>
+                    </div>
+                )}
+                <div className="h-4"></div>
+            </div>
 
-      {/* 3. 条件設定 */}
+            <div className="p-4 bg-white border-t border-gray-100 shrink-0 flex gap-2">
+                {!isTrial && (
+                    <button 
+                        onClick={() => { handleAddCandidate(detailModalHotel); setDetailModalHotel(null); }} 
+                        className="flex-[1] bg-gray-900 text-white py-3.5 rounded-2xl font-bold text-sm active:scale-95 transition-all shadow-lg flex items-center justify-center gap-2 hover:bg-gray-800"
+                    >
+                        <Plus size={18} strokeWidth={3}/> <span>候補に追加</span>
+                    </button>
+                )}
+                <a 
+                    href={getAffiliateUrl(detailModalHotel)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={() => logAffiliateClick(detailModalHotel.name, "hotel_search_detail")}
+                    className={`bg-white text-gray-900 py-3.5 rounded-2xl border border-gray-200 font-bold text-sm active:scale-95 transition-all shadow-sm flex items-center justify-center gap-2 hover:bg-gray-50 ${isTrial ? 'w-full' : 'flex-[1]'}`}
+                >
+                    <span className="text-xs">楽天で見る</span><ExternalLink size={16}/>
+                </a>
+            </div>
+        </div>
+    </div>
+)}
+
       {showSettings && (
           <div className="absolute inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-end animate-in fade-in duration-300">
               <div className="bg-white w-full rounded-t-[2.5rem] p-8 shadow-2xl space-y-8 animate-in slide-in-from-bottom-10 max-h-[90vh] overflow-y-auto">
@@ -893,10 +1137,10 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                           <label className="text-[10px] font-black text-gray-400 ml-1 uppercase flex items-center gap-2"><Utensils size={14}/> Meal Plan</label>
                           <div className="flex gap-2 overflow-x-auto no-scrollbar">
                               {[
-                                  { label: "2食付", value: 'half_board' }, // 1番目
+                                  { label: "2食付", value: 'half_board' },
                                   { label: "朝食付", value: 'breakfast' },
                                   { label: "素泊まり", value: 'room_only' },
-                                  { label: "指定なし", value: 'none' } // 最後
+                                  { label: "指定なし", value: 'none' }
                               ].map((opt) => (
                                   <button
                                       key={opt.value}
@@ -913,6 +1157,79 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                           </div>
                       </div>
 
+                      {/* ▼▼▼ ここから追加：評価・レビュー数・施設タイプ ▼▼▼ */}
+                      <div className="space-y-3">
+                          <label className="text-[10px] font-black text-gray-400 ml-1 uppercase flex items-center gap-2"><Star size={14}/> Minimum Rating</label>
+                          <div className="flex gap-2 overflow-x-auto no-scrollbar">
+                              {[
+                                  { label: "指定なし", value: 0 },
+                                  { label: "★ 3.5+", value: 3.5 },
+                                  { label: "★ 4.0+", value: 4.0 },
+                                  { label: "★ 4.5+", value: 4.5 }
+                              ].map((opt) => (
+                                  <button
+                                      key={opt.value}
+                                      onClick={() => setConditions({ ...conditions, minRating: opt.value })}
+                                      className={`flex-1 py-3 px-2 rounded-xl font-bold text-xs transition-all whitespace-nowrap ${
+                                          conditions.minRating === opt.value
+                                              ? 'bg-blue-600 text-white shadow-lg'
+                                              : 'bg-slate-50 text-gray-500 hover:bg-slate-100'
+                                      }`}
+                                  >
+                                      {opt.label}
+                                  </button>
+                              ))}
+                          </div>
+                      </div>
+
+                      <div className="space-y-3">
+                          <label className="text-[10px] font-black text-gray-400 ml-1 uppercase flex items-center gap-2"><PenTool size={14}/> Review Count</label>
+                          <div className="flex gap-2 overflow-x-auto no-scrollbar">
+                              {[
+                                  { label: "指定なし", value: 0 },
+                                  { label: "10件+", value: 10 },
+                                  { label: "50件+", value: 50 },
+                                  { label: "100件+", value: 100 }
+                              ].map((opt) => (
+                                  <button
+                                      key={opt.value}
+                                      onClick={() => setConditions({ ...conditions, minReviewCount: opt.value })}
+                                      className={`flex-1 py-3 px-2 rounded-xl font-bold text-xs transition-all whitespace-nowrap ${
+                                          conditions.minReviewCount === opt.value
+                                              ? 'bg-blue-600 text-white shadow-lg'
+                                              : 'bg-slate-50 text-gray-500 hover:bg-slate-100'
+                                      }`}
+                                  >
+                                      {opt.label}
+                                  </button>
+                              ))}
+                          </div>
+                      </div>
+
+                      <div className="space-y-3">
+                          <label className="text-[10px] font-black text-gray-400 ml-1 uppercase flex items-center gap-2"><BedDouble size={14}/> Property Type</label>
+                          <div className="flex gap-2 overflow-x-auto no-scrollbar">
+                              {[
+                                  { label: "すべて", value: 'all' },
+                                  { label: "ホテル", value: 'hotel' },
+                                  { label: "旅館・和室", value: 'ryokan' }
+                              ].map((opt) => (
+                                  <button
+                                      key={opt.value}
+                                      onClick={() => setConditions({ ...conditions, hotelType: opt.value as any })}
+                                      className={`flex-1 py-3 px-2 rounded-xl font-bold text-xs transition-all whitespace-nowrap ${
+                                          conditions.hotelType === opt.value
+                                              ? 'bg-blue-600 text-white shadow-lg'
+                                              : 'bg-slate-50 text-gray-500 hover:bg-slate-100'
+                                      }`}
+                                  >
+                                      {opt.label}
+                                  </button>
+                              ))}
+                          </div>
+                      </div>
+                      {/* ▲▲▲ 追加ここまで ▲▲▲ */}
+
                       <div className="space-y-1">
                           <div className="flex justify-between px-1"><label className="text-[10px] font-black text-gray-400 uppercase">1人1泊の予算</label><span className="text-sm font-black text-blue-600">{conditions.budgetMax >= 50000 ? "上限なし" : `¥${conditions.budgetMax.toLocaleString()}`}</span></div>
                           <input type="range" min="5000" max="50000" step="1000" value={conditions.budgetMax} onChange={(e) => setConditions({...conditions, budgetMax: parseInt(e.target.value)})} className="w-full h-2 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-blue-600"/>
@@ -926,7 +1243,6 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
           </div>
       )}
       
-      {/* 宿泊日選択モーダル */}
       {pendingHotel && (
           <div className="absolute inset-0 z-[110] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-200">
               <div className="bg-white w-full max-w-sm rounded-[2rem] p-8 shadow-2xl relative flex flex-col gap-4">
@@ -934,108 +1250,87 @@ export default function HotelListView({ spots, spotVotes, currentUser, onAddSpot
                       <h3 className="text-lg font-black text-gray-900 mb-1">いつ泊まりますか？</h3>
                       <p className="text-xs text-gray-500 font-bold truncate px-4">{pendingHotel.name}</p>
                   </div>
-                  
                   <div className="grid grid-cols-1 gap-2 max-h-60 overflow-y-auto pr-1">
-                      <button 
-                          onClick={() => confirmAddHotel(0)} 
-                          className="w-full py-3 bg-gray-100 rounded-xl font-bold text-gray-500 hover:bg-gray-200 text-xs transition"
-                      >
-                          未定 (リストにとりあえず追加)
-                      </button>
+                      <button onClick={() => confirmAddHotel(0)} className="w-full py-3 bg-gray-100 rounded-xl font-bold text-gray-500 hover:bg-gray-200 text-xs transition">未定</button>
                       {Array.from({ length: travelDays }).map((_, i) => {
-                          const dayNum = i + 1;
-                          if (dayNum === travelDays) return null;
-
+                          const d = i + 1; if (d === travelDays) return null;
                           return (
-                              <button 
-                                  key={i} 
-                                  onClick={() => confirmAddHotel(dayNum)} 
-                                  className="w-full py-3 bg-orange-50 text-orange-600 border border-orange-100 rounded-xl font-bold text-sm hover:bg-orange-100 transition flex items-center justify-center gap-2"
-                              >
-                                  <BedDouble size={16}/> 
-                                  Day {dayNum} - {dayNum + 1} <span className="text-[10px] opacity-70">({dayNum}泊目)</span>
+                              <button key={i} onClick={() => confirmAddHotel(d)} className="w-full py-3 bg-orange-50 text-orange-600 border border-orange-100 rounded-xl font-bold text-sm hover:bg-orange-100 transition flex items-center justify-center gap-2">
+                                  <BedDouble size={16}/> Day {d} - {d + 1}
                               </button>
                           );
                       })}
                   </div>
-
-                  <button 
-                      onClick={() => setPendingHotel(null)} 
-                      className="w-full py-3 text-gray-400 font-bold text-xs hover:text-gray-600 transition mt-2"
-                  >
-                      キャンセル
-                  </button>
+                  <button onClick={() => setPendingHotel(null)} className="w-full py-3 text-gray-400 font-bold text-xs hover:text-gray-600 transition mt-2">キャンセル</button>
               </div>
           </div>
       )}
 
-      {importedHotel && !pendingHotel && (
-          <div className="absolute inset-0 z-[100] bg-black/60 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-300">
-              <div className="bg-white w-full max-w-sm rounded-[2.5rem] p-6 shadow-2xl relative flex flex-col items-center text-center animate-in zoom-in-95 duration-300">
-                  <div className="w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mb-4 shadow-sm">
-                      <Check size={32} strokeWidth={3} />
-                  </div>
-                  <h3 className="text-xl font-black text-gray-900 mb-2">追加しました！</h3>
-                  
-                  <div className="w-full aspect-video rounded-2xl overflow-hidden bg-gray-100 mb-4 shadow-inner relative border border-gray-100">
-                       {importedHotel.image_url ? (
-                           <img src={importedHotel.image_url} className="w-full h-full object-cover" alt="" />
-                       ) : (
-                           <div className="w-full h-full flex items-center justify-center text-gray-300"><LinkIcon size={32}/></div>
-                       )}
-                       <div className="absolute bottom-0 left-0 right-0 p-3 bg-gradient-to-t from-black/60 to-transparent">
-                           <p className="text-white font-bold text-xs truncate">{importedHotel.name}</p>
-                       </div>
-                  </div>
-                  
-                  <div className="flex gap-2 w-full">
-                      <button 
-                        onClick={() => setImportedHotel(null)} 
-                        className="flex-1 bg-black text-white py-4 rounded-2xl font-bold hover:scale-[1.02] active:scale-95 transition shadow-lg"
-                      >
-                        OK
-                      </button>
-                  </div>
-              </div>
-          </div>
-      )}
-
-      {/* ズームインジケーターUI */}
-      <div 
-          className={`fixed top-0 right-0 bottom-0 w-16 z-[60] pointer-events-none transition-opacity duration-300 flex justify-end ${
-              showZoomUI ? 'opacity-100' : 'opacity-0'
-          }`}
-      >
-          {/* 背景の黒い帯 */}
+      <div className={`fixed top-0 right-0 bottom-0 w-16 z-[60] pointer-events-none transition-opacity duration-300 flex justify-end ${showZoomUI ? 'opacity-100' : 'opacity-0'}`}>
           <div className="absolute right-0 top-0 bottom-0 w-12 bg-gradient-to-l from-black/40 to-transparent"></div>
-
-          {/* 目盛り（Rail） */}
-          <div className="h-full w-2 border-r border-white/30 mr-4 flex flex-col justify-between py-12 opacity-50">
-              {Array.from({ length: 20 }).map((_, i) => (
-                  <div key={i} className="w-1.5 h-px bg-white/50 self-end"></div>
-              ))}
-          </div>
-
-          {/* 動くツマミ（Knob） */}
-          <div 
-              ref={zoomKnobRef}
-              className="absolute top-0 right-2 w-auto h-0 flex items-center justify-end pr-2 will-change-transform"
-              style={{ transform: 'translateY(0px)' }} // 初期値
-          >
-              {/* 指の横に出るラベル */}
-              <div className="mr-3 bg-black/80 backdrop-blur text-white text-[10px] font-bold px-2 py-1 rounded-full shadow-lg">
-                  ZOOM
-              </div>
-
-              {/* ツマミ本体 */}
-              <div className="w-8 h-8 -mr-2 bg-white rounded-full shadow-[0_0_15px_rgba(255,255,255,0.6)] flex items-center justify-center relative">
-                  <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
-                  {/* ピンガ（波紋）アニメーション */}
-                  <div className="absolute inset-0 rounded-full border border-white animate-ping opacity-50"></div>
-              </div>
+          <div ref={zoomKnobRef} className="absolute top-0 right-2 w-auto h-0 flex items-center justify-end pr-2 will-change-transform" style={{ transform: 'translateY(0px)' }}>
+              <div className="w-8 h-8 -mr-2 bg-white rounded-full shadow-lg flex items-center justify-center relative"><div className="w-2 h-2 bg-blue-500 rounded-full"></div></div>
           </div>
       </div>
 
+      {/* ▼▼▼ ここから追加：検索中のローディング画面 ▼▼▼ */}
+      {isLoading && (
+          <div className="absolute inset-0 z-[120] bg-slate-50/70 backdrop-blur-md flex flex-col items-center justify-center animate-in fade-in duration-300">
+              <div className="bg-white p-8 rounded-[2.5rem] shadow-2xl flex flex-col items-center gap-5 border border-gray-100">
+                  <div className="relative flex items-center justify-center w-16 h-16 bg-blue-50 rounded-2xl">
+                      <Loader2 className="text-blue-600 animate-spin absolute" size={32} />
+                      <Search className="text-blue-600/50" size={16} />
+                  </div>
+                  <div className="text-center">
+                      <p className="text-xl font-black text-gray-800 tracking-tight">空室を検索中...</p>
+                      <p className="text-[11px] font-bold text-gray-500 mt-2">条件に合う最高の宿を探しています</p>
+                  </div>
+              </div>
+          </div>
+      )}
+      {/* ▲▲▲ 追加ここまで ▲▲▲ */}
+
+      {/* ▼ レビュー確認用のモーダル ▼ */}
+            {reviewModalData && (
+                <div 
+                    className="fixed inset-0 z-[300] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in p-4"
+                    onClick={() => setReviewModalData(null)}
+                >
+                    <div 
+                        className="bg-white w-full max-w-sm rounded-3xl p-6 shadow-2xl flex flex-col gap-4 animate-in zoom-in-95"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div>
+                            <h3 className="font-black text-gray-800 text-lg leading-tight mb-1">{reviewModalData.spot.name}</h3>
+                            <p className="text-sm font-bold text-orange-600">
+                                「{reviewModalData.label}」に関する評価・レビュー
+                            </p>
+                        </div>
+
+                        <div className="bg-gray-50 rounded-2xl p-4 text-sm text-gray-600 border border-gray-100 min-h-[120px] flex flex-col items-center justify-center text-center gap-2">
+                            <p className="font-bold text-gray-400">詳細なテキストレビューデータは<br/>楽天トラベルでご確認いただけます</p>
+                        </div>
+
+                        <div className="flex gap-2 mt-2">
+                            <button 
+                                onClick={() => setReviewModalData(null)}
+                                className="flex-1 bg-gray-100 text-gray-600 py-3.5 rounded-xl font-bold text-sm hover:bg-gray-200 transition-colors"
+                            >
+                                閉じる
+                            </button>
+                            <a 
+                                href={`https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${reviewModalData.spot.id}#review`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex-[1.5] bg-[#BF0000] text-white py-3.5 rounded-xl font-bold text-sm flex items-center justify-center gap-1 shadow-md hover:bg-red-800 transition-colors"
+                            >
+                                楽天で口コミを見る <ExternalLink size={16} />
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {/* ▲ レビュー確認用のモーダルここまで ▲ */}
     </div>
   );
 }

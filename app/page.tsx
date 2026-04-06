@@ -10,7 +10,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { 
   Search, X, Plus, ExternalLink, Map as MapIcon, History, Trash2, 
-  MapPinned, Users, Edit2, CheckCircle, HelpCircle, 
+  MapPinned, Users, Edit2, CheckCircle, HelpCircle, TrendingUp,
   BedDouble, ChevronDown, ChevronUp, Calendar, MapPin,
   Image as ImageIcon, Users as UsersIcon,
   PenTool, Loader2, Clock, ThumbsUp, Link as LinkIcon, MessageSquare,
@@ -198,6 +198,7 @@ function HomeContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const roomId = searchParams.get('room');
+  const isTrial = searchParams.get('trial') === 'true'; // ★これを追加
 
   const [currentTab, setCurrentTab] = useState<Tab>('explore');
   const [planSpots, setPlanSpots] = useState<any[]>([]);
@@ -212,6 +213,31 @@ function HomeContent() {
   const [likedHistory, setLikedHistory] = useState<string[]>([]);
   const [nopedHistory, setNopedHistory] = useState<string[]>([]);
   // const [isSuggesting, setIsSuggesting] = useState(false);
+
+  // ★追加: お試しモード用のポップアップ管理
+  const [showTrialPopup, setShowTrialPopup] = useState(false);
+  const hasShownTrialPopup = useRef(false); // 何度も出ないようにするためのフラグ
+
+ 
+
+  // ▼▼▼ ここから追加: お試しモードの初回ガイド管理 ▼▼▼
+  const [showTrialGuide, setShowTrialGuide] = useState(false);
+
+  useEffect(() => {
+      // お試しモードの時だけ、初回かどうかを判定してガイドを表示
+      if (isTrial) {
+          const hasSeenGuide = localStorage.getItem('rh_trial_guide_seen');
+          if (!hasSeenGuide) {
+              setShowTrialGuide(true);
+          }
+      }
+  }, [isTrial]);
+
+  const closeTrialGuide = () => {
+      localStorage.setItem('rh_trial_guide_seen', 'true');
+      setShowTrialGuide(false);
+  };
+  // ▲▲▲ ここまで追加 ▲▲▲
 
   // ★追加: スワイプチュートリアルの状態管理
   const [showSwipeTutorial, setShowSwipeTutorial] = useState(false);
@@ -248,7 +274,8 @@ const logAffiliateClick = async (spotName: string, source: string) => {
           return;
       }
 
-      if (!map.current || !roomId) return;
+     // 変更前: if (!map.current || !roomId) return;
+if (!map.current) return; // ★変更: roomIdが無くても動くようにする
       const { lng, lat } = map.current.getCenter();
       
       setIsSearchingNearby(true);
@@ -295,32 +322,36 @@ const logAffiliateClick = async (spotName: string, source: string) => {
               let fallbackSpots: any[] = [];
 
               // (A) Cache Check
-              const { data: cachedData } = await supabase
-                  .from('room_api_cache')
-                  .select('*')
-                  .eq('room_id', roomId)
-                  .eq('key', cacheKey)
-                  .maybeSingle();
+  let cachedData = null;
+  if (roomId) {
+      const { data } = await supabase
+          .from('room_api_cache')
+          .select('*')
+          .eq('room_id', roomId)
+          .eq('key', cacheKey)
+          .maybeSingle();
+      cachedData = data;
+  }
 
-              if (cachedData && (now - new Date(cachedData.created_at).getTime() < cacheDuration)) {
-                  fallbackSpots = cachedData.data;
-              } else {
-                  // (B) API Call
-                  const res = await fetch(`${API_BASE_URL}/api/nearby_spots`, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ latitude: lat, longitude: lng, radius: SEARCH_RADIUS, mode: mode })
-                  });
-                  if (res.ok) {
-                      const data = await res.json();
-                      fallbackSpots = data.spots || [];
-                      if (fallbackSpots.length > 0) {
-                          await supabase.from('room_api_cache').upsert({
-                              room_id: roomId, key: cacheKey, data: fallbackSpots, created_at: new Date().toISOString()
-                          });
-                      }
-                  }
-              }
+  if (cachedData && (now - new Date(cachedData.created_at).getTime() < cacheDuration)) {
+      fallbackSpots = cachedData.data;
+  } else {
+      // (B) API Call
+      const res = await fetch(`${API_BASE_URL}/api/nearby_spots`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ latitude: lat, longitude: lng, radius: SEARCH_RADIUS, mode: mode })
+      });
+      if (res.ok) {
+          const data = await res.json();
+          fallbackSpots = data.spots || [];
+          if (fallbackSpots.length > 0 && roomId) { // ★変更: roomIdがある時だけ保存
+              await supabase.from('room_api_cache').upsert({
+                  room_id: roomId, key: cacheKey, data: fallbackSpots, created_at: new Date().toISOString()
+              });
+          }
+      }
+  }
 
               // 補充データの正規化 (ここが重要)
               const formattedFallback = fallbackSpots.map((s: any) => {
@@ -427,6 +458,25 @@ const logAffiliateClick = async (spotName: string, source: string) => {
           }
       }
   }, [isJoined, roomId]);
+
+  // ★追加: お試しモード時のローカルストレージ同期
+  useEffect(() => {
+      if (isTrial) {
+          // 初回マウント時に読み込み
+          const savedSpots = localStorage.getItem('rh_trial_spots');
+          const savedVotes = localStorage.getItem('rh_trial_votes');
+          if (savedSpots) setPlanSpots(JSON.parse(savedSpots));
+          if (savedVotes) setSpotVotes(JSON.parse(savedVotes));
+      }
+  }, [isTrial]);
+
+  useEffect(() => {
+      if (isTrial) {
+          // データが変化するたびに保存
+          localStorage.setItem('rh_trial_spots', JSON.stringify(planSpots));
+          localStorage.setItem('rh_trial_votes', JSON.stringify(spotVotes));
+      }
+  }, [planSpots, spotVotes, isTrial]);
 
   // ★追加: メニューから呼び出すための関数
   const openTutorialFromMenu = () => {
@@ -884,7 +934,7 @@ useEffect(() => {
   };
   
   // ★追加: シークレットモード警告用
-  const [showIncognitoWarning, setShowIncognitoWarning] = useState(false);
+  // const [showIncognitoWarning, setShowIncognitoWarning] = useState(false);
 
   const planSpotsRef = useRef(planSpots);
   useEffect(() => { planSpotsRef.current = planSpots; }, [planSpots]);
@@ -902,33 +952,7 @@ const [arrivalModalSpots, setArrivalModalSpots] = useState<any[]>([]); // ★追
       return `${status}_${day || 0}`;
   };
 
-  useEffect(() => {
-    const detectIncognito = async () => {
-        // 一般的なブラウザ（Chrome/Edge/Firefoxなど）でのクオータ制限チェックによる検知
-        // シークレットモードではストレージ容量(quota)が極端に少なく制限されることが多い
-        if ('storage' in navigator && 'estimate' in navigator.storage) {
-            try {
-                const { quota } = await navigator.storage.estimate();
-                // 120MB以下ならシークレットモードの可能性が高いと判断（通常のPC/スマホならGB単位あるため）
-                if (quota && quota < 120 * 1024 * 1024) {
-                    setShowIncognitoWarning(true);
-                    return;
-                }
-            } catch (e) {}
-        }
-        
-        // iOS Safariなどのプライベートモードでは localStorage への書き込みがエラーになる、
-        // または保持されないケースがあるため簡易チェック
-        try {
-            const testKey = '__test_incognito__';
-            localStorage.setItem(testKey, '1');
-            localStorage.removeItem(testKey);
-        } catch (e) {
-            setShowIncognitoWarning(true);
-        }
-    };
-    detectIncognito();
-  }, []);
+  
 
   useEffect(() => {
       if (roomId) {
@@ -1465,9 +1489,14 @@ const allParticipants = useMemo(() => {
 }, [planSpots, spotVotes, userName]);
 
   const getUserColor = (name: string) => {
-      const index = allParticipants.indexOf(name);
-      if (index === -1) return '#9CA3AF';
-      return UD_COLORS[index % UD_COLORS.length];
+      if (!name) return '#9CA3AF';
+      let hash = 0;
+      // 名前の文字列から一意の数値を計算（ハッシュ化）
+      for (let i = 0; i < name.length; i++) { 
+          hash = name.charCodeAt(i) + ((hash << 5) - hash); 
+      }
+      // 計算した数値を元にカラーパレットから色を取得
+      return UD_COLORS[Math.abs(hash) % UD_COLORS.length];
   };
 
   //const rakutenHomeUrl = `https://hb.afl.rakuten.co.jp/hgc/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent("https://travel.rakuten.co.jp/")}&m=${encodeURIComponent("https://travel.rakuten.co.jp/")}`;
@@ -1838,50 +1867,81 @@ const handleSearch = async (overrideQuery?: string) => {
     const activeQuery = overrideQuery || query; 
     if(!activeQuery) return;
 
-    // ★追加: リクエストIDを発行・更新
+    // リクエストIDを発行・更新
     const currentRequestId = ++searchRequestId.current;
 
     setIsSearching(true);
     try {
-      let results: any[] = [];
-      
-      // ルーム内キャッシュ検索（変更なし）
-      if (roomId) {
-          const { data: cached } = await supabase.from('room_search_cache').select('*').eq('room_id', roomId).ilike('text', `%${activeQuery}%`).limit(5);
-          if (cached && cached.length > 0) {
-              const cachedResults = cached.map(item => ({ id: item.id, name: item.text, place_name: item.place_name || item.text, center: item.center, image_url: item.image_url, is_room_cache: true }));
-              results = [...cachedResults];
-          }
-      }
+        let results: any[] = [];
+        
+        // 1. ルーム内キャッシュ検索
+        if (roomId) {
+            const { data: cached } = await supabase.from('room_search_cache').select('*').eq('room_id', roomId).ilike('text', `%${activeQuery}%`).limit(5);
+            if (cached && cached.length > 0) {
+                const cachedResults = cached.map(item => ({ 
+                    id: item.id, 
+                    name: item.text, 
+                    place_name: item.place_name || item.text, 
+                    center: item.center, 
+                    image_url: item.image_url, 
+                    is_room_cache: true 
+                }));
+                results = [...cachedResults];
+            }
+        }
 
-      // ベースのクエリパラメータを作成
-      let queryParams = `query=${encodeURIComponent(activeQuery)}`;
-    
-      if (map.current) {
-          const { lng, lat } = map.current.getCenter();
-          queryParams += `&lat=${lat}&lng=${lng}`;
-      }
+        // 2. メインの検索（バックエンド API）
+        let queryParams = `query=${encodeURIComponent(activeQuery)}`;
+        if (map.current) {
+            const { lng, lat } = map.current.getCenter();
+            queryParams += `&lat=${lat}&lng=${lng}`;
+        }
 
-      const res = await fetch(`${API_BASE_URL}/api/search_places?${queryParams}`);
-      
-      if (res.ok) {
-          const data = await res.json();
-          if (data.results && Array.isArray(data.results)) {
-              const newSuggestions = data.results.filter((s: any) => !results.some(r => r.name === s.name));
-              results = [...results, ...newSuggestions];
-          }
-      }
+        try {
+            const res = await fetch(`${API_BASE_URL}/api/search_places?${queryParams}`);
+            if (res.ok) {
+                const data = await res.json();
+                if (data.results && Array.isArray(data.results)) {
+                    const newSuggestions = data.results.filter((s: any) => !results.some(r => r.name === s.name));
+                    results = [...results, ...newSuggestions];
+                }
+            }
+        } catch (e) {
+            console.error("Backend search failed", e);
+        }
 
-      // ★重要: ここで「この処理が最新のリクエストか？」を確認
-      // もし処理中に新しい検索(currentRequestIdが増えている)が始まっていたら、この古い結果は捨てる
-      if (currentRequestId === searchRequestId.current) {
-          setSearchResults(results);
-      }
+        // ★★★ 3. フォールバック: キャッシュもバックエンドも「0件」だった場合のみMapbox APIを叩く ★★★
+        if (results.length === 0 && MAPBOX_TOKEN) {
+            try {
+                const mapboxUrl = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(activeQuery)}.json?access_token=${MAPBOX_TOKEN}&language=ja&country=jp&types=region,place,locality,neighborhood`;
+                const mapboxRes = await fetch(mapboxUrl);
+                if (mapboxRes.ok) {
+                    const mapboxData = await mapboxRes.json();
+                    if (mapboxData.features && mapboxData.features.length > 0) {
+                        const placeResults = mapboxData.features.map((f: any) => ({
+                            id: f.id,
+                            name: f.text_ja || f.text,
+                            place_name: f.place_name_ja || f.place_name,
+                            center: f.center // [lng, lat]
+                        }));
+                        results = [...results, ...placeResults];
+                    }
+                }
+            } catch (e) {
+                console.error("Mapbox fallback search failed", e);
+            }
+        }
+        // ★★★ 変更ここまで ★★★
+
+        // 4. 最新のリクエストか確認してState更新
+        if (currentRequestId === searchRequestId.current) {
+            setSearchResults(results);
+        }
 
     } catch (e) { 
         console.error("Search failed", e); 
     } finally { 
-        // ★ローディング解除も、最新のリクエストの場合のみ行う
+        // ローディング解除も、最新のリクエストの場合のみ行う
         if (currentRequestId === searchRequestId.current) {
             setIsSearching(false); 
         }
@@ -2347,6 +2407,7 @@ const now = new Date().toISOString(); // ★現在時刻
       price: null,
       url: spot.url || "",
       rating: spot.rating || 0,
+      detailed_ratings: spot.detailed_ratings || null, // ← ★★これを追加★★
       created_at: now, // ★追加
       updated_at: now  // ★追加
     };
@@ -2355,6 +2416,22 @@ const now = new Date().toISOString(); // ★現在時刻
     // これにより、DBの応答を待たずに画面に反映されます
     const optimisticSpot = { ...newSpotPayload, id: `temp-${Date.now()}` };
     setPlanSpots(prev => [...prev, optimisticSpot]);
+
+
+    // ▼▼▼ ここから追加 ▼▼▼
+    if (isTrial) {
+        // 初めて追加した時だけポップアップを表示
+        if (!hasShownTrialPopup.current) {
+            setTimeout(() => setShowTrialPopup(true), 800); // 少し遅らせて出すと自然です
+            hasShownTrialPopup.current = true;
+        }
+        resetSearchState(); 
+        setQuery(""); 
+        setNotification({ text: `「${spot.name}」を追加しました（お試し中）`, color: 'bg-black' });
+        setTimeout(() => setNotification(null), 3000);
+        return; // ★DB保存処理には進まず終了
+    }
+    // ▲▲▲ ここまで追加 ▲▲▲
 
     // DBに追加
     const { data, error } = await supabase.from('spots').insert([newSpotPayload]).select().single();
@@ -2890,12 +2967,12 @@ const now = new Date().toISOString(); // ★現在時刻
   }, [isDrawing]);
 
   useEffect(() => {
-    if (isAuthLoading || !isJoined) return;
+    // ★修正: お試しモード(isTrial)の時は、参加(isJoined)していなくても地図を表示する
+    if (isAuthLoading || (!isTrial && !isJoined)) return;
     if (map.current) return; 
     mapboxgl.accessToken = MAPBOX_TOKEN;
     if (mapContainer.current) {
-      map.current = new mapboxgl.Map({ container: mapContainer.current, style: 'mapbox://styles/mapbox/streets-v12', center: [lng, lat], zoom: 14, pitch: 45, bearing: 0, antialias: true });
-      map.current.on('load', () => {
+     map.current = new mapboxgl.Map({ container: mapContainer.current, style: 'mapbox://styles/mapbox/streets-v12', center: [lng, lat], zoom: 14, pitch: 0, bearing: 0, antialias: true }); map.current.on('load', () => {
         if (!map.current) return;
 
 
@@ -3081,7 +3158,7 @@ const now = new Date().toISOString(); // ★現在時刻
             map.current = null;
         }
     };
-  }, [isAuthLoading, isJoined]);
+  }, [isAuthLoading, isJoined, isTrial]); // ★ isTrial を追加
 
 // ---------------------------------------------------------
   // ▼▼▼ 修正: マーカー描画ロジックの軽量化・最適化版 ▼▼▼
@@ -3301,10 +3378,10 @@ el.onclick = (e) => {
 
 }, [filteredSpots, planSpots, displayTimeline, nearbyCandidates, spotVotes, currentTab, filterStatus, selectedConfirmDay]);
 // ---------------------------------------------------------
-  if (isAuthLoading || (!roomId && !isJoined) || (roomId && !isJoined)) {
+  // ★変更: トライアルモードでない場合のみ認証・参加チェックを行う
+  if (!isTrial && (isAuthLoading || (!roomId && !isJoined) || (roomId && !isJoined))) {
     return (
         <>
-            {/* ここにあった showIncognitoWarning のブロックを削除し、WelcomePageのみにする */}
             <WelcomePage inviteRoomId={roomId} />
         </>
     );
@@ -3313,30 +3390,22 @@ el.onclick = (e) => {
   return (
     <main className="relative w-screen h-[100dvh] bg-slate-100 overflow-hidden flex flex-col font-sans">
       
+      {/* ★追加: トライアルモードを終了して戻るボタン */}
+      {isTrial && (
+          <div className="absolute top-4 left-4 z-[100]">
+              <button 
+                  onClick={() => router.push('/?step=create')} // ★変更
+                  className="bg-white/90 backdrop-blur px-4 py-2 rounded-full shadow-lg font-bold text-sm flex items-center gap-2 hover:scale-105 active:scale-95 transition border border-gray-200 text-gray-700"
+              >
+                  <ArrowLeftCircle size={16}/> 終了して部屋を作る
+              </button>
+          </div>
+      )}
+
+
       <Ticker />
 
-      {/* ★追加: シークレットモード警告モーダル */}
-     {showIncognitoWarning && (
-                <div className="fixed inset-0 z-[999] bg-black/80 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-300">
-                    <div className="bg-white w-full max-w-sm rounded-[2rem] p-8 shadow-2xl relative text-center border-4 border-red-100">
-                        <div className="w-20 h-20 bg-red-100 text-red-500 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner">
-                            <XCircle size={40} />
-                        </div>
-                        <h3 className="text-xl font-black text-gray-900 mb-4">シークレットモード<br/>注意！</h3>
-                        <p className="text-sm text-gray-600 mb-6 leading-relaxed font-bold">
-                            現在、シークレットモード（プライベートブラウジング）で開いている可能性があります。<br/><br/>
-                            <span className="text-red-500 bg-red-50 px-2 py-1 rounded">ブラウザを閉じるとデータが消えます</span><br/><br/>
-                            作成したプランを保存するために、通常のモードで開き直すことを強くおすすめします。
-                        </p>
-                        <button 
-                            onClick={() => setShowIncognitoWarning(false)} 
-                            className="w-full py-4 bg-gray-200 text-gray-600 rounded-2xl font-bold text-sm hover:bg-gray-300 transition"
-                        >
-                            リスクを承知で続ける
-                        </button>
-                    </div>
-                </div>
-            )}
+      
 
             {/* ★追加: オンボーディングモーダル (他の警告より手前に表示したい場合は順序調整) */}
    {showTutorial && (
@@ -3384,6 +3453,79 @@ el.onclick = (e) => {
                   <button 
                       onClick={handleCloseTutorial} 
                       className="w-full py-4 bg-black text-white rounded-2xl font-bold text-sm hover:scale-[1.02] active:scale-95 transition shadow-lg"
+                  >
+                      はじめる
+                  </button>
+              </div>
+          </div>
+      )}
+
+      {/* ★追加: お試しモードからルーム作成への誘導ポップアップ */}
+      {showTrialPopup && (
+          <div className="fixed inset-0 z-[200] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-300">
+              <div className="bg-white w-full max-w-sm rounded-[2.5rem] p-8 shadow-2xl relative flex flex-col items-center text-center animate-in zoom-in-95">
+                  <div className="w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mb-4 shadow-sm">
+                      <Users size={32} />
+                  </div>
+                  <h3 className="text-xl font-black text-gray-900 mb-2">友達とシェアしませんか？</h3>
+                  <p className="text-sm text-gray-500 mb-6 leading-relaxed font-medium">
+                      ルームを作成すると、友達を招待して<br/>一緒にプランを編集できるようになります！<br/>
+                  </p>
+                  <div className="flex flex-col gap-3 w-full">
+                      <button 
+                          onClick={() => router.push('/?step=create')} // ★変更
+                          className="w-full bg-blue-600 text-white py-4 rounded-2xl font-black text-lg hover:scale-[1.02] active:scale-95 transition shadow-xl shadow-blue-200"
+                      >
+                          部屋を作ってシェアする
+                      </button>
+                      <button 
+                          onClick={() => setShowTrialPopup(false)} 
+                          className="w-full py-3 text-gray-400 font-bold hover:text-gray-600 transition"
+                      >
+                          今はお試しを続ける
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* ★追加: お試しモードの使い方ガイド */}
+      {showTrialGuide && (
+          <div className="fixed inset-0 z-[250] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-300">
+              <div className="bg-white w-full max-w-sm rounded-[2.5rem] p-8 shadow-2xl relative flex flex-col items-center animate-in zoom-in-95">
+                  <h3 className="text-2xl font-black text-gray-900 mb-6 tracking-tight">使い方のヒント 💡</h3>
+                  
+                  <div className="space-y-4 mb-8 w-full">
+                      {/* 囲って検索 */}
+                      <div className="bg-emerald-50 p-4 rounded-2xl border border-emerald-100 flex items-start gap-4">
+                          <div className="w-12 h-12 bg-emerald-600 text-white rounded-full flex items-center justify-center shrink-0 shadow-md">
+                              <PenTool size={20} />
+                          </div>
+                          <div>
+                              <h4 className="font-bold text-emerald-900 text-sm mb-1">マップを囲って検索</h4>
+                              <p className="text-xs text-emerald-800/80 leading-relaxed font-medium">
+                                  右上の万年筆ボタンを押して地図をなぞると、囲んだ範囲の宿を検索できます。
+                              </p>
+                          </div>
+                      </div>
+
+                      {/* 散布図で表示 */}
+                      <div className="bg-blue-50 p-4 rounded-2xl border border-blue-100 flex items-start gap-4">
+                          <div className="w-12 h-12 bg-blue-600 text-white rounded-full flex items-center justify-center shrink-0 shadow-md">
+                              <TrendingUp size={20} />
+                          </div>
+                          <div>
+                              <h4 className="font-bold text-blue-900 text-sm mb-1">散布図でコスパ分析</h4>
+                              <p className="text-xs text-blue-800/80 leading-relaxed font-medium">
+                                  検索結果は「価格」と「評価」のグラフで表示され、条件にぴったりの宿がひと目でわかります。
+                              </p>
+                          </div>
+                      </div>
+                  </div>
+
+                  <button 
+                      onClick={closeTrialGuide} 
+                      className="w-full bg-gray-900 text-white py-4 rounded-2xl font-black text-lg hover:scale-[1.02] active:scale-95 transition shadow-xl"
                   >
                       はじめる
                   </button>
@@ -3729,45 +3871,67 @@ el.onclick = (e) => {
           )}
           {/* ★★★ 追加: 徒歩時間スケール (ここまで) ★★★ */}
           
-          <div className="absolute top-32 right-4 z-20 flex flex-col gap-3">
+          {/* ▼▼▼ 修正: マップ右上のボタン群 ▼▼▼ */}
+          {/* ▼▼▼ 修正: マップ右上のボタン群 ▼▼▼ */}
+          <div className="absolute top-32 right-4 z-20 flex flex-col gap-3 items-end">
+             {/* 囲って検索（ペンツール）ボタン */}
              <button 
                 onClick={() => isDrawing ? stopDrawing() : startDrawing()} 
-                className={`w-12 h-12 rounded-full shadow-xl font-bold transition-all duration-300 flex items-center justify-center border-2 ${isDrawing ? 'bg-red-500 border-red-400 text-white animate-pulse scale-110' : 'bg-white border-white text-gray-700 hover:scale-110'}`}
+                className={`shadow-xl font-bold transition-all duration-300 flex items-center justify-center border-2 ${
+                    isDrawing 
+                    ? 'w-12 h-12 rounded-full bg-red-500 border-red-400 text-white animate-pulse scale-110' // 描画中（そのまま）
+                    : isTrial 
+                        ? 'w-16 h-16 rounded-full bg-white text-emerald-600 shadow-2xl scale-105 hover:scale-110 border-4 border-emerald-100' // ★ お試し時: 大きく、テーマカラーのエメラルド色で目立たせる
+                        : 'w-12 h-12 rounded-full bg-white border-white text-gray-700 hover:scale-110' // 通常（本番）
+                }`}
              >
-                 {isDrawing ? <X size={24}/> : <PenTool size={20}/>}
+                 {isDrawing ? <X size={24}/> : (
+                     <PenTool size={isTrial ? 28 : 20}/> // ★ アイコンサイズもお試し時は大きく
+                 )}
              </button>
              
-             {/* ★追加: 周辺を探すボタン */}
-             <button 
-                onClick={handleSearchNearby} 
-                // ▼▼▼ 修正: 表示中は黒背景(bg-black)、通常は白背景(bg-white)に切り替え ▼▼▼
-                className={`w-12 h-12 rounded-full shadow-xl transition-all duration-300 flex items-center justify-center border-2 
-                    ${nearbyCandidates.length > 0 
-                        ? 'bg-black text-white border-black hover:bg-gray-800' // 表示中
-                        : 'bg-white text-gray-700 border-white hover:bg-gray-50 hover:scale-110' // 通常
-                    } 
-                    ${isSearchingNearby ? 'animate-bounce' : ''}`}
-                title="この周辺のスポットを探す"
-             >
-                 {isSearchingNearby ? <Loader2 size={20} className="animate-spin text-blue-500"/> : <Binoculars size={20}/>}
-             </button>
+             {/* ▼▼▼ ログイン（本番）時のみ表示するボタン ▼▼▼ */}
+             {!isTrial && (
+                 <>
+                     {/* 周辺を探すボタン */}
+                     <button 
+                        onClick={handleSearchNearby} 
+                        className={`w-12 h-12 rounded-full shadow-xl transition-all duration-300 flex items-center justify-center border-2 
+                            ${nearbyCandidates.length > 0 
+                                ? 'bg-black text-white border-black hover:bg-gray-800' // 表示中
+                                : 'bg-white text-gray-700 border-white hover:bg-gray-50 hover:scale-110' // 通常
+                            } 
+                            ${isSearchingNearby ? 'animate-bounce' : ''}`}
+                        title="この周辺のスポットを探す"
+                     >
+                         {isSearchingNearby ? <Loader2 size={20} className="animate-spin text-blue-500"/> : <Binoculars size={20}/>}
+                     </button>
 
-             <button 
-                onClick={() => {
-                    if (planSpots.length > 0) {
-                        fitBoundsToSpots(planSpots);
-                    } else {
-                        map.current?.flyTo({ center: [lng, lat], zoom: 14 });
-                    }
-                }}
-                className="w-12 h-12 rounded-full shadow-xl bg-white text-gray-700 hover:scale-110 hover:bg-gray-50 border-2 border-white transition-all duration-300 flex items-center justify-center"
-                title="全体を表示"
-             >
-                 <Maximize size={20}/>
-             </button>
+                     {/* 全体を表示ボタン */}
+                     <button 
+                        onClick={() => {
+                            if (planSpots.length > 0) {
+                                fitBoundsToSpots(planSpots);
+                            } else {
+                                map.current?.flyTo({ center: [lng, lat], zoom: 14 });
+                            }
+                        }}
+                        className="w-12 h-12 rounded-full shadow-xl bg-white text-gray-700 hover:scale-110 hover:bg-gray-50 border-2 border-white transition-all duration-300 flex items-center justify-center"
+                        title="全体を表示"
+                     >
+                         <Maximize size={20}/>
+                     </button>
+                 </>
+             )}
 
-             {isDrawing && <div className="absolute top-1 right-14 bg-black/80 backdrop-blur text-white px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap shadow-lg">かこって検索</div>}
+             {isDrawing && (
+                 <div className="absolute top-1 right-14 bg-black/80 backdrop-blur text-white px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap shadow-lg">
+                     {isTrial ? "画面をなぞって範囲を指定" : "かこって検索"}
+                 </div>
+             )}
           </div>
+          {/* ▲▲▲ 修正ここまで ▲▲▲ */}
+          {/* ▲▲▲ 修正ここまで ▲▲▲ */}
 
            {/* ▼▼▼ 追加: 「写真で選ぶ」フローティングボタン (周辺候補がある時だけ出現) ▼▼▼ */}
            {currentTab === 'explore' && nearbyCandidates.length > 0 && (
@@ -3938,7 +4102,7 @@ el.onclick = (e) => {
             </div>
           )}
 
-         // page.tsx 1600行目付近
+         
 
           {viewMode === 'selected' && selectedResult && (
             <div className="absolute bottom-0 left-0 w-full z-40 p-4 pb-20 pointer-events-none flex justify-center items-end h-full">
