@@ -5,7 +5,7 @@ import { useState, useMemo, useEffect, useRef } from 'react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import HotelCompareView from './HotelCompareView';
-import RadarChart from './RadarChart'; // ※パスはフォルダ構成に合わせて微調整してください（例: '@/components/RadarChart'）
+import RadarChart from './RadarChart'; 
 import { 
   Search, ExternalLink, MapPin, ArrowLeft,
   X, TrendingUp, DollarSign,
@@ -28,9 +28,6 @@ const getUDColor = (name: string) => {
   return UD_COLORS[Math.abs(hash) % UD_COLORS.length];
 };
 
-// === レーダーチャート用コンポーネントを追加 ===
-
-
 const isHotel = (name: string) => {
     const keywords = ['ホテル', '旅館', '宿', '民宿', 'Hotel', 'Inn', 'Guest House', 'ホステル', 'リゾート'];
     return keywords.some(k => name.includes(k));
@@ -43,31 +40,6 @@ const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: numbe
     const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon/2) * Math.sin(dLon/2);
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
     return R * c;
-};
-
-const createGeoJSONCircle = (center: [number, number], radiusInKm: number, points = 64) => {
-    const coords = { latitude: center[1], longitude: center[0] };
-    const km = radiusInKm;
-    const ret = [];
-    const distanceX = km / (111.320 * Math.cos(coords.latitude * Math.PI / 180));
-    const distanceY = km / 110.574;
-
-    for(let i=0; i<points; i++) {
-        const theta = (i / points) * (2 * Math.PI);
-        const x = distanceX * Math.cos(theta);
-        const y = distanceY * Math.sin(theta);
-        ret.push([coords.longitude + x, coords.latitude + y]);
-    }
-    ret.push(ret[0]);
-
-    return {
-        type: "Feature",
-        geometry: {
-            type: "Polygon",
-            coordinates: [ret]
-        },
-        properties: {}
-    };
 };
 
 export type AreaSearchParams = {
@@ -83,7 +55,6 @@ interface SearchConditions {
     adults: number;
     budgetMax: number;
     mealType: 'none' | 'room_only' | 'breakfast' | 'half_board';
-    // ▼▼▼ この3行を追加 ▼▼▼
     minRating: number;
     minReviewCount: number;
     hotelType: 'all' | 'hotel' | 'ryokan';
@@ -134,20 +105,14 @@ export default function HotelListView({
   const [viewedHotelIds, setViewedHotelIds] = useState<Set<string>>(new Set());
 
   const [displayDay, setDisplayDay] = useState(0);
-
   const [reviewModalData, setReviewModalData] = useState<{ spot: any, key: string, label: string } | null>(null);
-
-  // 既存のStateの下あたりに追加
-const [fetchingSpotIds, setFetchingSpotIds] = useState<Set<string>>(new Set());
-const [detailModalHotel, setDetailModalHotel] = useState<any>(null);
-
-// ▼ 既存のStateの下に追加
+  const [fetchingSpotIds, setFetchingSpotIds] = useState<Set<string>>(new Set());
+  const [detailModalHotel, setDetailModalHotel] = useState<any>(null);
   const [showMapInResult, setShowMapInResult] = useState(false);
 
-  // ▼ 地図の表示・非表示が切り替わったときにMapboxをリサイズして崩れを防ぐ
   useEffect(() => {
       if (map.current) {
-          setTimeout(() => map.current?.resize(), 400); // アニメーション終了後にリサイズ
+          setTimeout(() => map.current?.resize(), 400); 
       }
   }, [hotels.length, showMapInResult]);
 
@@ -174,7 +139,6 @@ const [detailModalHotel, setDetailModalHotel] = useState<any>(null);
           adults: 2,
           budgetMax: 50000,
           mealType: 'half_board' as const, 
-          // ▼▼▼ この3行を追加 ▼▼▼
           minRating: 0,
           minReviewCount: 0,
           hotelType: 'all' as const,
@@ -271,24 +235,14 @@ const [detailModalHotel, setDetailModalHotel] = useState<any>(null);
 
     const onTouchStart = (e: TouchEvent) => {
         if (e.touches.length !== 1 || isDrawing) return;
-
         const touch = e.touches[0];
         const screenWidth = window.innerWidth;
         const edgeThreshold = 60; 
 
         if (touch.clientX > screenWidth - edgeThreshold) {
-            rightEdgeGestureRef.current = {
-                isActive: true,
-                startY: touch.clientY,
-                startZoom: map.current?.getZoom() || 14
-            };
-            
+            rightEdgeGestureRef.current = { isActive: true, startY: touch.clientY, startZoom: map.current?.getZoom() || 14 };
             setShowZoomUI(true);
-            
-            if (zoomKnobRef.current) {
-                zoomKnobRef.current.style.transform = `translateY(${touch.clientY}px)`;
-            }
-
+            if (zoomKnobRef.current) zoomKnobRef.current.style.transform = `translateY(${touch.clientY}px)`;
             if (navigator.vibrate) navigator.vibrate(10);
         }
     };
@@ -296,23 +250,15 @@ const [detailModalHotel, setDetailModalHotel] = useState<any>(null);
     const onTouchMove = (e: TouchEvent) => {
         if (!rightEdgeGestureRef.current.isActive || !map.current) return;
         if (e.cancelable) e.preventDefault();
-
         const touch = e.touches[0];
         const deltaY = rightEdgeGestureRef.current.startY - touch.clientY;
         const sensitivity = 0.015; 
         const newZoom = rightEdgeGestureRef.current.startZoom + (deltaY * sensitivity);
-        
         map.current.setZoom(newZoom);
-
-        if (zoomKnobRef.current) {
-            zoomKnobRef.current.style.transform = `translateY(${touch.clientY}px)`;
-        }
+        if (zoomKnobRef.current) zoomKnobRef.current.style.transform = `translateY(${touch.clientY}px)`;
     };
 
-    const onTouchEnd = () => {
-        rightEdgeGestureRef.current.isActive = false;
-        setShowZoomUI(false);
-    };
+    const onTouchEnd = () => { rightEdgeGestureRef.current.isActive = false; setShowZoomUI(false); };
 
     container.addEventListener('touchstart', onTouchStart, { passive: false });
     container.addEventListener('touchmove', onTouchMove, { passive: false });
@@ -327,11 +273,9 @@ const [detailModalHotel, setDetailModalHotel] = useState<any>(null);
     };
   }, [isDrawing]);
 
-  
-const handleSelectHotel = async (hotel: any) => {
+  const handleSelectHotel = async (hotel: any) => {
     setActiveHotelId(hotel.id);
     
-    // viewedHotelIds に追加（これでカードが蓄積されます）
     setViewedHotelIds(prev => {
         const next = new Set(prev);
         next.add(hotel.id);
@@ -342,13 +286,12 @@ const handleSelectHotel = async (hotel: any) => {
         map.current.flyTo({ 
             center: hotel.coordinates, 
             zoom: 16, 
-            offset: [0, -window.innerHeight * 0.1], // モーダルがフルスクリーンではないので少し下げる
+            offset: [0, -window.innerHeight * 0.1], 
             duration: 1000 
         });
     }
     if (isExpanded) setIsExpanded(false);
 
-    // ▼ レーダーチャート用の詳細データがなければ取得する処理
     if (!hotel.detailed_ratings && !fetchingSpotIds.has(hotel.id)) {
         setFetchingSpotIds(prev => new Set([...prev, hotel.id]));
         try {
@@ -360,7 +303,6 @@ const handleSelectHotel = async (hotel: any) => {
             if (res.ok) {
                 const data = await res.json();
                 if (data.spot && data.spot.detailed_ratings) {
-                    // 該当ホテルのデータを更新
                     setHotels(prev => prev.map(h => 
                         h.id === hotel.id ? { ...h, detailed_ratings: data.spot.detailed_ratings, comment: data.spot.comment } : h
                     ));
@@ -376,9 +318,7 @@ const handleSelectHotel = async (hotel: any) => {
             });
         }
     }
-};
-
-
+  };
 
   const handleAddCandidate = (hotel: any) => {
       setPendingHotel(hotel);
@@ -398,40 +338,81 @@ const handleSelectHotel = async (hotel: any) => {
       setPendingHotel(null);
   };
 
-  const getAffiliateUrl = (hotel: any) => {
-    let y1, m1, d1, y2, m2, d2;
-    if (conditions.checkin && conditions.checkout) {
-        const cIn = new Date(conditions.checkin);
-        const cOut = new Date(conditions.checkout);
-        y1 = cIn.getFullYear();
-        m1 = cIn.getMonth() + 1;
-        d1 = cIn.getDate();
-        y2 = cOut.getFullYear();
-        m2 = cOut.getMonth() + 1;
-        d2 = cOut.getDate();
-    } else {
-        const today = new Date();
-        today.setDate(today.getDate() + 30);
-        y1 = today.getFullYear();
-        m1 = today.getMonth() + 1;
-        d1 = today.getDate();
-        const tmr = new Date(today);
-        tmr.setDate(tmr.getDate() + 1);
-        y2 = tmr.getFullYear();
-        m2 = tmr.getMonth() + 1;
-        d2 = tmr.getDate();
-    }
-    
-    const otonaSu = conditions.adults || 2;
-    const hotelId = hotel.id;
+  // ★ 変更した検索条件（日付・人数・食事）を楽天トラベルのURLに完全に反映させる
+  const getAffiliateUrl = (spot: any) => {
+      const parseLocalYMD = (ymd: string) => {
+          if (!ymd) return null;
+          const parts = ymd.split('-').map(Number);
+          if (parts.length !== 3) return null;
+          return new Date(parts[0], parts[1] - 1, parts[2]);
+      };
 
-    const paramString = `f_syu=&f_teikei=&f_campaign=&f_flg=PLAN&f_otona_su=${otonaSu}&f_heya_su=1&f_s1=0&f_s2=0&f_y1=0&f_y2=0&f_y3=0&f_y4=0&f_kin=&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_kin2=&f_hak=&f_tel=&f_tscm_flg=&f_p_no=&f_custom_code=&f_search_type=&f_static=1&f_tel=&f_service=&f_rm_equip=&f_sort=minNo`;
+      let targetDate = new Date();
+      targetDate.setDate(targetDate.getDate() + 30);
+      
+      let roomStartDate = "";
+      let roomAdultNum = 0;
+      if (typeof window !== 'undefined' && roomId) {
+          try {
+              const savedSettings = localStorage.getItem(`rh_settings_${roomId}`);
+              if (savedSettings) {
+                  const parsed = JSON.parse(savedSettings);
+                  if (parsed.start) roomStartDate = parsed.start;
+                  if (parsed.adultNum) roomAdultNum = parsed.adultNum;
+              }
+          } catch(e) {}
+      }
 
-    if (hotelId) {
-         return `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotelId}?${paramString}`;
-    }
-    
-    return `https://search.travel.rakuten.co.jp/ds/hotel/search?f_query=${encodeURIComponent(hotel.name)}&${paramString}`;
+      // ★ 1. 日付：現在設定されている検索条件(conditions)を最優先にする
+      if (conditions.checkin) {
+          const parsedStart = parseLocalYMD(conditions.checkin);
+          if (parsedStart) targetDate = parsedStart;
+      } else if (roomStartDate) {
+          const parsedStart = parseLocalYMD(roomStartDate);
+          if (parsedStart) targetDate = parsedStart;
+      }
+
+      const dayNum = Number(spot.day);
+      if (!isNaN(dayNum) && dayNum > 0) {
+          targetDate.setDate(targetDate.getDate() + (dayNum - 1));
+      }
+
+      const checkOutDate = new Date(targetDate);
+      checkOutDate.setDate(targetDate.getDate() + 1);
+
+      const y1 = targetDate.getFullYear();
+      const m1 = targetDate.getMonth() + 1;
+      const d1 = targetDate.getDate();
+      const y2 = checkOutDate.getFullYear();
+      const m2 = checkOutDate.getMonth() + 1;
+      const d2 = checkOutDate.getDate();
+
+      // ★ 2. 人数：検索条件(searchedAdults)を最優先にする
+      const otonaSu = searchedAdults || roomAdultNum || 2;
+
+      // ★ 3. 食事条件：検索条件をパラメータ(f_s1:朝食, f_s2:夕食)に変換する
+      let f_s1 = 0;
+      let f_s2 = 0;
+      if (conditions.mealType === 'half_board') {
+          f_s1 = 1; f_s2 = 1; // 2食付
+      } else if (conditions.mealType === 'breakfast') {
+          f_s1 = 1; f_s2 = 0; // 朝食のみ
+      }
+
+      const paramString = `f_flg=PLAN&f_otona_su=${otonaSu}&f_heya_su=1&f_kin=&f_kin2=&f_s1=${f_s1}&f_s2=${f_s2}&f_y1=0&f_y2=0&f_y3=0&f_y4=0&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_hak=1&f_tel=&f_tscm_flg=&f_p_no=&f_custom_code=&f_search_type=&f_service=&f_rm_equip=&f_sort=minNo`;
+
+      const extractRakutenId = (url: string) => {
+          if (!url) return null;
+          const match = url.match(/hotelinfo\/plan\/(\d+)/) || url.match(/HOTEL\/(\d+)/) || url.match(/no=(\d+)/);
+          return match ? match[1] : null;
+      };
+
+      let hotelId = null;
+      if (spot.url) hotelId = extractRakutenId(spot.url);
+      if (!hotelId && spot.id && /^\d+$/.test(String(spot.id))) hotelId = spot.id;
+
+      if (hotelId) return `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotelId}?${paramString}`;
+      return `https://search.travel.rakuten.co.jp/ds/hotel/search?f_query=${encodeURIComponent(spot.name)}&${paramString}`;
   };
 
   const rakutenHomeUrl = "https://travel.rakuten.co.jp/";
@@ -442,7 +423,6 @@ const handleSelectHotel = async (hotel: any) => {
       hotelMarkersRef.current = [];
       hotelList.forEach(hotel => {
           const el = document.createElement('div');
-          
           const isActive = activeHotelId === hotel.id;
           const color = isActive ? '#EF4444' : '#3B82F6';
           const zIndex = isActive ? 99 : 5;
@@ -467,35 +447,24 @@ const handleSelectHotel = async (hotel: any) => {
     const paddingLeft = 40; const paddingBottom = 30; const paddingRight = 10; const paddingTop = 10;
     const width = 300; const height = 200; 
     
-   // 1. 横軸の最小値を、検索条件（または実際の最低評価）に合わせて動的に変更
     const baseMinRating = conditions.minRating > 0 ? conditions.minRating : 3.0;
-    // 念のため、実際の検索結果の中にベースより低い評価があればそれに合わせる（見切れ防止）
     const actualMinRating = hotels.length > 0 ? Math.min(...hotels.map(h => h.rating || 3.0)) : 3.0;
     const minRating = Math.min(baseMinRating, actualMinRating); 
     const maxRating = 5.0;
 
     const prices = hotels.map(h => Math.round(h.price / Math.max(1, searchedAdults))).filter(p => p > 0);
-    
     const minP = prices.length ? Math.min(...prices) * 0.9 : 0;
     const maxP = prices.length ? Math.max(...prices) * 1.1 : 30000;
-    
     const maxReviews = useMemo(() => Math.max(...hotels.map(h => h.review_count || 0), 1), [hotels]);
 
-    // プロットが左にはみ出さないように Math.max でガード
     const getX = (rating: number) => paddingLeft + ((Math.max(rating, minRating) - minRating) / (maxRating - minRating)) * (width - paddingLeft - paddingRight);
     const getY = (price: number) => (height - paddingBottom) - ((price - minP) / (maxP - minP)) * (height - paddingBottom - paddingTop);
     
-    // 2. 最小値に合わせて、メモリ（縦線の間隔と数値）を最適化
     let ratingTicks: number[] = [];
-    if (minRating >= 4.5) {
-        ratingTicks = [4.5, 4.6, 4.7, 4.8, 4.9, 5.0]; // 0.1刻み
-    } else if (minRating >= 4.0) {
-        ratingTicks = [4.0, 4.2, 4.4, 4.6, 4.8, 5.0]; // 0.2刻み
-    } else if (minRating >= 3.5) {
-        ratingTicks = [3.5, 3.8, 4.1, 4.4, 4.7, 5.0]; // 0.3刻み
-    } else {
-        ratingTicks = [3.0, 3.5, 4.0, 4.5, 5.0];      // 0.5刻み（デフォルト）
-    }
+    if (minRating >= 4.5) ratingTicks = [4.5, 4.6, 4.7, 4.8, 4.9, 5.0]; 
+    else if (minRating >= 4.0) ratingTicks = [4.0, 4.2, 4.4, 4.6, 4.8, 5.0]; 
+    else if (minRating >= 3.5) ratingTicks = [3.5, 3.8, 4.1, 4.4, 4.7, 5.0]; 
+    else ratingTicks = [3.0, 3.5, 4.0, 4.5, 5.0];      
     const priceTicks = [Math.floor(minP), Math.floor((minP + maxP) / 2), Math.floor(maxP)];
 
     return (
@@ -521,31 +490,18 @@ const handleSelectHotel = async (hotel: any) => {
                     const isViewed = viewedHotelIds.has(h.id);
 
                     let baseColor = "#3B82F6"; 
-                    if (isAdded || isViewed) {
-                        baseColor = "#8B5CF6"; 
-                    }
-                    if (isActive) {
-                        baseColor = "#EF4444"; 
-                    }
+                    if (isAdded || isViewed) baseColor = "#8B5CF6"; 
+                    if (isActive) baseColor = "#EF4444"; 
 
                     const reviewRatio = Math.min((h.review_count || 0) / maxReviews, 1);
                     const opacity = 0.3 + (reviewRatio * 0.7);
 
                     return (
                         <circle 
-                            key={i} 
-                            cx={x} 
-                            cy={y} 
-                            r={isActive ? 8 : 4} 
-                            fill={baseColor} 
-                            fillOpacity={opacity}
-                            stroke="white" 
-                            strokeWidth={1.5}
+                            key={i} cx={x} cy={y} r={isActive ? 8 : 4} 
+                            fill={baseColor} fillOpacity={opacity} stroke="white" strokeWidth={1.5}
                             className="transition-all duration-300 cursor-pointer drop-shadow-sm hover:r-6" 
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                handleSelectHotel(h);
-                            }} 
+                            onClick={(e) => { e.stopPropagation(); handleSelectHotel(h); }} 
                         />
                     );
                 })}
@@ -579,12 +535,7 @@ const handleSelectHotel = async (hotel: any) => {
       if (radiusKm < 0.1) radiusKm = 0.5;
       if (radiusKm > 5.0) radiusKm = 5.0;
       
-      setSearchArea({ 
-          latitude: centerLat, 
-          longitude: centerLng, 
-          radius: Number(radiusKm.toFixed(2)),
-          polygon: coords 
-      });
+      setSearchArea({ latitude: centerLat, longitude: centerLng, radius: Number(radiusKm.toFixed(2)), polygon: coords });
       stopDrawing();
       setShowSettings(true);
   };
@@ -593,51 +544,31 @@ const handleSelectHotel = async (hotel: any) => {
     if (!searchArea) return alert("範囲を囲んでください");
     
     setSearchedAdults(conditions.adults);
-
-    setIsLoading(true); setHotels([]); setActiveHotelId(null); setViewedHotelIds(new Set()); // 追加
-     setShowSettings(false); 
+    setIsLoading(true); setHotels([]); setActiveHotelId(null); setViewedHotelIds(new Set());
+    setShowSettings(false); 
+    
     try {
         const mealTypeParam = conditions.mealType === 'none' ? undefined : conditions.mealType;
-
         const body = {
-            latitude: searchArea.latitude, 
-            longitude: searchArea.longitude, 
-            radius: Number(searchArea.radius.toFixed(1)), 
-            polygon: searchArea.polygon,
+            latitude: searchArea.latitude, longitude: searchArea.longitude, radius: Number(searchArea.radius.toFixed(1)), polygon: searchArea.polygon,
             max_price: conditions.budgetMax >= 50000 ? undefined : conditions.budgetMax,
-            checkin_date: conditions.checkin, 
-            checkout_date: conditions.checkout, 
-            adult_num: conditions.adults,
-            meal_type: mealTypeParam,
-            // ▼▼▼ APIへの送信パラメータに追加 ▼▼▼
-            min_rating: conditions.minRating > 0 ? conditions.minRating : undefined,
+            checkin_date: conditions.checkin, checkout_date: conditions.checkout, adult_num: conditions.adults,
+            meal_type: mealTypeParam, min_rating: conditions.minRating > 0 ? conditions.minRating : undefined,
             min_review_count: conditions.minReviewCount > 0 ? conditions.minReviewCount : undefined,
             hotel_type: conditions.hotelType !== 'all' ? conditions.hotelType : undefined,
         };
         
-        console.log("Searching with:", body); 
-
         const res = await fetch(`${API_BASE_URL}/api/search_hotels_vacant`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
         });
         const data = await res.json();
         
         if (data.hotels?.length > 0) { 
-            // ▼▼▼ フロントエンドでの絞り込み（API側が未対応の場合の保険） ▼▼▼
             let filteredHotels = data.hotels;
-            
-            if (conditions.minRating > 0) {
-                filteredHotels = filteredHotels.filter((h: any) => (h.rating || 0) >= conditions.minRating);
-            }
-            if (conditions.minReviewCount > 0) {
-                filteredHotels = filteredHotels.filter((h: any) => (h.review_count || 0) >= conditions.minReviewCount);
-            }
-            if (conditions.hotelType === 'hotel') {
-                filteredHotels = filteredHotels.filter((h: any) => !h.name.includes('旅館') && !h.name.includes('民宿'));
-            } else if (conditions.hotelType === 'ryokan') {
-                filteredHotels = filteredHotels.filter((h: any) => h.name.includes('旅館') || h.name.includes('民宿') || h.name.includes('和') || h.name.includes('温泉'));
-            }
-            // ▲▲▲ 追加ここまで ▲▲▲
+            if (conditions.minRating > 0) filteredHotels = filteredHotels.filter((h: any) => (h.rating || 0) >= conditions.minRating);
+            if (conditions.minReviewCount > 0) filteredHotels = filteredHotels.filter((h: any) => (h.review_count || 0) >= conditions.minReviewCount);
+            if (conditions.hotelType === 'hotel') filteredHotels = filteredHotels.filter((h: any) => !h.name.includes('旅館') && !h.name.includes('民宿'));
+            else if (conditions.hotelType === 'ryokan') filteredHotels = filteredHotels.filter((h: any) => h.name.includes('旅館') || h.name.includes('民宿') || h.name.includes('和') || h.name.includes('温泉'));
 
             if (filteredHotels.length > 0) {
                 setHotels(filteredHotels); 
@@ -650,14 +581,12 @@ const handleSelectHotel = async (hotel: any) => {
                 alert("条件（評価やレビュー数など）に合う宿が範囲内に見つかりませんでした。");
                 setShowSettings(true);
             }
-        }
-        else {
+        } else {
             alert("条件に合う宿が見つかりませんでした。\n条件を変更して再検索してください。");
             setShowSettings(true);
         }
     } catch (e) { 
-        alert("通信エラーが発生しました"); 
-        setShowSettings(true); 
+        alert("通信エラーが発生しました"); setShowSettings(true); 
     } finally { 
         setIsLoading(false); 
     }
@@ -672,11 +601,8 @@ const handleSelectHotel = async (hotel: any) => {
           });
           const data = await res.json();
           if (data.spot) { 
-              handleAddCandidate(data.spot); 
-              setImportUrl(""); 
-              setImportedHotel(data.spot);
-          }
-          else alert(data.error || "エラー");
+              handleAddCandidate(data.spot); setImportUrl(""); setImportedHotel(data.spot);
+          } else alert(data.error || "エラー");
       } catch (e) { alert("エラー"); } finally { setIsImporting(false); }
   };
 
@@ -684,40 +610,17 @@ const handleSelectHotel = async (hotel: any) => {
     if (!mapContainer.current) return;
     mapboxgl.accessToken = MAPBOX_TOKEN;
     map.current = new mapboxgl.Map({
-        container: mapContainer.current, 
-        style: 'mapbox://styles/mapbox/streets-v12',
+        container: mapContainer.current, style: 'mapbox://styles/mapbox/streets-v12',
         center: [centerOfGravity.lng, centerOfGravity.lat], zoom: 12
     });
     map.current.on('load', () => {
         if (!map.current) return;
-        
         setIsMapLoaded(true);
-
         map.current.addSource('draw-source', { type: 'geojson', data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } } });
         map.current.addLayer({ id: 'draw-line', type: 'line', source: 'draw-source', paint: { 'line-color': '#EF4444', 'line-width': 4, 'line-opacity': 0.8 } });
-        
         map.current.addSource('search-area-source', { type: 'geojson', data: { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [] } } });
-        map.current.addLayer({
-            id: 'search-area-fill',
-            type: 'fill',
-            source: 'search-area-source',
-            paint: {
-                'fill-color': '#EF4444',
-                'fill-opacity': 0.08 
-            }
-        });
-        map.current.addLayer({
-            id: 'search-area-line',
-            type: 'line',
-            source: 'search-area-source',
-            paint: {
-                'line-color': '#EF4444',
-                'line-opacity': 0.4,
-                'line-width': 1,
-                'line-dasharray': [4, 2]
-            }
-        });
-
+        map.current.addLayer({ id: 'search-area-fill', type: 'fill', source: 'search-area-source', paint: { 'fill-color': '#EF4444', 'fill-opacity': 0.08 } });
+        map.current.addLayer({ id: 'search-area-line', type: 'line', source: 'search-area-source', paint: { 'line-color': '#EF4444', 'line-opacity': 0.4, 'line-width': 1, 'line-dasharray': [4, 2] } });
         map.current.setPadding({ top: 50, bottom: 250, left: 0, right: 0 });
     });
     return () => { map.current?.remove(); };
@@ -736,7 +639,7 @@ const handleSelectHotel = async (hotel: any) => {
   }, [isDrawing]);
 
   return (
-    <div className="relative w-full h-full bg-slate-50 flex flex-col font-sans overflow-hidden">
+    <div className="relative w-full h-[100dvh] bg-slate-50 flex flex-col font-sans overflow-hidden">
       
     {isTrial && onBack && (
         <div className="absolute top-4 left-4 z-50">
@@ -746,11 +649,8 @@ const handleSelectHotel = async (hotel: any) => {
         </div>
     )}
 
-      {/* 上半分：マップエリア */}
-      {/* 修正箇所: h-1/2 の部分を (showMapInResult ? 'h-1/2' : 'h-0') に変更 */}
-      <div className={`absolute inset-0 z-0 transition-all duration-500 ${hotels.length > 0 ? (showMapInResult ? 'h-1/2' : 'h-0') : 'h-full'}`}>
+      <div className={`absolute inset-0 z-0 transition-all duration-500 ${hotels.length > 0 ? (showMapInResult ? 'h-[45%]' : 'h-0') : 'h-full'}`}>
          <div ref={mapContainer} className="w-full h-full" style={{ touchAction: isDrawing ? 'none' : 'auto' }} />
-         
          {!selectedHotel && (
              <button 
                  onClick={isDrawing ? stopDrawing : startDrawing} 
@@ -763,16 +663,14 @@ const handleSelectHotel = async (hotel: any) => {
          )}
       </div>
 
-      {/* 下半分（または全画面）：検索結果・メニューエリア */}
-      {/* 修正箇所: rounded-t や h-1/2 の条件分岐を変更 */}
       <div className={`absolute bottom-0 left-0 right-0 z-30 bg-white shadow-[0_-10px_60px_rgba(0,0,0,0.15)] flex flex-col transition-all duration-500 overflow-hidden ${
           hotels.length > 0 
-          ? (showMapInResult ? 'h-1/2 rounded-t-[2.5rem]' : 'h-full rounded-none pt-4') 
+          ? (showMapInResult ? 'h-[55%] rounded-t-[2.5rem]' : 'h-full rounded-none pt-4') 
           : 'h-auto max-h-[85vh] rounded-t-[2.5rem]'
       }`}>      
           <div className="w-12 h-1.5 bg-gray-100 rounded-full mx-auto mt-4 mb-2 shrink-0" />
           
-          <div className="flex-1 overflow-y-auto px-8 pb-32">
+          <div className="flex-1 overflow-y-auto px-6 pb-24">
             {hotels.length === 0 ? (
                 (() => {
                     const allAddedHotels = spots.filter(s => 
@@ -785,7 +683,6 @@ const handleSelectHotel = async (hotel: any) => {
 
                         return (
                             <div className="pt-20 animate-in fade-in">
-                                
                                 <div className="flex gap-2 overflow-x-auto no-scrollbar mb-8 pb-2 mask-gradient">
                                     <button 
                                         onClick={() => setDisplayDay(0)}
@@ -901,201 +798,211 @@ const handleSelectHotel = async (hotel: any) => {
                     );
                 })()
             ) : (
-                <div className="flex flex-col gap-6 pt-20 animate-in fade-in pb-10">
+                <div className="flex flex-col gap-6 pt-16 animate-in fade-in pb-10">
                     
-<div className="flex justify-between items-center">
-    <h3 className="text-xl font-black text-gray-800 flex items-center gap-2">
-        <TrendingUp size={22} className="text-blue-500"/> 
-        分析結果 
-        <span className="text-sm font-bold text-gray-500 ml-1">({hotels.length}件)</span>
-    </h3>
-    <div className="flex items-center gap-2">
-        {/* ▼ 地図切り替えボタンを追加 */}
-        <button 
-            onClick={() => setShowMapInResult(!showMapInResult)} 
-            className={`px-3 py-1.5 rounded-full text-[11px] font-bold flex items-center gap-1.5 transition-colors ${showMapInResult ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-100 text-gray-600 hover:bg-slate-200'}`}
-        >
-            <MapIcon size={14}/> {showMapInResult ? '地図を隠す' : '地図で表示'}
-        </button>
-        {/* ▲ ここまで */}
-        <button onClick={() => setShowSettings(true)} className="p-2 bg-slate-100 rounded-full text-gray-600 hover:bg-slate-200 transition-colors"><SlidersHorizontal size={18}/></button>
-    </div>
-</div>
-                    <div className="w-full aspect-[4/3] bg-slate-50 rounded-[2rem] border border-gray-100 relative overflow-hidden shadow-inner shrink-0">
-                        <ScatterPlot />
-                    </div>
-                   
-
-{/* 蓄積されたホテルカードの横スクロール表示 */}
-{viewedHotelIds.size > 0 ? (
-    <div className="flex gap-4 overflow-x-auto px-2 pb-4 no-scrollbar mask-gradient" style={{ scrollBehavior: 'smooth' }}>
-        {/* 新しくクリックしたものが一番左に来るように reverse() しています */}
-        {Array.from(viewedHotelIds).reverse().map((id) => {
-            const hotel = hotels.find(h => h.id === id);
-            if (!hotel) return null;
-            
-            const unitPrice = Math.round(hotel.price / Math.max(1, searchedAdults));
-            const isSelected = activeHotelId === hotel.id;
-            const isLoading = fetchingSpotIds.has(hotel.id);
-            const targetUrl = getAffiliateUrl(hotel);
-
-            return (
-                <div 
-                    key={hotel.id} 
-                    className={`min-w-[260px] bg-white rounded-3xl p-4 flex flex-col gap-4 relative cursor-pointer active:scale-[0.98] transition-all duration-300 ${
-                        isSelected 
-                        ? 'border-2 border-red-500 shadow-md ring-2 ring-red-100 transform -translate-y-1'
-                        : 'border border-gray-100 shadow-sm'
-                    }`}
-                    onClick={() => handleSelectHotel(hotel)}
-                >
-                    <div className="w-full h-32 bg-gray-100 rounded-2xl overflow-hidden shrink-0 relative">
-                        {hotel.image_url ? (
-                            <img src={hotel.image_url} className="w-full h-full object-cover" alt="" />
-                        ) : (
-                            <div className="flex h-full items-center justify-center text-gray-300"><BedDouble size={32}/></div>
-                        )}
-                        {hotel.rating > 0 && (
-                            <div className={`absolute top-2 right-2 backdrop-blur-md text-white px-2 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 ${isSelected ? 'bg-red-500/90' : 'bg-black/60'}`}>
-                                <Star size={10} className="text-yellow-400" fill="currentColor"/> {hotel.rating}
-                            </div>
-                        )}
-                    </div>
-
-                    <div>
-                        <h4 className={`font-black text-sm line-clamp-2 leading-tight mb-1 ${isSelected ? 'text-red-600' : 'text-gray-800'}`}>{hotel.name}</h4>
-                        <div className="flex items-center gap-1 text-[10px] text-gray-400 font-bold mb-2">
-                            <MapPin size={10} className="shrink-0"/> <span className="truncate">{hotel.description || "エリア検索結果"}</span>
-                        </div>
-                        {hotel.price > 0 && (
-                            <p className="text-orange-500 font-black text-lg leading-none mt-1">
-                                ¥{unitPrice.toLocaleString()}<span className="text-[10px] text-gray-400 font-bold ml-1">~ /人</span>
-                            </p>
-                        )}
-                    </div>
-
-                    {/* レーダーチャート */}
-                    <div className={`flex items-center justify-center rounded-2xl py-2 h-[160px] transition-colors ${isSelected ? 'bg-red-50' : 'bg-gray-50/50'}`}>
-                       <RadarChart ratings={hotel.detailed_ratings} color={isSelected ? "#EF4444" : "#F97316"} isLoading={isLoading} onLabelClick={(key, label) => setReviewModalData({ spot: hotel, key, label })} /> </div>
-
-                    <div className="flex gap-2 mt-auto pt-2">
+                <div className="flex justify-between items-center">
+                    <h3 className="text-xl font-black text-gray-800 flex items-center gap-2">
+                        <TrendingUp size={22} className="text-blue-500"/> 
+                        分析結果 
+                        <span className="text-sm font-bold text-gray-500 ml-1">({hotels.length}件)</span>
+                    </h3>
+                    <div className="flex items-center gap-2">
                         <button 
-                            onClick={(e) => { e.stopPropagation(); setDetailModalHotel(hotel); }}
-                            className="flex-[1] bg-gray-800 text-white py-3 rounded-xl font-bold text-[11px] flex items-center justify-center gap-1 hover:bg-gray-700 transition-colors"
+                            onClick={() => setShowMapInResult(!showMapInResult)} 
+                            className={`px-3 py-1.5 rounded-full text-[11px] font-bold flex items-center gap-1.5 transition-colors ${showMapInResult ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-100 text-gray-600 hover:bg-slate-200'}`}
                         >
-                            <Info size={14} /> 詳細
+                            <MapIcon size={14}/> {showMapInResult ? '地図を隠す' : '地図で表示'}
                         </button>
-                        <button 
-                            onClick={(e) => { e.stopPropagation(); handleAddCandidate(hotel); }}
-                            className="flex-[1.2] bg-blue-600 text-white py-3 rounded-xl font-bold text-[11px] flex items-center justify-center gap-1 hover:bg-blue-700 transition-colors"
-                        >
-                            <Plus size={14} /> 候補に追加
-                        </button>
+                        <button onClick={() => setShowSettings(true)} className="p-2 bg-slate-100 rounded-full text-gray-600 hover:bg-slate-200 transition-colors"><SlidersHorizontal size={18}/></button>
                     </div>
                 </div>
-            );
-        })}
-    </div>
-) : (
-    <div className="text-center py-8 bg-slate-50/50 rounded-3xl border border-dashed border-gray-200 mt-2 mx-2">
-        <p className="text-[11px] text-gray-400 font-bold leading-relaxed">
-            上のグラフの点やマップのピンをタップすると<br/>ここにホテルの比較カードが追加されます
-        </p>
-    </div>
-)}
+
+                <div className="w-full aspect-[4/3] bg-slate-50 rounded-[2rem] border border-gray-100 relative overflow-hidden shadow-inner shrink-0">
+                    <ScatterPlot />
+                </div>
+                   
+                {viewedHotelIds.size > 0 ? (
+                    <div className="flex gap-4 overflow-x-auto pb-4 no-scrollbar mask-gradient" style={{ scrollBehavior: 'smooth' }}>
+                        {Array.from(viewedHotelIds).reverse().map((id) => {
+                            const hotel = hotels.find(h => h.id === id);
+                            if (!hotel) return null;
+                            
+                            const unitPrice = Math.round(hotel.price / Math.max(1, searchedAdults));
+                            const isSelected = activeHotelId === hotel.id;
+                            const targetUrl = getAffiliateUrl(hotel);
+
+                            return (
+                                <div 
+                                    key={hotel.id} 
+                                    className={`min-w-[280px] bg-white rounded-3xl p-4 flex flex-col gap-3 relative cursor-pointer active:scale-[0.98] transition-all duration-300 ${
+                                        isSelected 
+                                        ? 'border-2 border-red-500 shadow-md ring-2 ring-red-100 transform -translate-y-1'
+                                        : 'border border-gray-100 shadow-sm'
+                                    }`}
+                                    onClick={() => handleSelectHotel(hotel)}
+                                >
+                                    <div className="w-full h-32 bg-gray-100 rounded-2xl overflow-hidden shrink-0 relative">
+                                        {hotel.image_url ? (
+                                            <img src={hotel.image_url} className="w-full h-full object-cover" alt="" />
+                                        ) : (
+                                            <div className="flex h-full items-center justify-center text-gray-300"><BedDouble size={32}/></div>
+                                        )}
+                                        {hotel.rating > 0 && (
+                                            <div className={`absolute top-2 right-2 backdrop-blur-md text-white px-2 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 ${isSelected ? 'bg-red-500/90' : 'bg-black/60'}`}>
+                                                <Star size={10} className="text-yellow-400" fill="currentColor"/> {hotel.rating}
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    <div>
+                                        <h4 className={`font-black text-sm line-clamp-2 leading-tight mb-1 ${isSelected ? 'text-red-600' : 'text-gray-800'}`}>{hotel.name}</h4>
+                                        <div className="flex items-center gap-1 text-[10px] text-gray-400 font-bold mb-2">
+                                            <MapPin size={10} className="shrink-0"/> <span className="truncate">{hotel.description || "エリア検索結果"}</span>
+                                        </div>
+                                        {hotel.price > 0 && (
+                                            <p className="text-orange-500 font-black text-lg leading-none mt-1">
+                                                ¥{unitPrice.toLocaleString()}<span className="text-[10px] text-gray-400 font-bold ml-1">~ /人</span>
+                                            </p>
+                                        )}
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-2 mt-auto pt-2">
+                                        <button 
+                                            onClick={(e) => { e.stopPropagation(); handleAddCandidate(hotel); }}
+                                            className="bg-gray-900 text-white py-2.5 rounded-xl font-bold text-[11px] flex items-center justify-center gap-1 shadow-sm hover:bg-gray-800 transition-colors"
+                                        >
+                                            <Plus size={14} /> 候補に追加
+                                        </button>
+                                        <a 
+                                            href={targetUrl}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            onClick={(e) => { e.stopPropagation(); logAffiliateClick(hotel.name, "hotel_search_list"); }}
+                                            className="bg-[#BF0000] text-white py-2.5 rounded-xl font-bold text-[11px] flex items-center justify-center gap-1 shadow-sm hover:bg-red-800 transition-colors"
+                                        >
+                                            楽天で見る <ExternalLink size={14} />
+                                        </a>
+                                        <button 
+                                            onClick={(e) => { e.stopPropagation(); setDetailModalHotel(hotel); }}
+                                            className="col-span-2 bg-gray-100 text-gray-600 py-2.5 rounded-xl font-bold text-[11px] flex items-center justify-center gap-1 hover:bg-gray-200 transition-colors"
+                                        >
+                                            <Info size={14} /> 詳細（評価バランス・口コミ）を見る
+                                        </button>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                ) : (
+                    <div className="text-center py-8 bg-slate-50/50 rounded-3xl border border-dashed border-gray-200 mt-2 mx-2">
+                        <p className="text-[11px] text-gray-400 font-bold leading-relaxed">
+                            上のグラフの点やマップのピンをタップすると<br/>ここにホテルの比較カードが追加されます
+                        </p>
+                    </div>
+                )}
                 </div>
             )}
           </div>
       </div>
 
-      
+    {detailModalHotel && (
+          <div 
+              className="fixed inset-0 z-[200] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in"
+              onClick={() => setDetailModalHotel(null)}
+          >
+              <div 
+                  className="bg-gray-50 w-full sm:max-w-md h-[85vh] sm:h-auto sm:max-h-[90vh] rounded-t-3xl sm:rounded-3xl flex flex-col overflow-hidden animate-in slide-in-from-bottom-8 shadow-2xl relative"
+                  onClick={(e) => e.stopPropagation()}
+              >
+                  {/* 画像・ヘッダーエリア */}
+                  <div className="w-full h-56 relative shrink-0 bg-gray-200">
+                      {/* 左上の戻るボタン（白枠をつけて目立たせました） */}
+                      <button 
+                          onClick={() => setDetailModalHotel(null)}
+                          className="absolute top-4 left-4 z-20 bg-black/60 backdrop-blur-md px-4 py-2 rounded-full flex items-center gap-2 text-white hover:bg-black/80 transition-colors text-xs font-bold shadow-lg border border-white/20"
+                      >
+                          <ArrowLeft size={16} /> 戻る
+                      </button>
+                      
+                      {/* 右上の閉じるボタン（追加） */}
+                      <button 
+                          onClick={() => setDetailModalHotel(null)}
+                          className="absolute top-4 right-4 z-20 w-8 h-8 bg-black/60 backdrop-blur-md rounded-full flex items-center justify-center text-white hover:bg-black/80 transition-colors shadow-lg border border-white/20"
+                      >
+                          <X size={18} />
+                      </button>
 
-{detailModalHotel && (
-    <div 
-        className="fixed inset-0 z-[200] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in"
-        onClick={() => setDetailModalHotel(null)}
-    >
-        <div 
-            className="bg-gray-50 w-full sm:max-w-md h-[85vh] sm:h-auto sm:max-h-[90vh] rounded-t-3xl sm:rounded-3xl flex flex-col overflow-hidden animate-in slide-in-from-bottom-8 shadow-2xl relative"
-            onClick={(e) => e.stopPropagation()}
-        >
-            <div className="w-full h-56 relative shrink-0 bg-gray-200">
-                <button 
-                    onClick={() => setDetailModalHotel(null)}
-                    className="absolute top-4 left-4 z-10 bg-black/50 backdrop-blur-md px-4 py-2 rounded-full flex items-center gap-2 text-white hover:bg-black/70 transition-colors text-xs font-bold shadow-lg"
-                >
-                    <ArrowLeft size={16} /> 戻る
-                </button>
+                      {detailModalHotel.image_url ? (
+                          <img src={detailModalHotel.image_url} className="w-full h-full object-cover" alt="" />
+                      ) : (
+                          <div className="flex h-full items-center justify-center text-gray-400"><BedDouble size={48}/></div>
+                      )}
+                      
+                      <div className="absolute bottom-3 right-3 bg-black/60 backdrop-blur-md text-white px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-lg">
+                          <Star size={12} className="text-yellow-400" fill="currentColor"/> 
+                          {detailModalHotel.rating > 0 ? detailModalHotel.rating : "評価なし"}
+                      </div>
+                  </div>
 
-                {detailModalHotel.image_url ? (
-                    <img src={detailModalHotel.image_url} className="w-full h-full object-cover" alt="" />
-                ) : (
-                    <div className="flex h-full items-center justify-center text-gray-400"><BedDouble size={48}/></div>
-                )}
-                
-                <div className="absolute bottom-3 right-3 bg-black/60 backdrop-blur-md text-white px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-lg">
-                    <Star size={12} className="text-yellow-400" fill="currentColor"/> 
-                    {detailModalHotel.rating > 0 ? detailModalHotel.rating : "評価なし"}
-                </div>
-            </div>
+                  {/* スクロールエリア */}
+                  <div className="flex-1 overflow-y-auto p-5 space-y-6">
+                      <div>
+                          <h3 className="text-xl font-black text-gray-800 leading-tight mb-2">{detailModalHotel.name}</h3>
+                          <div className="flex items-start gap-1.5 text-xs text-gray-500 font-medium mb-3">
+                              <MapPin size={14} className="shrink-0 mt-0.5 text-orange-500"/> 
+                              <span>{detailModalHotel.description}</span>
+                          </div>
+                          {detailModalHotel.price > 0 && (
+                              <p className="text-orange-600 font-black text-2xl leading-none">
+                                  ¥{Math.round(detailModalHotel.price / Math.max(1, searchedAdults)).toLocaleString()}<span className="text-xs text-gray-400 font-bold ml-1">~ /人</span>
+                              </p>
+                          )}
+                      </div>
 
-            <div className="flex-1 overflow-y-auto p-5 space-y-6">
-                <div>
-                    <h3 className="text-xl font-black text-gray-800 leading-tight mb-2">{detailModalHotel.name}</h3>
-                    <div className="flex items-start gap-1.5 text-xs text-gray-500 font-medium mb-3">
-                        <MapPin size={14} className="shrink-0 mt-0.5 text-orange-500"/> 
-                        <span>{detailModalHotel.description}</span>
-                    </div>
-                    {detailModalHotel.price > 0 && (
-                        <p className="text-orange-600 font-black text-2xl leading-none">
-                            ¥{Math.round(detailModalHotel.price / Math.max(1, searchedAdults)).toLocaleString()}<span className="text-xs text-gray-400 font-bold ml-1">~ /人</span>
-                        </p>
-                    )}
-                </div>
+                      <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+                          <h4 className="text-xs font-bold text-gray-500 mb-2 flex items-center gap-1"><TrendingUp size={14}/> 評価バランス</h4>
+                          <div className="flex justify-center h-[180px]">
+                            <RadarChart ratings={detailModalHotel.detailed_ratings} color="#F97316" isLoading={fetchingSpotIds.has(detailModalHotel.id)} onLabelClick={(key, label) => setReviewModalData({ spot: detailModalHotel, key, label })} /> </div>
+                      </div>
 
-                <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
-                    <h4 className="text-xs font-bold text-gray-500 mb-2 flex items-center gap-1"><TrendingUp size={14}/> 評価バランス</h4>
-                    <div className="flex justify-center h-[180px]">
-                      <RadarChart ratings={detailModalHotel.detailed_ratings} color="#F97316" isLoading={fetchingSpotIds.has(detailModalHotel.id)} onLabelClick={(key, label) => setReviewModalData({ spot: detailModalHotel, key, label })} /> </div>
-                </div>
+                      {detailModalHotel.comment && (
+                          <div className="bg-orange-50/50 rounded-2xl p-4 border border-orange-100">
+                              <h4 className="text-xs font-bold text-orange-800 mb-2 flex items-center gap-1"><Info size={14}/> プラン・ホテルの特徴</h4>
+                              <p className="text-sm text-gray-700 leading-relaxed font-medium whitespace-pre-wrap">
+                                  {detailModalHotel.comment.replace(/<[^>]*>?/gm, '')}
+                              </p>
+                          </div>
+                      )}
+                      <div className="h-8"></div>
+                  </div>
 
-                {detailModalHotel.comment && (
-                    <div className="bg-orange-50/50 rounded-2xl p-4 border border-orange-100">
-                        <h4 className="text-xs font-bold text-orange-800 mb-2 flex items-center gap-1"><Info size={14}/> プラン・ホテルの特徴</h4>
-                        <p className="text-sm text-gray-700 leading-relaxed font-medium whitespace-pre-wrap">
-                            {detailModalHotel.comment.replace(/<[^>]*>?/gm, '')}
-                        </p>
-                    </div>
-                )}
-                <div className="h-4"></div>
-            </div>
-
-            <div className="p-4 bg-white border-t border-gray-100 shrink-0 flex gap-2">
-                {!isTrial && (
-                    <button 
-                        onClick={() => { handleAddCandidate(detailModalHotel); setDetailModalHotel(null); }} 
-                        className="flex-[1] bg-gray-900 text-white py-3.5 rounded-2xl font-bold text-sm active:scale-95 transition-all shadow-lg flex items-center justify-center gap-2 hover:bg-gray-800"
-                    >
-                        <Plus size={18} strokeWidth={3}/> <span>候補に追加</span>
-                    </button>
-                )}
-                <a 
-                    href={getAffiliateUrl(detailModalHotel)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={() => logAffiliateClick(detailModalHotel.name, "hotel_search_detail")}
-                    className={`bg-white text-gray-900 py-3.5 rounded-2xl border border-gray-200 font-bold text-sm active:scale-95 transition-all shadow-sm flex items-center justify-center gap-2 hover:bg-gray-50 ${isTrial ? 'w-full' : 'flex-[1]'}`}
-                >
-                    <span className="text-xs">楽天で見る</span><ExternalLink size={16}/>
-                </a>
-            </div>
-        </div>
-    </div>
-)}
+                  {/* ★ メニュー帯と被らないように pb-28 (巨大な下部パディング) を追加 */}
+                  <div className="p-4 bg-white border-t border-gray-100 shrink-0 flex gap-2 pb-28">
+                      {!isTrial && (
+                          <button 
+                              onClick={() => { handleAddCandidate(detailModalHotel); setDetailModalHotel(null); }} 
+                              className="flex-[1] bg-gray-900 text-white py-3.5 rounded-2xl font-bold text-sm active:scale-95 transition-all shadow-lg flex items-center justify-center gap-2 hover:bg-gray-800"
+                          >
+                              <Plus size={18} strokeWidth={3}/> <span>候補に追加</span>
+                          </button>
+                      )}
+                      <a 
+                          href={getAffiliateUrl(detailModalHotel)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={() => logAffiliateClick(detailModalHotel.name, "hotel_search_detail")}
+                          className={`bg-[#BF0000] text-white py-3.5 rounded-2xl font-bold text-sm active:scale-95 transition-all shadow-md flex items-center justify-center gap-2 hover:bg-red-800 ${isTrial ? 'w-full' : 'flex-[1]'}`}
+                      >
+                          <span>楽天で見る</span><ExternalLink size={16}/>
+                      </a>
+                  </div>
+              </div>
+          </div>
+      )}
 
       {showSettings && (
           <div className="absolute inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-end animate-in fade-in duration-300">
-              <div className="bg-white w-full rounded-t-[2.5rem] p-8 shadow-2xl space-y-8 animate-in slide-in-from-bottom-10 max-h-[90vh] overflow-y-auto">
+              <div className="bg-white w-full rounded-t-[2.5rem] p-8 shadow-2xl space-y-8 animate-in slide-in-from-bottom-10 max-h-[90vh] overflow-y-auto pb-10">
                   <div className="flex justify-between items-center"><h3 className="text-2xl font-black text-gray-800">Filters</h3><button onClick={() => setShowSettings(false)} className="p-2 bg-slate-100 rounded-full hover:bg-gray-200"><X size={20}/></button></div>
                   
                   {searchArea && searchArea.radius > 3.0 && (
@@ -1157,7 +1064,6 @@ const handleSelectHotel = async (hotel: any) => {
                           </div>
                       </div>
 
-                      {/* ▼▼▼ ここから追加：評価・レビュー数・施設タイプ ▼▼▼ */}
                       <div className="space-y-3">
                           <label className="text-[10px] font-black text-gray-400 ml-1 uppercase flex items-center gap-2"><Star size={14}/> Minimum Rating</label>
                           <div className="flex gap-2 overflow-x-auto no-scrollbar">
@@ -1228,16 +1134,17 @@ const handleSelectHotel = async (hotel: any) => {
                               ))}
                           </div>
                       </div>
-                      {/* ▲▲▲ 追加ここまで ▲▲▲ */}
 
                       <div className="space-y-1">
                           <div className="flex justify-between px-1"><label className="text-[10px] font-black text-gray-400 uppercase">1人1泊の予算</label><span className="text-sm font-black text-blue-600">{conditions.budgetMax >= 50000 ? "上限なし" : `¥${conditions.budgetMax.toLocaleString()}`}</span></div>
                           <input type="range" min="5000" max="50000" step="1000" value={conditions.budgetMax} onChange={(e) => setConditions({...conditions, budgetMax: parseInt(e.target.value)})} className="w-full h-2 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-blue-600"/>
                       </div>
 
-                      <button onClick={executeSearch} disabled={isLoading} className="w-full bg-black text-white py-5 rounded-[2rem] font-black text-lg shadow-xl flex items-center justify-center gap-2 active:scale-95 transition-transform">
+                      <button onClick={executeSearch} disabled={isLoading} className="w-full bg-black text-white py-5 rounded-[2rem] font-black text-lg shadow-xl flex items-center justify-center gap-2 active:scale-95 transition-transform pb-[calc(1.25rem+env(safe-area-inset-bottom))]">
                           {isLoading ? <Loader2 className="animate-spin"/> : <><Search size={22}/> Search properties</>}
                       </button>
+
+                      <div className="h-32 w-full shrink-0"></div>
                   </div>
               </div>
           </div>
@@ -1273,7 +1180,6 @@ const handleSelectHotel = async (hotel: any) => {
           </div>
       </div>
 
-      {/* ▼▼▼ ここから追加：検索中のローディング画面 ▼▼▼ */}
       {isLoading && (
           <div className="absolute inset-0 z-[120] bg-slate-50/70 backdrop-blur-md flex flex-col items-center justify-center animate-in fade-in duration-300">
               <div className="bg-white p-8 rounded-[2.5rem] shadow-2xl flex flex-col items-center gap-5 border border-gray-100">
@@ -1288,9 +1194,7 @@ const handleSelectHotel = async (hotel: any) => {
               </div>
           </div>
       )}
-      {/* ▲▲▲ 追加ここまで ▲▲▲ */}
 
-      {/* ▼ レビュー確認用のモーダル ▼ */}
             {reviewModalData && (
                 <div 
                     className="fixed inset-0 z-[300] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in p-4"
@@ -1330,7 +1234,6 @@ const handleSelectHotel = async (hotel: any) => {
                     </div>
                 </div>
             )}
-            {/* ▲ レビュー確認用のモーダルここまで ▲ */}
     </div>
   );
 }
