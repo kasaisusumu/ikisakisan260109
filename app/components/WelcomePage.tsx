@@ -5,24 +5,25 @@ import {
   Map as MapIcon, Calendar, Users, ArrowRight, Check, Copy, 
   Plane, Sparkles, Share2, ShieldCheck, Loader2, Send, 
   XCircle, AlertTriangle, MapPinned, PenTool, ThumbsUp,
-  FileText, User, Lock, X, Plus
+  FileText, User, Lock, X, Plus, Clock, Trash2, ExternalLink, Mail
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useRouter, useSearchParams } from 'next/navigation';
-// 共通データファイルをインポート
 import { tutorialSteps } from './TutorialData';
-// お試しマップ検索コンポーネントをインポート
-// import WelcomeMapSearch from './WelcomeMapSearch';
-import HotelListView from './HotelListView';
 
 type Step = 'intro' | 'create' | 'share' | 'terms' | 'mapSearch';
-type ModalType = 'none' | 'terms' | 'privacy' | 'developer';
+type ModalType = 'none' | 'terms' | 'privacy' | 'developer' | 'contact';
+
+type RoomHistoryItem = {
+    id: string;
+    name: string;
+    lastVisited: number;
+};
 
 interface WelcomePageProps {
   inviteRoomId?: string | null;
 }
 
-// 安全なUUID生成関数
 const generateUUID = () => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
@@ -36,35 +37,62 @@ const generateUUID = () => {
 
 export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
   const router = useRouter();
-  const searchParams = useSearchParams(); // ★追加
-  const isDirectCreate = searchParams.get('step') === 'create'; // ★追加
+  const searchParams = useSearchParams(); 
+  const isDirectCreate = searchParams.get('step') === 'create'; 
   
-  // ステート管理
-  // ★変更: URLに step=create があれば直接作成画面へ
   const [step, setStep] = useState<Step>(inviteRoomId ? 'terms' : (isDirectCreate ? 'create' : 'intro'));
   const [isLoading, setIsLoading] = useState(false);
   const [roomName, setRoomName] = useState(''); 
   const [userName, setUserName] = useState(''); 
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
-  
   const [adultNum, setAdultNum] = useState<number | string>(2);
   
   const [generatedRoomId, setGeneratedRoomId] = useState<string | null>(inviteRoomId || null);
   const [shareUrl, setShareUrl] = useState('');
   const [isCopied, setIsCopied] = useState(false);
   const [inviteRoomName, setInviteRoomName] = useState<string>('');
-  
   const [existingMembers, setExistingMembers] = useState<string[]>([]);
   
-  // モーダル表示管理
   const [activeModal, setActiveModal] = useState<ModalType>('none');
+  const [roomHistory, setRoomHistory] = useState<RoomHistoryItem[]>([]);
 
-  // ▼▼▼ 変更: シークレットモード警告用ステートと検知ロジック ▼▼▼
   const [showIncognitoWarning, setShowIncognitoWarning] = useState(false);
   const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
 
-  // 指定のアクションを実行する前にシークレットモードをチェックする関数
+  // お問い合わせフォーム用のState
+  const [contactName, setContactName] = useState('');
+  const [contactEmail, setContactEmail] = useState('');
+  const [contactMessage, setContactMessage] = useState('');
+  const [isSubmittingContact, setIsSubmittingContact] = useState(false);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+        try {
+            const historyStr = localStorage.getItem('rh_room_history');
+            if (historyStr) {
+                const parsed: RoomHistoryItem[] = JSON.parse(historyStr);
+                parsed.sort((a, b) => b.lastVisited - a.lastVisited);
+                setRoomHistory(parsed);
+            }
+        } catch (e) {
+            console.error(e);
+        }
+    }
+  }, []);
+
+  const handleDeleteRoom = (e: React.MouseEvent, roomId: string) => {
+    e.stopPropagation(); 
+    if (!confirm("この旅の履歴を削除しますか？\n（復元することはできません）")) return;
+
+    const newHistory = roomHistory.filter(room => room.id !== roomId);
+    setRoomHistory(newHistory);
+    
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('rh_room_history', JSON.stringify(newHistory));
+    }
+  };
+
   const checkIncognitoAndExecute = async (action: () => void) => {
     let isIncognito = false;
     if ('storage' in navigator && 'estimate' in navigator.storage) {
@@ -98,15 +126,12 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
           setPendingAction(null);
       }
   };
-  // ▲▲▲ 変更ここまで ▲▲▲
 
-  // 招待された場合のデータ取得
   useEffect(() => {
     if (inviteRoomId) {
       const fetchRoomAndMembers = async () => {
         try {
-            const { data: roomData, error } = await supabase.from('rooms').select('name, created_by').eq('id', inviteRoomId).single();
-            
+            const { data: roomData } = await supabase.from('rooms').select('name, created_by').eq('id', inviteRoomId).single();
             if (roomData) {
               setInviteRoomName(roomData.name);
               setStep('terms'); 
@@ -130,14 +155,11 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
     }
   }, [inviteRoomId]);
 
-  // 旅行を作成する処理
   const handleCreateTrip = async () => {
     if (!roomName || !userName) return alert('旅行名とあなたの名前を入力してください');
-    
     setIsLoading(true);
     
     const newRoomId = generateUUID();
-    
     const { error } = await supabase.from('rooms').insert({
       id: newRoomId,
       name: roomName,
@@ -154,42 +176,24 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
       return;
     }
 
-    // お試しデータの引き継ぎ処理
     try {
       const trialSpotsStr = localStorage.getItem('rh_trial_spots');
       if (trialSpotsStr) {
         const trialSpots = JSON.parse(trialSpotsStr);
         if (Array.isArray(trialSpots) && trialSpots.length > 0) {
           const now = new Date().toISOString();
-          
           const spotsToInsert = trialSpots.map((spot: any, index: number) => {
             const { id, room_id, ...rest } = spot; 
-            return {
-              ...rest,
-              room_id: newRoomId, // 新しいルームIDに紐付け
-              added_by: userName, // 自分の名前で登録
-              created_at: now,
-              updated_at: now,
-              order: index
-            };
+            return { ...rest, room_id: newRoomId, added_by: userName, created_at: now, updated_at: now, order: index };
           });
           
-          const { data: insertedSpots, error: insertError } = await supabase
-            .from('spots')
-            .insert(spotsToInsert)
-            .select();
+          const { data: insertedSpots, error: insertError } = await supabase.from('spots').insert(spotsToInsert).select();
 
-          if (insertError) {
-            console.error("Trial spots import error:", insertError);
-          } else if (insertedSpots && insertedSpots.length > 0) {
+          if (!insertError && insertedSpots && insertedSpots.length > 0) {
             const votesToInsert = insertedSpots.map(spot => ({
-              room_id: newRoomId,
-              spot_id: spot.id,
-              user_name: userName,
-              vote_type: 'like'
+              room_id: newRoomId, spot_id: spot.id, user_name: userName, vote_type: 'like'
             }));
             await supabase.from('votes').insert(votesToInsert);
-
             localStorage.removeItem('rh_trial_spots');
             localStorage.removeItem('rh_trial_votes');
           }
@@ -199,15 +203,8 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
       console.error("Failed to import trial data", e);
     }
 
-    // ローカルストレージにも保存
-    localStorage.setItem(`rh_settings_${newRoomId}`, JSON.stringify({
-      start: startDate,
-      end: endDate,
-      adultNum: Number(adultNum) || 1
-    }));
-    
+    localStorage.setItem(`rh_settings_${newRoomId}`, JSON.stringify({ start: startDate, end: endDate, adultNum: Number(adultNum) || 1 }));
     localStorage.setItem(`route_hacker_user_${newRoomId}`, userName);
-
     setGeneratedRoomId(newRoomId);
     
     if (typeof window !== 'undefined') {
@@ -233,7 +230,6 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
         textArea.value = textToCopy;
         textArea.style.position = "fixed";
         textArea.style.left = "-9999px";
-        textArea.style.top = "0";
         document.body.appendChild(textArea);
         textArea.focus();
         textArea.select();
@@ -252,11 +248,8 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
 
   const handleJoin = () => {
     if (!userName && inviteRoomId) return alert('名前を入力してください');
-    
-    // 規約同意フラグ
     const TERMS_VERSION = 'route_hacker_agreed_v1';
     localStorage.setItem(TERMS_VERSION, 'true');
-
     if (inviteRoomId) {
        localStorage.setItem(`route_hacker_user_${inviteRoomId}`, userName);
        window.location.href = `/?room=${inviteRoomId}`;
@@ -265,7 +258,33 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
     }
   };
 
-  // 警告モーダル
+  // お問い合わせ送信ロジック
+  const handleContactSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSubmittingContact(true);
+
+    try {
+      const { error } = await supabase
+        .from('contacts')
+        .insert([{ name: contactName, email: contactEmail, message: contactMessage }]);
+
+      if (error) throw error;
+
+      alert('お問い合わせを受け付けました。ご記入ありがとうございます。');
+      
+      setContactName('');
+      setContactEmail('');
+      setContactMessage('');
+      setActiveModal('none'); 
+
+    } catch (error) {
+      console.error('Contact submit error:', error);
+      alert('送信に失敗しました。時間をおいて再度お試しください。');
+    } finally {
+      setIsSubmittingContact(false);
+    }
+  };
+
   const warningModal = showIncognitoWarning ? (
     <div className="fixed inset-0 z-[9999] bg-black/80 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-300">
         <div className="bg-white w-full max-w-sm rounded-[2rem] p-8 shadow-2xl relative text-center border-4 border-red-100 animate-in zoom-in-95 duration-300" onClick={(e) => e.stopPropagation()}>
@@ -288,13 +307,12 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
     </div>
   ) : null;
 
-  // 情報表示用モーダル (規約・プライバシー・運営者)
   const infoModal = activeModal !== 'none' ? (
     <div className="fixed inset-0 z-[10000] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-200" onClick={() => setActiveModal('none')}>
-        <div className="bg-white w-full max-w-sm rounded-[2rem] p-8 shadow-2xl relative flex flex-col max-h-[70vh]" onClick={(e) => e.stopPropagation()}>
+        <div className="bg-white w-full max-w-sm rounded-[2rem] p-8 shadow-2xl relative flex flex-col max-h-[85vh]" onClick={(e) => e.stopPropagation()}>
             <button 
                 onClick={() => setActiveModal('none')} 
-                className="absolute top-4 right-4 p-2 bg-gray-100 hover:bg-gray-200 rounded-full transition"
+                className="absolute top-4 right-4 p-2 bg-gray-100 hover:bg-gray-200 rounded-full transition z-10"
             >
                 <X size={20} className="text-gray-500"/>
             </button>
@@ -303,11 +321,12 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                 {activeModal === 'terms' && <><FileText className="text-emerald-500"/> 利用規約</>}
                 {activeModal === 'privacy' && <><Lock className="text-emerald-500"/> プライバシーポリシー</>}
                 {activeModal === 'developer' && <><User className="text-emerald-500"/> 運営者情報</>}
+                {activeModal === 'contact' && <><Mail className="text-emerald-500"/> お問い合わせ</>}
             </h3>
             
-            <div className="flex-1 overflow-y-auto custom-scrollbar text-sm text-gray-600 leading-relaxed space-y-4 pr-2">
+            <div className="flex-1 overflow-y-auto custom-scrollbar text-sm text-gray-600 leading-relaxed pr-2">
                 {activeModal === 'terms' && (
-                    <>
+                    <div className="space-y-4">
                         <p>この利用規約（以下，「本規約」といいます。）は，MapWith（以下，「当社」といいます。）がこのウェブサイト上で提供するサービス（以下，「本サービス」といいます。）の利用条件を定めるものです。登録ユーザーの皆さま（以下，「ユーザー」といいます。）には，本規約に従って，本サービスをご利用いただきます。</p>
                         <p className="font-bold">第1条（適用）</p>
                         <p>本規約は，ユーザーと当社との間の本サービスの利用に関わる一切の関係に適用されるものとします。</p>
@@ -319,10 +338,10 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                             <li>本サービスの内容等，本サービスに含まれる著作権，商標権ほか知的財産権を侵害する行為</li>
                             <li>他のユーザーに関する個人情報等を収集または蓄積する行為</li>
                         </ul>
-                    </>
+                    </div>
                 )}
                 {activeModal === 'privacy' && (
-                    <>
+                    <div className="space-y-4">
                         <p className="font-bold">1. 個人情報の収集</p>
                         <p>本アプリは、サービスの提供に必要な範囲で、ユーザーの入力情報（ニックネーム、旅行計画データ等）をブラウザのローカルストレージおよびデータベースに保存します。</p>
                         <p className="font-bold">2. 情報の利用目的</p>
@@ -331,7 +350,7 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                         <p>法令に基づく場合を除き、ユーザーの同意なく個人情報を第三者に提供することはありません。</p>
                         <p className="font-bold">4. 免責事項</p>
                         <p>本サービスはベータ版であり、データの完全な保存を保証するものではありません。重要なデータはご自身でバックアップを取ることを推奨します。</p>
-                    </>
+                    </div>
                 )}
                 {activeModal === 'developer' && (
                     <div className="text-center py-4">
@@ -349,51 +368,78 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                         </div>
                     </div>
                 )}
+                {activeModal === 'contact' && (
+                    <form onSubmit={handleContactSubmit} className="space-y-4 pb-2">
+                        <div className="space-y-1">
+                            <label className="text-xs font-bold text-gray-500">お名前</label>
+                            <input 
+                                type="text" 
+                                required 
+                                value={contactName}
+                                onChange={(e) => setContactName(e.target.value)}
+                                className="w-full bg-gray-50 p-3 rounded-xl border border-gray-200 text-sm outline-none focus:border-emerald-500 transition" 
+                                placeholder="例: 山田 太郎" 
+                            />
+                        </div>
+                        <div className="space-y-1">
+                            <label className="text-xs font-bold text-gray-500">メールアドレス</label>
+                            <input 
+                                type="email" 
+                                required 
+                                value={contactEmail}
+                                onChange={(e) => setContactEmail(e.target.value)}
+                                className="w-full bg-gray-50 p-3 rounded-xl border border-gray-200 text-sm outline-none focus:border-emerald-500 transition" 
+                                placeholder="例: email@example.com" 
+                            />
+                        </div>
+                        <div className="space-y-1">
+                            <label className="text-xs font-bold text-gray-500">お問い合わせ内容</label>
+                            <textarea 
+                                required 
+                                value={contactMessage}
+                                onChange={(e) => setContactMessage(e.target.value)}
+                                className="w-full bg-gray-50 p-3 rounded-xl border border-gray-200 text-sm h-32 outline-none focus:border-emerald-500 resize-none transition" 
+                                placeholder="ご意見や不具合の報告などをご記入ください..."
+                            />
+                        </div>
+                        <button 
+                            type="submit" 
+                            disabled={isSubmittingContact}
+                            className={`w-full py-3.5 rounded-xl font-bold text-sm shadow-md transition-all flex justify-center items-center gap-2
+                                ${isSubmittingContact ? 'bg-emerald-400 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-700 active:scale-95'} text-white`}
+                        >
+                            {isSubmittingContact ? <Loader2 className="animate-spin" size={18} /> : '送信する'}
+                        </button>
+                    </form>
+                )}
             </div>
         </div>
     </div>
   ) : null;
 
-  // 使い方ステップの定義 (シンプル版)
   const usageSteps = [
-    {
-      step: 1,
-      title: "ルーム作成",
-      desc: "旅行のタイトルや日程を決めて、\nあなただけのしおりを作成。",
-      icon: <Plus size={24} className="text-white"/>,
-      color: "bg-emerald-500"
-    },
-    {
-      step: 2,
-      title: "URLをシェア！",
-      desc: "作成した旅行ページのURLを\nLINEなどで友達に送ります。",
-      icon: <Share2 size={24} className="text-white"/>,
-      color: "bg-teal-500"
-    },
-    {
-      step: 3,
-      title: "スポットを追加→みんなで計画！",
-      desc: "マップ検索やAI提案から、\n行きたい場所をどんどん追加。",
-      icon: <MapPinned size={24} className="text-white"/>,
-      color: "bg-cyan-600"
-    }
+    { step: 1, title: "ルーム作成", desc: "旅行のタイトルや日程を決めて、\nあなただけのしおりを作成。", icon: <Plus size={24} className="text-white"/>, color: "bg-emerald-500" },
+    { step: 2, title: "URLをシェア！", desc: "作成した旅行ページのURLを\nLINEなどで友達に送ります。", icon: <Share2 size={24} className="text-white"/>, color: "bg-teal-500" },
+    { step: 3, title: "スポットを追加→みんなで計画！", desc: "マップ検索やAI提案から、\n行きたい場所をどんどん追加。", icon: <MapPinned size={24} className="text-white"/>, color: "bg-cyan-600" }
   ];
 
-  // --- Step 1: イントロダクション ---
+  // ----------------------------------------------------
+  // ★ STEP 1: イントロ (完全スクロール対策版)
+  // ----------------------------------------------------
   if (step === 'intro') {
     return (
       <>
-        {/* メインコンテンツ */}
-        <div className="min-h-screen bg-slate-50 relative overflow-hidden flex flex-col">
+        {/* 親要素を h-[100dvh] で固定し、内側でのみスクロールを許可 */}
+        <div className="h-[100dvh] w-full bg-slate-50 relative flex flex-col overflow-hidden">
+            
             {/* 背景装飾 */}
-            <div className="fixed top-[-10%] right-[-10%] w-96 h-96 bg-emerald-200 rounded-full blur-3xl opacity-30 pointer-events-none"></div>
-            <div className="fixed bottom-[-10%] left-[-10%] w-96 h-96 bg-teal-200 rounded-full blur-3xl opacity-30 pointer-events-none"></div>
+            <div className="absolute top-[-10%] right-[-10%] w-96 h-96 bg-emerald-200 rounded-full blur-3xl opacity-30 pointer-events-none z-0"></div>
+            <div className="absolute bottom-[-10%] left-[-10%] w-96 h-96 bg-teal-200 rounded-full blur-3xl opacity-30 pointer-events-none z-0"></div>
 
             {/* スクロール領域 */}
-            <div className="flex-1 overflow-y-auto w-full custom-scrollbar pb-36">
-                <div className="max-w-md w-full mx-auto p-4 text-center relative z-10 animate-in fade-in slide-in-from-bottom-8 duration-700">
+            <div className="flex-1 overflow-y-auto w-full custom-scrollbar relative z-10">
+                <div className="max-w-md w-full mx-auto p-4 text-center animate-in fade-in slide-in-from-bottom-8 duration-700">
                     
-                    {/* ヒーローセクション */}
                     <div className="mb-4 pt-8">
                         <div className="mb-4 flex justify-center">
                             <div className="w-16 h-16 bg-white rounded-[1.2rem] shadow-xl flex items-center justify-center transform -rotate-3 border-4 border-white/50">
@@ -411,7 +457,6 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                         </h1>
                     </div>
 
-                    {/* 詳細な機能紹介 */}
                     <div className="space-y-4 relative mt-2">
                          <div className="text-center">
                             <p className="text-[10px] text-slate-400">横にスクロールして機能を見る 👉</p>
@@ -432,7 +477,40 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                         </div>
                     </div>
 
-                    {/* 使い方セクション */}
+                    {roomHistory.length > 0 && (
+                        <div className="mb-6 border-t border-slate-200 pt-8 mt-2 text-left animate-in fade-in duration-500">
+                            <h3 className="text-lg font-black text-slate-800 mb-4 flex items-center justify-center gap-2">
+                                <Clock className="text-emerald-500" size={20}/> 最近見た旅から再開
+                            </h3>
+                            <div className="space-y-3 max-h-[220px] overflow-y-auto pr-1 custom-scrollbar">
+                                {roomHistory.map((room) => (
+                                    <div 
+                                        key={room.id} 
+                                        onClick={() => { window.location.href = `/?room=${room.id}`; }}
+                                        className="flex items-center justify-between p-4 bg-white/80 backdrop-blur rounded-2xl shadow-sm border border-slate-200 cursor-pointer hover:border-emerald-300 hover:shadow-md hover:bg-white transition group active:scale-[0.98]"
+                                    >
+                                        <div className="overflow-hidden pr-4 w-full">
+                                            <p className="font-bold text-slate-800 text-sm truncate group-hover:text-emerald-600 transition-colors">
+                                                {room.name || "名称未設定の旅"}
+                                            </p>
+                                            <p className="text-[10px] text-slate-400 font-mono mt-1 flex items-center gap-1">
+                                                {new Date(room.lastVisited).toLocaleDateString()}
+                                                <ExternalLink size={10} className="inline opacity-50"/>
+                                            </p>
+                                        </div>
+                                        <button 
+                                            onClick={(e) => handleDeleteRoom(e, room.id)}
+                                            className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-full transition z-10 flex-shrink-0"
+                                            title="履歴から削除"
+                                        >
+                                            <Trash2 size={18}/>
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
                     <div className="mb-10 border-t border-slate-200 pt-8 mt-4">
                         <h3 className="text-lg font-black text-slate-800 mb-6 flex items-center justify-center gap-2">
                             <span className="bg-emerald-100 text-emerald-600 px-2 py-0.5 rounded-full text-[10px]">How to</span>
@@ -457,22 +535,25 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                         </div>
                     </div>
 
-                    {/* フッターリンクエリア */}
-                    <div className="flex flex-wrap items-center justify-center gap-3 mt-4 mb-2 pointer-events-auto border-t border-slate-200/50 pt-4">
+                    <div className="flex flex-wrap items-center justify-center gap-3 mt-4 mb-2 border-t border-slate-200/50 pt-4">
                         <button onClick={() => setActiveModal('terms')} className="text-[10px] font-bold text-gray-400 hover:text-gray-600 transition">利用規約</button>
                         <button onClick={() => setActiveModal('privacy')} className="text-[10px] font-bold text-gray-400 hover:text-gray-600 transition">プライバシーポリシー</button>
                         <button onClick={() => setActiveModal('developer')} className="text-[10px] font-bold text-gray-400 hover:text-gray-600 transition">運営者情報</button>
+                        <button onClick={() => setActiveModal('contact')} className="text-[10px] font-bold text-gray-400 hover:text-gray-600 transition">お問い合わせ</button>
                     </div>
                     <div className="text-[9px] text-gray-300 font-medium">
                         © 2024 MapWith
                     </div>
 
+                    {/* ★究極のスペーサーブロック：物理的に200pxの高さを確保し、確実にボタンの上にコンテンツを押し上げる */}
+                    <div className="h-[200px] w-full shrink-0"></div>
+
                 </div>
             </div>
 
-            {/* 固定ボタンエリア */}
-            <div className="fixed bottom-0 left-0 w-full p-4 bg-gradient-to-t from-slate-50 via-slate-50/95 to-transparent z-50">
-                <div className="max-w-md mx-auto space-y-3">
+            {/* ★ absolute にして画面下部に固定 */}
+            <div className="absolute bottom-0 left-0 w-full p-4 bg-gradient-to-t from-slate-50 via-slate-50/95 to-transparent z-20 pointer-events-none pb-[calc(1rem+env(safe-area-inset-bottom))]">
+                <div className="max-w-md mx-auto space-y-3 pointer-events-auto">
                     <button 
                         onClick={() => checkIncognitoAndExecute(() => setStep('create'))}
                         className="w-full bg-emerald-800 text-white py-3.5 rounded-2xl font-bold text-lg shadow-xl hover:bg-emerald-900 hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2"
@@ -480,7 +561,6 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                         しおりを作る <ArrowRight size={20}/>
                     </button>
 
-                    {/* お試しマップ検索ボタン */}
                     <button 
                         onClick={() => checkIncognitoAndExecute(() => router.push('/?trial=true'))}
                         className="w-full bg-white text-emerald-800 border-2 border-emerald-100 py-3.5 rounded-2xl font-bold text-sm shadow-sm hover:bg-emerald-50 active:scale-95 transition-all flex items-center justify-center gap-2"
@@ -498,41 +578,28 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
     );
   }
 
-  // --- Step 2: 旅行情報の入力 ---
+  // ----------------------------------------------------
+  // ★ STEP 2: Create
+  // ----------------------------------------------------
   if (step === 'create') {
     return (
       <>
-        <div className="min-h-screen bg-white flex flex-col items-center p-6 relative">
-            <div className="w-full max-w-md mt-10 animate-in slide-in-from-right-8 fade-in duration-500">
+        {/* ネイティブスクロールを利用 */}
+        <div className="min-h-[100dvh] bg-white flex flex-col items-center p-6 relative">
+            <div className="w-full max-w-md mt-10 mb-20 animate-in slide-in-from-right-8 fade-in duration-500">
                 <button onClick={() => setStep('intro')} className="text-slate-400 font-bold text-sm mb-6 hover:text-slate-600 transition">← 戻る</button>
-                
                 <h2 className="text-2xl font-black text-slate-800 mb-2">新しい旅行を作成</h2>
                 <p className="text-slate-500 text-sm mb-8">基本情報を入力してください（後で変更可能）</p>
 
                 <div className="space-y-6">
                 <div className="space-y-2">
                     <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">旅行のタイトル</label>
-                    <input 
-                    autoFocus
-                    type="text" 
-                    placeholder="例：卒業旅行 in 京都 🍵" 
-                    value={roomName}
-                    onChange={(e) => setRoomName(e.target.value)}
-                    className="w-full bg-slate-50 p-4 rounded-2xl font-bold text-lg text-slate-800 border-2 border-transparent focus:border-emerald-500 focus:bg-white transition outline-none"
-                    />
+                    <input autoFocus type="text" placeholder="例：卒業旅行 in 京都 🍵" value={roomName} onChange={(e) => setRoomName(e.target.value)} className="w-full bg-slate-50 p-4 rounded-2xl font-bold text-lg text-slate-800 border-2 border-transparent focus:border-emerald-500 focus:bg-white transition outline-none"/>
                 </div>
-
                 <div className="space-y-2">
                     <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">あなたの名前（ニックネーム）</label>
-                    <input 
-                    type="text" 
-                    placeholder="例：たろう" 
-                    value={userName}
-                    onChange={(e) => setUserName(e.target.value)}
-                    className="w-full bg-slate-50 p-4 rounded-2xl font-bold text-lg text-slate-800 border-2 border-transparent focus:border-emerald-500 focus:bg-white transition outline-none"
-                    />
+                    <input type="text" placeholder="例：たろう" value={userName} onChange={(e) => setUserName(e.target.value)} className="w-full bg-slate-50 p-4 rounded-2xl font-bold text-lg text-slate-800 border-2 border-transparent focus:border-emerald-500 focus:bg-white transition outline-none"/>
                 </div>
-
                 <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
                     <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1"><Calendar size={12}/> 開始日</label>
@@ -543,41 +610,17 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                     <input type="date" value={endDate} onChange={(e)=>setEndDate(e.target.value)} className="w-full bg-slate-50 p-3 rounded-xl font-bold text-slate-700 outline-none focus:ring-2 focus:ring-emerald-100"/>
                     </div>
                 </div>
-
                 <div className="space-y-2">
                     <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1"><Users size={12}/> 人数</label>
                     <div className="relative">
-                        <input 
-                        type="number" 
-                        min="1" 
-                        placeholder="人数"
-                        value={adultNum} 
-                        onChange={(e) => {
-                            const val = e.target.value;
-                            if (val === "") {
-                            setAdultNum("");
-                            } else {
-                            const num = parseInt(val);
-                            if (!isNaN(num)) setAdultNum(num);
-                            }
-                        }}
-                        className="w-full bg-slate-50 p-4 rounded-2xl font-bold text-lg text-slate-800 border-2 border-transparent focus:border-emerald-500 focus:bg-white transition outline-none"
-                        />
-                        <div className="absolute right-6 top-1/2 -translate-y-1/2 text-slate-400 font-bold pointer-events-none">
-                        名
-                        </div>
+                        <input type="number" min="1" placeholder="人数" value={adultNum} onChange={(e) => { const val = e.target.value; if (val === "") { setAdultNum(""); } else { const num = parseInt(val); if (!isNaN(num)) setAdultNum(num); } }} className="w-full bg-slate-50 p-4 rounded-2xl font-bold text-lg text-slate-800 border-2 border-transparent focus:border-emerald-500 focus:bg-white transition outline-none"/>
+                        <div className="absolute right-6 top-1/2 -translate-y-1/2 text-slate-400 font-bold pointer-events-none">名</div>
                     </div>
                 </div>
                 </div>
 
                 <div className="mt-10 mb-10">
-                <button 
-                    onClick={handleCreateTrip}
-                    disabled={!roomName || !userName || isLoading}
-                    className={`w-full py-4 rounded-2xl font-bold text-lg shadow-xl transition-all flex items-center justify-center gap-2
-                    ${(!roomName || !userName || isLoading) ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-emerald-600 text-white hover:bg-emerald-700 hover:scale-[1.02] active:scale-95'}
-                    `}
-                >
+                <button onClick={handleCreateTrip} disabled={!roomName || !userName || isLoading} className={`w-full py-4 rounded-2xl font-bold text-lg shadow-xl transition-all flex items-center justify-center gap-2 ${(!roomName || !userName || isLoading) ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-emerald-600 text-white hover:bg-emerald-700 hover:scale-[1.02] active:scale-95'}`}>
                     {isLoading ? <Loader2 className="animate-spin"/> : '次へ進む'}
                 </button>
                 </div>
@@ -589,11 +632,13 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
     );
   }
 
-  // --- Step 3: URL共有 ---
+  // ----------------------------------------------------
+  // ★ STEP 3: Share
+  // ----------------------------------------------------
   if (step === 'share') {
     return (
       <>
-        <div className="min-h-screen bg-emerald-600 flex flex-col items-center justify-center p-6 relative">
+        <div className="min-h-[100dvh] bg-emerald-600 flex flex-col items-center justify-center p-6 relative">
             <div className="w-full max-w-md bg-white rounded-[2rem] p-8 shadow-2xl animate-in zoom-in-95 duration-300">
                 <div className="flex flex-col items-center text-center mb-8">
                 <div className="w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mb-4">
@@ -603,10 +648,7 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                 <p className="text-slate-500 mt-2 font-medium">友達にリンクを送って<br/>一緒に編集しましょう。</p>
                 </div>
 
-                <button 
-                onClick={shareToLine}
-                className="w-full bg-[#06C755] text-white py-4 rounded-2xl font-bold text-lg shadow-lg hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2 mb-4"
-                >
+                <button onClick={shareToLine} className="w-full bg-[#06C755] text-white py-4 rounded-2xl font-bold text-lg shadow-lg hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2 mb-4">
                 <Send size={20} /> LINEで送る
                 </button>
 
@@ -615,21 +657,13 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                     <p className="text-xs text-slate-400 font-bold mb-1">招待リンク</p>
                     <p className="text-sm font-bold text-slate-700 truncate">{shareUrl}</p>
                 </div>
-                <button 
-                    onClick={copyLink}
-                    className={`p-3 rounded-xl transition-all font-bold text-sm shrink-0 flex flex-col items-center justify-center w-16
-                        ${isCopied ? 'bg-slate-700 text-white' : 'bg-white text-slate-700 shadow-sm hover:bg-slate-50'}
-                    `}
-                >
+                <button onClick={copyLink} className={`p-3 rounded-xl transition-all font-bold text-sm shrink-0 flex flex-col items-center justify-center w-16 ${isCopied ? 'bg-slate-700 text-white' : 'bg-white text-slate-700 shadow-sm hover:bg-slate-50'}`}>
                     {isCopied ? <Check size={18}/> : <Copy size={18}/>}
                     <span className="text-[10px] mt-1">{isCopied ? 'OK' : 'コピー'}</span>
                 </button>
                 </div>
 
-                <button 
-                onClick={() => setStep('terms')}
-                className="w-full bg-slate-900 text-white py-4 rounded-2xl font-bold text-lg shadow-lg hover:scale-[1.02] active:scale-95 transition-all"
-                >
+                <button onClick={() => setStep('terms')} className="w-full bg-slate-900 text-white py-4 rounded-2xl font-bold text-lg shadow-lg hover:scale-[1.02] active:scale-95 transition-all">
                 計画を始める
                 </button>
             </div>
@@ -640,10 +674,12 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
     );
   }
 
-  // --- Step 4 (Invite/Terms): 規約と開始 ---
+  // ----------------------------------------------------
+  // ★ STEP 4: Invite/Terms
+  // ----------------------------------------------------
   return (
     <>
-        <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 relative">
+        <div className="min-h-[100dvh] bg-slate-50 flex flex-col items-center justify-center p-6 relative">
             <div className="w-full max-w-md bg-white rounded-[2rem] p-8 shadow-xl animate-in slide-in-from-bottom-4 duration-500">
                 <div className="text-center mb-8">
                     <h2 className="text-xl font-black text-slate-800 mb-2">
@@ -655,16 +691,7 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                 {inviteRoomId && (
                     <div className="mb-6 space-y-2">
                         <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">あなたの名前</label>
-                        <input 
-                        autoFocus
-                        type="text" 
-                        placeholder="ニックネームを入力" 
-                        value={userName}
-                        onChange={(e) => setUserName(e.target.value)}
-                        className={`w-full bg-slate-50 p-4 rounded-2xl font-bold text-lg text-slate-800 border-2 transition outline-none
-                            ${existingMembers.includes(userName) ? 'border-red-500 focus:border-red-500 bg-red-50' : 'border-transparent focus:border-emerald-500 focus:bg-white'}
-                        `}
-                        />
+                        <input autoFocus type="text" placeholder="ニックネームを入力" value={userName} onChange={(e) => setUserName(e.target.value)} className={`w-full bg-slate-50 p-4 rounded-2xl font-bold text-lg text-slate-800 border-2 transition outline-none ${existingMembers.includes(userName) ? 'border-red-500 focus:border-red-500 bg-red-50' : 'border-transparent focus:border-emerald-500 focus:bg-white'}`}/>
                         {existingMembers.includes(userName) && (
                             <p className="text-xs font-bold text-red-500 flex items-center gap-1 animate-in slide-in-from-top-1 fade-in">
                                 <AlertTriangle size={12} /> この名前は既に使用されています
@@ -680,13 +707,7 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                     </p>
                 </div>
 
-                <button 
-                    onClick={() => checkIncognitoAndExecute(handleJoin)}
-                    disabled={!!inviteRoomId && !userName}
-                    className={`w-full py-4 rounded-2xl font-bold text-lg shadow-lg transition-all
-                    ${(inviteRoomId && !userName) ? 'bg-slate-200 text-slate-400' : 'bg-emerald-600 text-white hover:bg-emerald-700 hover:scale-[1.02] active:scale-95'}
-                    `}
-                >
+                <button onClick={() => checkIncognitoAndExecute(handleJoin)} disabled={!!inviteRoomId && !userName} className={`w-full py-4 rounded-2xl font-bold text-lg shadow-lg transition-all ${(inviteRoomId && !userName) ? 'bg-slate-200 text-slate-400' : 'bg-emerald-600 text-white hover:bg-emerald-700 hover:scale-[1.02] active:scale-95'}`}>
                     {inviteRoomId ? '参加する' : '同意してはじめる'}
                 </button>
             </div>
@@ -694,19 +715,5 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
         {warningModal}
         {infoModal}
     </>
-  );
-}
-
-function FeatureItem({ icon, title, desc }: { icon: React.ReactNode, title: string, desc: string }) {
-  return (
-    <div className="flex items-center gap-4 bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
-      <div className="w-10 h-10 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center shrink-0">
-        {icon}
-      </div>
-      <div>
-        <h3 className="font-bold text-slate-800">{title}</h3>
-        <p className="text-xs text-slate-500">{desc}</p>
-      </div>
-    </div>
   );
 }
