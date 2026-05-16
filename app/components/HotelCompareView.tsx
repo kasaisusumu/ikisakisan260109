@@ -10,11 +10,11 @@ import { supabase } from '@/lib/supabase';
 import RadarChart from './RadarChart'; 
 import { useSearchParams } from 'next/navigation';
 import mapboxgl from 'mapbox-gl';
+// @ts-ignore
 import 'mapbox-gl/dist/mapbox-gl.css';
 
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 
-// ★ Props の型定義を拡張（日付変更・削除のコールバックや旅行日数を追加）
 interface HotelCompareViewProps {
     spots: any[];
     onSelectHotel: (s: any) => void;
@@ -25,16 +25,20 @@ interface HotelCompareViewProps {
 }
 
 export default function HotelCompareView({ 
-    spots, 
+    spots: initialSpots, 
     onSelectHotel, 
     adultNum = 1,
-    travelDays = 4, // デフォルト値
+    travelDays = 4,
     onUpdateSpotDay,
     onDeleteSpot
 }: HotelCompareViewProps) {
     
     const searchParams = useSearchParams();
     const roomId = searchParams.get('room');
+
+    const [fetchedData, setFetchedData] = useState<Record<string, any>>({});
+    
+    const spots = initialSpots.map(s => fetchedData[s.id] ? { ...s, ...fetchedData[s.id] } : s);
 
     const attemptedFetch = useRef<Set<string>>(new Set());
     const [fetchingSpotIds, setFetchingSpotIds] = useState<Set<string>>(new Set());
@@ -45,23 +49,20 @@ export default function HotelCompareView({
     const mapScrollContainerRef = useRef<HTMLDivElement>(null);
     const [detailModalSpot, setDetailModalSpot] = useState<any | null>(null);
 
-    // ★ マップ表示状態管理
     const [showMap, setShowMap] = useState(false);
     const mapContainer = useRef<HTMLDivElement>(null);
     const map = useRef<mapboxgl.Map | null>(null);
     const markersRef = useRef<mapboxgl.Marker[]>([]);
 
-    // ★ 長押しメニュー用のStateとRef
     const [longPressMenuSpot, setLongPressMenuSpot] = useState<any | null>(null);
     const pressTimer = useRef<NodeJS.Timeout | null>(null);
     const isLongPress = useRef(false);
     const touchStartPos = useRef<{x: number, y: number} | null>(null);
 
-    // 詳細情報の補完
     useEffect(() => {
         const fetchMissingData = async () => {
             const missingSpots = spots.filter(s =>
-                !s.detailed_ratings &&
+                (!s.detailed_ratings || !s.price || s.price === 0) &&
                 !attemptedFetch.current.has(s.id) &&
                 (s.url || /^\d+$/.test(String(s.id)))
             );
@@ -72,8 +73,11 @@ export default function HotelCompareView({
             await Promise.all(missingSpots.map(async (spot) => {
                 attemptedFetch.current.add(spot.id);
                 try {
-                    const { data: dbSpot } = await supabase.from('spots').select('detailed_ratings').eq('id', spot.id).maybeSingle();
-                    if (dbSpot && dbSpot.detailed_ratings) return; 
+                    const { data: dbSpot } = await supabase.from('spots').select('detailed_ratings, price, rating, image_url').eq('id', spot.id).maybeSingle();
+                    if (dbSpot && dbSpot.detailed_ratings && dbSpot.price > 0) {
+                        setFetchedData(prev => ({ ...prev, [spot.id]: dbSpot }));
+                        return; 
+                    }
 
                     const targetUrl = spot.url || `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${spot.id}`;
                     const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -87,11 +91,25 @@ export default function HotelCompareView({
                     if (res.ok) {
                         const data = await res.json();
                         if (data.spot && data.spot.detailed_ratings) {
+                            const newPrice = spot.price > 0 ? spot.price : data.spot.price;
+                            const newRating = spot.rating > 0 ? spot.rating : data.spot.rating;
+                            const newImageUrl = spot.image_url || data.spot.image_url;
+
+                            setFetchedData(prev => ({
+                                ...prev,
+                                [spot.id]: {
+                                    detailed_ratings: data.spot.detailed_ratings,
+                                    price: newPrice,
+                                    rating: newRating,
+                                    image_url: newImageUrl
+                                }
+                            }));
+
                             await supabase.from('spots').update({
                                 detailed_ratings: data.spot.detailed_ratings,
-                                price: spot.price > 0 ? spot.price : data.spot.price,
-                                rating: spot.rating > 0 ? spot.rating : data.spot.rating,
-                                image_url: spot.image_url || data.spot.image_url,
+                                price: newPrice,
+                                rating: newRating,
+                                image_url: newImageUrl,
                             }).eq('id', spot.id);
                         }
                     }
@@ -174,11 +192,9 @@ export default function HotelCompareView({
     const ratingTicks = [3.0, 3.5, 4.0, 4.5, 5.0];
     const priceTicks = validSpots.length > 0 ? [Math.floor(minP), Math.floor((minP + maxP) / 2), Math.floor(maxP)] : [];
 
-    // ★ タップ連動処理
     const handlePlotClick = (spot: any) => {
         setSelectedSpotId(spot.id);
         if (showMap && map.current && spot.coordinates && spot.coordinates.length === 2) {
-            // オプショナルチェーン（?.）で安全にアクセス
             map.current?.flyTo({ center: spot.coordinates, zoom: 16, offset: [0, -window.innerHeight * 0.05], duration: 1000 });
         }
         const activeContainer = showMap ? mapScrollContainerRef.current : scrollContainerRef.current;
@@ -193,22 +209,20 @@ export default function HotelCompareView({
         }
     };
 
-    // ★ 長押し検知のロジック
     const handlePointerDown = (e: React.PointerEvent, spot: any) => {
         isLongPress.current = false;
         touchStartPos.current = { x: e.clientX, y: e.clientY };
         pressTimer.current = setTimeout(() => {
             isLongPress.current = true;
             setLongPressMenuSpot(spot);
-            if (navigator.vibrate) navigator.vibrate(50); // ブルッと震わせる
-        }, 500); // 500msホールドで発火
+            if (navigator.vibrate) navigator.vibrate(50); 
+        }, 500); 
     };
 
     const handlePointerMove = (e: React.PointerEvent) => {
         if (!touchStartPos.current || !pressTimer.current) return;
         const MathAbs = Math.abs;
         if (MathAbs(e.clientX - touchStartPos.current.x) > 10 || MathAbs(e.clientY - touchStartPos.current.y) > 10) {
-            // 指が10px以上動いたらスクロールとみなして長押しをキャンセル
             clearTimeout(pressTimer.current);
             pressTimer.current = null;
         }
@@ -222,12 +236,11 @@ export default function HotelCompareView({
         setTimeout(() => { isLongPress.current = false; }, 100);
     };
 
-    // ★ 長押しメニュー用アクション
     const handleDayChange = async (spotId: string, day: number) => {
         if (onUpdateSpotDay) {
             onUpdateSpotDay(spotId, day);
         } else {
-            await supabase.from('spots').update({ day }).eq('id', spotId); // Fallback
+            await supabase.from('spots').update({ day }).eq('id', spotId); 
         }
         setLongPressMenuSpot(null);
     };
@@ -237,13 +250,12 @@ export default function HotelCompareView({
             if (onDeleteSpot) {
                 onDeleteSpot(spotId);
             } else {
-                await supabase.from('spots').delete().eq('id', spotId); // Fallback
+                await supabase.from('spots').delete().eq('id', spotId); 
             }
             setLongPressMenuSpot(null);
         }
     };
 
-    // ★ マップ初期化とマーカー制御
     useEffect(() => {
         if (!mapContainer.current) return;
         mapboxgl.accessToken = MAPBOX_TOKEN;
@@ -285,7 +297,6 @@ export default function HotelCompareView({
         });
 
         if (hasValidCoords && showMap && !selectedSpotId) {
-            // オプショナルチェーン（?.）で安全にアクセス
             map.current?.fitBounds(bounds, { padding: 50, maxZoom: 15, duration: 1000 });
         }
     }, [spots, selectedSpotId, showMap, getUnitPrice]);
@@ -300,19 +311,16 @@ export default function HotelCompareView({
                     if (s.coordinates && s.coordinates.length === 2) { hasValidCoords = true; bounds.extend(s.coordinates as [number, number]); }
                 });
                 if (hasValidCoords && !selectedSpotId) {
-                    // setTimeout内部なのでオプショナルチェーン（?.）を付与
                     map.current?.fitBounds(bounds, { padding: 60, maxZoom: 15, duration: 400 });
                 }
             }, 300); 
         }
     }, [showMap, spots]);
 
-    // UIレンダラー
     const renderCompareViewContent = (isMapMode: boolean) => {
         const activeScrollRef = isMapMode ? mapScrollContainerRef : scrollContainerRef;
         return (
             <div className={`flex flex-col gap-6 ${!isMapMode && 'animate-in fade-in slide-in-from-bottom-4'}`}>
-                {/* ヘッダー */}
                 <div className="flex items-center justify-between px-2">
                     <div>
                         <h2 className="text-xl font-black text-gray-800 tracking-tight">候補の比較</h2>
@@ -331,7 +339,6 @@ export default function HotelCompareView({
                     </div>
                 </div>
 
-                {/* 散布図 */}
                 <div className="bg-white p-4 rounded-3xl border border-gray-100 shadow-sm space-y-2">
                     <h3 className="text-sm font-bold text-gray-700 ml-1">コスパ・評価マトリクス</h3>
                     <div className="w-full h-[180px] relative px-4 mt-2">
@@ -374,7 +381,6 @@ export default function HotelCompareView({
                     </div>
                 </div>
 
-                {/* ホテルカードリスト */}
                 <div ref={activeScrollRef} className="flex gap-4 overflow-x-auto px-2 pb-4 no-scrollbar mask-gradient" style={{ scrollBehavior: 'smooth' }}>
                     {spots.map((spot, index) => {
                         const unitPrice = getUnitPrice(spot.price);
@@ -433,10 +439,8 @@ export default function HotelCompareView({
 
     return (
         <>
-            {/* 通常表示モード */}
             {!showMap && renderCompareViewContent(false)}
 
-            {/* マップ展開モード */}
             <div className={`fixed inset-0 bg-slate-50 flex flex-col font-sans overflow-hidden transition-all duration-500 ${showMap ? 'z-[150] opacity-100 visible' : 'z-[-10] opacity-0 invisible pointer-events-none'}`}>
                 <div className="absolute top-0 left-0 right-0 h-[45%] z-0 bg-slate-100"><div ref={mapContainer} className="w-full h-full" /></div>
                 <div className={`absolute bottom-0 left-0 right-0 h-[55%] z-10 bg-white shadow-[0_-10px_60px_rgba(0,0,0,0.15)] rounded-t-[2.5rem] flex flex-col overflow-hidden transition-transform duration-500 ${showMap ? 'translate-y-0' : 'translate-y-full'}`}>
@@ -445,7 +449,6 @@ export default function HotelCompareView({
                 </div>
             </div>
 
-            {/* ▼ 長押しメニュー・モーダル ▼ */}
             {longPressMenuSpot && (
                 <div 
                     className="fixed inset-0 z-[400] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in"
@@ -460,7 +463,6 @@ export default function HotelCompareView({
                             <h3 className="font-black text-gray-800 text-lg leading-tight line-clamp-2">{longPressMenuSpot.name}</h3>
                         </div>
 
-                        {/* 追加者と票数 */}
                         <div className="bg-slate-50 rounded-2xl p-4 border border-gray-100 space-y-3">
                             <div className="flex justify-between items-center text-sm">
                                 <span className="text-gray-500 font-bold flex items-center gap-1.5"><User size={14}/> 追加者</span>
@@ -472,7 +474,6 @@ export default function HotelCompareView({
                             </div>
                         </div>
                         
-                        {/* 日付変更 */}
                         <div>
                             <span className="text-gray-500 font-bold text-xs flex items-center gap-1.5 mb-3"><Calendar size={14}/> 宿泊日の変更</span>
                             <div className="grid grid-cols-3 gap-2 max-h-40 overflow-y-auto">
@@ -484,7 +485,7 @@ export default function HotelCompareView({
                                 </button>
                                 {Array.from({length: travelDays}).map((_, i) => {
                                     const d = i + 1;
-                                    if (d >= travelDays) return null; // 最終日には宿泊しないため除外
+                                    if (d >= travelDays) return null; 
                                     const isSelected = longPressMenuSpot.day === d;
                                     return (
                                         <button 
@@ -499,7 +500,6 @@ export default function HotelCompareView({
                             </div>
                         </div>
 
-                        {/* アクションボタン */}
                         <div className="flex gap-2 mt-2 pt-4 border-t border-gray-100">
                             <button 
                                 onClick={() => setLongPressMenuSpot(null)} 
@@ -518,7 +518,6 @@ export default function HotelCompareView({
                 </div>
             )}
             
-            {/* 詳細モーダル */}
             {detailModalSpot && (
                 <div className="fixed inset-0 z-[200] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in" onClick={() => setDetailModalSpot(null)}>
                     <div className="bg-gray-50 w-full sm:max-w-md h-[85vh] sm:h-auto sm:max-h-[90vh] rounded-t-3xl sm:rounded-3xl flex flex-col overflow-hidden animate-in slide-in-from-bottom-8 shadow-2xl relative" onClick={(e) => e.stopPropagation()}>
@@ -552,7 +551,6 @@ export default function HotelCompareView({
                 </div>
             )}
 
-            {/* レビュー確認用のモーダル */}
             {reviewModalData && (
                 <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in p-4" onClick={() => setReviewModalData(null)}>
                     <div className="bg-white w-full max-w-sm rounded-3xl p-6 shadow-2xl flex flex-col gap-4 animate-in zoom-in-95" onClick={(e) => e.stopPropagation()}>

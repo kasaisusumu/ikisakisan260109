@@ -5,6 +5,7 @@ export const dynamic = 'force-dynamic';
 
 import React, { Suspense, useEffect, useRef, useState, useMemo } from 'react';
 import mapboxgl from 'mapbox-gl';
+// @ts-ignore
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
@@ -2391,8 +2392,8 @@ const now = new Date().toISOString(); // ★現在時刻
 // ★追加: 既存の同名スポットがあれば、メモ・リンク・金額・画像を引き継ぐ
     const existingSpot = planSpots.find(s => s.name === spot.name);
     // データベースに送るデータを作成
+   // データベースに送るデータを作成
     const newSpotPayload = {
-      // ... (既存プロパティ)
       room_id: roomId,
       name: spot.name,
       description: spot.description,
@@ -2404,12 +2405,13 @@ const now = new Date().toISOString(); // ★現在時刻
       is_hotel: spot.is_hotel || false,
       status: spot.status || 'candidate',
       day: spot.day || 0,
-      price: null,
-      url: spot.url || "",
-      rating: spot.rating || 0,
-      detailed_ratings: spot.detailed_ratings || null, // ← ★★これを追加★★
-      created_at: now, // ★追加
-      updated_at: now  // ★追加
+      // ▼▼▼ 修正後: 追加元の金額やURLデータをしっかり引き継ぎ、重複を排除 ▼▼▼
+      price: spot.price || existingSpot?.price || null,
+      url: spot.url || existingSpot?.url || "",
+      rating: spot.rating || existingSpot?.rating || 0,
+      detailed_ratings: spot.detailed_ratings || existingSpot?.detailed_ratings || null, 
+      created_at: now,
+      updated_at: now
     };
 
     // ★重要: ここで先にローカルStateに追加してしまう (仮IDを持たせる)
