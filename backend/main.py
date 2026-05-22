@@ -113,6 +113,7 @@ class VacantSearchRequest(BaseModel):
     latitude: float
     longitude: float
     radius: float = 3.0
+    hotel_no: Optional[str] = None # ← 楽天のピンポイント検索用
     min_price: Optional[int] = None
     max_price: Optional[int] = None
     squeeze: List[str] = [] 
@@ -124,9 +125,11 @@ class VacantSearchRequest(BaseModel):
     min_rating: Optional[float] = 4.0
     min_reviews: Optional[int] = 50
     hotel_type: Optional[str] = "all"
+    force_refresh: bool = False
 
 class ImportRequest(BaseModel):
     url: str
+    force_refresh: bool = False
 
 class SuggestRequest(BaseModel):
     theme: str             
@@ -145,7 +148,7 @@ class Spot(BaseModel):
     image_url: Optional[str] = None
     price: Optional[int] = None
     rating: Optional[float] = None
-    detailed_ratings: Optional[Dict[str, float]] = None # ← これを追加
+    detailed_ratings: Optional[Dict[str, float]] = None 
     url: Optional[str] = None
     source: str = "ai" 
     is_jalan: bool = False 
@@ -256,61 +259,37 @@ PREF_NORMALIZER = {
 }
 
 def extract_and_fix_address(raw_address: str) -> str:
-    """
-    複雑な文字列から都道府県と市区町村を独立して抽出し、正しい順序（県+市）で再結合する。
-    ★ルール: 
-    1. 「郡」は削除
-    2. 「市」がある場合は区町村を無視（市を優先）
-    3. 「科学博物館富山市」のようなケースは末尾の「富山市」を採用
-    """
     if not raw_address: return ""
 
-    # 1. ゴミ掃除
     working_text = re.sub(r'(Japan|日本|〒\d{3}-\d{4})', ' ', raw_address)
     working_text = re.sub(r'[ \t,]+', ' ', working_text).strip()
-
-    # ★ 郡を削除 (例: "愛知郡東郷町" -> "東郷町", "石川郡野々市町" -> "野々市町")
     working_text = re.sub(r'[一-龠ぁ-んァ-ン]{1,6}郡', '', working_text)
 
-    # 2. 都道府県の特定と抽出
     found_pref = ""
     for k, v in PREF_NORMALIZER.items():
         if k in working_text or v in working_text:
             found_pref = v
-            # 県名を文字列から除去（市町村の誤検知を防ぐため）
             working_text = working_text.replace(v, " ").replace(k, " ")
             break
     
-    # 3. 市区町村の特定と抽出
     found_city = ""
-    
-    # 漢字・ひらがな・カタカナが1〜6文字続き、最後に「市・区・町・村」が来るものを全検索
-    # 例: "科学博物館富山市" -> "博物館富山市" (6文字) などがマッチする可能性あり
     matches = re.findall(r'([一-龠ぁ-んァ-ン]{1,6}(?:市|区|町|村))', working_text)
     
     if matches:
         candidates = [m for m in matches if len(m) >= 2]
         
         if candidates:
-            # 優先度: 市 > 区 > 町 > 村
             city_candidates = [m for m in candidates if m.endswith("市")]
             ward_candidates = [m for m in candidates if m.endswith("区")]
             town_candidates = [m for m in candidates if m.endswith("町") or m.endswith("村")]
             
-            # ★ルール適用: 市がある場合は市のみ採用。区や町村は無視。
             if city_candidates:
-                # "科学博物館富山市" のようなノイズ混入対策
-                # 末尾が「市」の候補のうち、最もそれらしい（短い、かつ「館」「園」などで始まらない）ものを探す
                 best_city = city_candidates[0]
-                
-                # もし候補の中に「館」や「園」が含まれていたら、その文字以降を採用する
-                # 例: "博物館富山市" -> "富山市"
                 for noise in ['館', '園', '所', '場', '校', '局']:
                     if noise in best_city:
                         parts = best_city.split(noise)
-                        if len(parts) > 1 and len(parts[-1]) >= 2: # 分割後も2文字以上なら採用
+                        if len(parts) > 1 and len(parts[-1]) >= 2: 
                             best_city = parts[-1]
-                
                 found_city = best_city
             
             elif ward_candidates:
@@ -320,41 +299,32 @@ def extract_and_fix_address(raw_address: str) -> str:
             else:
                 found_city = candidates[0]
 
-    # 4. 再構築
     if found_pref and found_city:
         return f"{found_pref}{found_city}"
     
-    # 県だけ見つかった場合
     if found_pref:
         clean_remains = working_text.strip()
-        # 残りがシンプルで短いなら結合、そうでなければ県のみ
         if clean_remains and len(clean_remains) < 20 and not re.search(r'[0-9]', clean_remains):
              return f"{found_pref}{clean_remains}"
         return found_pref
         
-    # 市だけ見つかった場合
     if found_city:
         return found_city
 
     return working_text.strip() or raw_address
 
 def get_clean_address(props: dict) -> str:
-    """Geoapifyのプロパティから綺麗な日本語住所を生成する"""
     state = props.get('state', '')
     if state in ['NN', 'Other', 'Others', 'その他', 'JP', 'Japan']: state = ''
 
     city = props.get('city', '') or props.get('town', '') or props.get('village', '') or props.get('municipality', '')
     if city in ['NN', 'Other', 'Others', 'その他']: city = ''
     
-    # ★郡 (county) は一切使用しない
-    # county = props.get('county', '') 
-    
     ward = props.get('suburb', '') or props.get('district', '') 
     if ward in ['NN', 'Other', 'Others', 'その他']: ward = ''
     
     formatted = props.get("formatted", "")
 
-    # プロパティが揃っている場合は結合して作成
     if state and (city or ward):
         if state in PREF_NORMALIZER:
             state = PREF_NORMALIZER[state]
@@ -363,7 +333,6 @@ def get_clean_address(props: dict) -> str:
             elif state in ['京都', '大阪']: state += '府'
             elif state != '北海道': state += '県'
             
-        # 県名の重複防止
         state_core = state
         for suffix in ['都', '府', '県']:
             if state_core.endswith(suffix): state_core = state_core[:-1]
@@ -373,7 +342,6 @@ def get_clean_address(props: dict) -> str:
 
         address_parts = [state]
         
-        # ★ルール適用: 市がある場合は市のみ。区は追加しない。
         if city:
             address_parts.append(city)
         elif ward:
@@ -381,12 +349,11 @@ def get_clean_address(props: dict) -> str:
         
         return "".join(address_parts)
 
-    # プロパティ不備時は formatted 文字列を強力な正規化関数に通す
     clean_formatted = formatted.replace("NN", "").replace(" ,", "").replace(", ", "").strip()
     return extract_and_fix_address(clean_formatted)
 
 # ---------------------------------------------------------
-# 外部API連携関数 (変更なし)
+# 外部API連携関数 
 # ---------------------------------------------------------
 async def fetch_with_retry(client, url, params=None, headers=None, retries=5, initial_timeout=10.0):
     current_timeout = initial_timeout
@@ -496,7 +463,6 @@ async def fetch_spot_coordinates(client, target_name: str, search_query: str):
                     result_name = props.get("name", "")
                     if not result_name or not result_name.strip(): continue
 
-                    # ★ 住所の正規化呼び出し (郡削除・市優先ロジック適用)
                     desc = get_clean_address(props)
                     if not desc: desc = "住所不明"
 
@@ -545,7 +511,6 @@ async def fetch_spot_by_coordinates(client, lat: float, lng: float, fallback_nam
                 result_name = props.get("name", "")
                 if not result_name: result_name = fallback_name
 
-                # ★ 住所の正規化呼び出し
                 desc = get_clean_address(props)
                 desc = re.sub(r'〒\d{3}-\d{4}', '', desc).strip()
                 if not desc: desc = "住所不明"
@@ -647,13 +612,12 @@ async def nearby_spots(req: NearbyRequest):
                     if not name: continue 
                     coords = feat.get("geometry", {}).get("coordinates")
                     if not coords: continue
-                    formatted = get_clean_address(props) # ★ここでも適用
+                    formatted = get_clean_address(props) 
                     search_query = f"{name} {props.get('state', '')}".strip()
                     base_spots.append({
                         "id": f"nearby-{props.get('place_id')}", "name": name, "description": formatted, 
                         "coordinates": coords, "is_nearby": True, "search_query": search_query, "image_url": None, "comment": "" 
                     })
-        # Wiki enrich
         async def enrich(s):
             try:
                 w = await fetch_wikipedia_info(client, s["search_query"], target_name=s["name"])
@@ -687,8 +651,11 @@ async def import_rakuten_hotel(req: ImportRequest):
 
     try:
         cache_key = f"rakuten_import_v3:{final_url}"
-        cached = get_cache(cache_key)
-        if cached: return cached
+        
+        # force_refreshフラグがFalseの時だけSQLiteキャッシュをチェック
+        if not req.force_refresh:
+            cached = get_cache(cache_key)
+            if cached: return cached
 
         if "rakuten.co.jp" in final_url:
             try:
@@ -721,18 +688,17 @@ async def import_rakuten_hotel(req: ImportRequest):
         raw_hotel = data["hotels"][0]
         hotel_content = raw_hotel["hotel"] if "hotel" in raw_hotel else raw_hotel
         basic = None
-        user_review = {} # ← レビュー情報格納用
+        user_review = {}
         if isinstance(hotel_content, list):
             for item in hotel_content:
                 if "hotelBasicInfo" in item: basic = item["hotelBasicInfo"]
-                if "hotelRatingInfo" in item: user_review = item["hotelRatingInfo"] # ← 詳細評価を取得
+                if "hotelRatingInfo" in item: user_review = item["hotelRatingInfo"] 
         else: basic = hotel_content.get("hotelBasicInfo")
 
         if not basic: return {"error": "ホテル情報の解析に失敗しました。"}
         address = f"{basic.get('address1', '')}{basic.get('address2', '')}"
         address = re.sub(r'[一-龠ぁ-んァ-ン]{1,6}郡', '', address)
 
-        # ▼ 詳細評価の辞書を作成
         detailed_ratings = {
             "room": user_review.get("roomAverage", 0),
             "bath": user_review.get("bathAverage", 0),
@@ -747,7 +713,7 @@ async def import_rakuten_hotel(req: ImportRequest):
             "coordinates": [basic["longitude"], basic["latitude"]], "image_url": basic.get("hotelImageUrl"), 
             "url": basic.get("hotelInformationUrl"), "price": basic.get("hotelMinCharge", 0), 
             "rating": basic.get("reviewAverage", 3.0),
-            "detailed_ratings": detailed_ratings, # ← これを追加
+            "detailed_ratings": detailed_ratings,
             "source": "rakuten", "is_hotel": True, "status": "hotel_candidate",
             "comment": basic.get("hotelSpecial", "")[:100] + "..." 
         }
@@ -765,23 +731,20 @@ async def search_hotels_vacant(req: VacantSearchRequest):
     if http_client is None: return {"error": "Server starting up..."}
     client = http_client
 
-    # キャッシュキーの作成
-    cache_key = f"rakuten_vacant_v5:{req.latitude}:{req.longitude}:{req.checkin_date}:{req.checkout_date}:{req.adult_num}:{req.min_price}:{req.max_price}:{req.meal_type}:{req.hotel_type}:{req.min_rating}:{hashlib.md5(str(req.polygon).encode()).hexdigest() if req.polygon else 'all'}"
-    cached = get_cache(cache_key)
-    if cached: return cached
+    cache_key = f"rakuten_vacant_v5:{req.latitude}:{req.longitude}:{req.hotel_no}:{req.checkin_date}:{req.checkout_date}:{req.adult_num}:{req.min_price}:{req.max_price}:{req.meal_type}:{req.hotel_type}:{req.min_rating}:{hashlib.md5(str(req.polygon).encode()).hexdigest() if req.polygon else 'all'}"
+    
+    if not req.force_refresh:
+        cached = get_cache(cache_key)
+        if cached: return cached
 
     safe_radius = min(round(req.radius, 2), 3.0)
     today = date.today()
     c_in = req.checkin_date or (today + timedelta(days=30)).strftime("%Y-%m-%d")
     c_out = req.checkout_date or (date.fromisoformat(c_in) + timedelta(days=1)).strftime("%Y-%m-%d")
 
-    # 1. 楽天API用パラメータの構築
     base_params = {
         "applicationId": RAKUTEN_APP_ID, 
         "format": "json", 
-        "latitude": req.latitude, 
-        "longitude": req.longitude,
-        "searchRadius": safe_radius, 
         "datumType": 1, 
         "hits": 30, 
         "sort": "standard",
@@ -790,10 +753,16 @@ async def search_hotels_vacant(req: VacantSearchRequest):
         "adultNum": req.adult_num,
     }
 
+    if req.hotel_no:
+        base_params["hotelNo"] = req.hotel_no
+    else:
+        base_params["latitude"] = req.latitude
+        base_params["longitude"] = req.longitude
+        base_params["searchRadius"] = safe_radius
+
     if req.max_price: base_params["maxCharge"] = req.max_price
     if req.min_price: base_params["minCharge"] = req.min_price
     
-    # 食事条件の反映
     if req.meal_type == 'room_only': 
         base_params["breakfastFlag"] = 0
         base_params["dinnerFlag"] = 0
@@ -816,8 +785,22 @@ async def search_hotels_vacant(req: VacantSearchRequest):
         return None
 
     try:
-        # 並列で5ページ分取得
-        results = await asyncio.gather(*[fetch_page(i) for i in range(1, 6)])
+        # ★修正箇所：API利用制限（429エラー）を完全に防ぐためのブレイク処理
+        results = []
+        for i in range(1, 6):
+            res_data = await fetch_page(i)
+            if res_data:
+                results.append(res_data)
+                # 楽天APIが返す「全体のページ数」を取得
+                paging_info = res_data.get("pagingInfo")
+                # もし現在のページが最大ページ数以上なら、これ以上無駄なループをしない
+                if paging_info and i >= paging_info.get("pageCount", 1):
+                    break
+                await asyncio.sleep(0.5)
+            else:
+                # データがない(404エラーなど)場合は、以降のページも存在しないので即終了
+                break
+
         all_hotels = []
         seen_ids = set()
 
@@ -834,10 +817,8 @@ async def search_hotels_vacant(req: VacantSearchRequest):
                     hotel_id = str(basic["hotelNo"])
                     if hotel_id in seen_ids: continue
                     
-                    # ポリゴン（囲った範囲）内かチェック
                     if req.polygon and not is_inside_polygon(basic["latitude"], basic["longitude"], req.polygon): continue
 
-                    # 2. 取得した宿の中から最適なプランを探す
                     best_price = float('inf')
                     found_valid_plan = False
                     for j in range(1, len(hotel_content)):
@@ -853,13 +834,11 @@ async def search_hotels_vacant(req: VacantSearchRequest):
 
                     if not found_valid_plan: continue
                     
-                    # 3. UI側で設定された「評価」と「レビュー数」でフィルタリング
                     rating = basic.get("reviewAverage") or 0.0
                     reviews = basic.get("reviewCount") or 0
                     if rating < (req.min_rating or 0) or reviews < (req.min_reviews or 0):
                         continue
 
-                    # 宿種別の簡易フィルタ（ホテル名に含まれるかで判定）
                     h_name = basic["hotelName"]
                     if req.hotel_type == "hotel" and "旅館" in h_name: continue
                     if req.hotel_type == "ryokan" and "ホテル" in h_name: continue
@@ -892,7 +871,6 @@ async def search_hotels_vacant(req: VacantSearchRequest):
     except Exception as e:
         traceback.print_exc()
         return {"error": f"システムエラー: {str(e)}"}
-
 @app.post("/api/suggest_spots")
 async def suggest_spots(req: SuggestRequest):
     return StreamingResponse(suggest_spots_generator(req), media_type="application/x-ndjson")
@@ -1032,7 +1010,7 @@ async def search_places(query: str, lat: Optional[float] = None, lng: Optional[f
                     data = res.json()
                     for feat in data.get("features", []):
                         props = feat["properties"]
-                        name = props.get("name", ""); 
+                        name = props.get("name", "")
                         if not name: continue
                         clean_fmt = get_clean_address(props)
                         local_results.append({"id": feat["properties"].get("place_id"), "name": name, "place_name": clean_fmt, "center": feat["geometry"]["coordinates"], "type": "place"})

@@ -1,8 +1,9 @@
 "use client";
 
 import { supabase } from '@/lib/supabase';
-import { useState, useMemo, useEffect, useRef } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import mapboxgl from 'mapbox-gl';
+// @ts-ignore
 import 'mapbox-gl/dist/mapbox-gl.css';
 import HotelCompareView from './HotelCompareView';
 import RadarChart from './RadarChart'; 
@@ -324,97 +325,93 @@ export default function HotelListView({
       setPendingHotel(hotel);
   };
 
-  const confirmAddHotel = (day: number) => {
+ const confirmAddHotel = (day: number) => {
       if (onAddSpot && pendingHotel) {
+          // ★ここで条件を付与したURLを作成してスポットデータに含める
+          const finalUrl = getAffiliateUrl({ ...pendingHotel, day }); 
           onAddSpot({ 
               ...pendingHotel, 
-              is_hotel: true, 
-              votes: 0, 
-              stay_time: 0, 
-              status: 'hotel_candidate',
-              day: day
+              url: finalUrl, // 検索条件付きのURLを保存
+              day: day,
+              status: 'hotel_candidate'
           });
       }
       setPendingHotel(null);
   };
 
-  // ★ 変更した検索条件（日付・人数・食事）を楽天トラベルのURLに完全に反映させる
-  const getAffiliateUrl = (spot: any) => {
-      const parseLocalYMD = (ymd: string) => {
-          if (!ymd) return null;
-          const parts = ymd.split('-').map(Number);
-          if (parts.length !== 3) return null;
-          return new Date(parts[0], parts[1] - 1, parts[2]);
-      };
+ const getAffiliateUrl = useCallback((spot: any) => {
+        const savedSettings = JSON.parse(localStorage.getItem(`rh_settings_${roomId}`) || '{}');
+        const savedConditions = JSON.parse(localStorage.getItem(`rh_hotel_conditions_${roomId}`) || '{}');
+        
+        let indConditions: Record<string, any> = {};
+        try {
+            const savedInd = localStorage.getItem(`rh_ind_hotel_conditions_${roomId || 'default'}`);
+            if (savedInd) indConditions = JSON.parse(savedInd);
+        } catch(e) {}
 
-      let targetDate = new Date();
-      targetDate.setDate(targetDate.getDate() + 30);
-      
-      let roomStartDate = "";
-      let roomAdultNum = 0;
-      if (typeof window !== 'undefined' && roomId) {
-          try {
-              const savedSettings = localStorage.getItem(`rh_settings_${roomId}`);
-              if (savedSettings) {
-                  const parsed = JSON.parse(savedSettings);
-                  if (parsed.start) roomStartDate = parsed.start;
-                  if (parsed.adultNum) roomAdultNum = parsed.adultNum;
-              }
-          } catch(e) {}
-      }
+        const checkinDate = savedSettings.start || savedConditions.checkin || new Date().toISOString().split('T')[0];
+        
+        // ▼ エラー箇所を修正: adultNum を直接参照せず、ローカルストレージから取得する
+        const fallbackAdults = savedSettings.adultNum || savedConditions.adults || 2;
+        const adults = indConditions[spot.id]?.adults || fallbackAdults;
+        const mealType = indConditions[spot.id]?.mealType || savedConditions.mealType || 'half_board';
 
-      // ★ 1. 日付：現在設定されている検索条件(conditions)を最優先にする
-      if (conditions.checkin) {
-          const parsedStart = parseLocalYMD(conditions.checkin);
-          if (parsedStart) targetDate = parsedStart;
-      } else if (roomStartDate) {
-          const parsedStart = parseLocalYMD(roomStartDate);
-          if (parsedStart) targetDate = parsedStart;
-      }
+        const parts = checkinDate.split('-').map(Number);
+        let targetDate = new Date(parts[0], parts[1] - 1, parts[2]);
 
-      const dayNum = Number(spot.day);
-      if (!isNaN(dayNum) && dayNum > 0) {
-          targetDate.setDate(targetDate.getDate() + (dayNum - 1));
-      }
+        const dayNum = Number(spot.day || 1);
+        if (dayNum > 0) {
+            targetDate.setDate(targetDate.getDate() + (dayNum - 1));
+        }
 
-      const checkOutDate = new Date(targetDate);
-      checkOutDate.setDate(targetDate.getDate() + 1);
+        const checkOutDate = new Date(targetDate);
+        checkOutDate.setDate(targetDate.getDate() + 1);
 
-      const y1 = targetDate.getFullYear();
-      const m1 = targetDate.getMonth() + 1;
-      const d1 = targetDate.getDate();
-      const y2 = checkOutDate.getFullYear();
-      const m2 = checkOutDate.getMonth() + 1;
-      const d2 = checkOutDate.getDate();
+        const y1 = targetDate.getFullYear(); const m1 = targetDate.getMonth() + 1; const d1 = targetDate.getDate();
+        const y2 = checkOutDate.getFullYear(); const m2 = checkOutDate.getMonth() + 1; const d2 = checkOutDate.getDate();
+        
+        // 小学生・幼児パラメータを空にしてCookieリセット
+        const paramString = `f_flg=PLAN&f_otona_su=${adults}&f_heya_su=1&f_kin=&f_kin2=&f_y1=&f_y2=&f_y3=&f_y4=&f_y5=&f_y6=&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_hak=1&f_tel=&f_tscm_flg=&f_p_no=&f_custom_code=&f_search_type=&f_service=&f_rm_equip=&f_sort=minNo`;
 
-      // ★ 2. 人数：検索条件(searchedAdults)を最優先にする
-      const otonaSu = searchedAdults || roomAdultNum || 2;
+        let finalParams = paramString;
+        if (mealType === 'half_board') { 
+            finalParams += `&f_s1=1&f_s2=1`; 
+        } else if (mealType === 'breakfast') { 
+            finalParams += `&f_s1=1&f_s2=0`; 
+        } else if (mealType === 'room_only') {
+            finalParams += `&f_s1=0&f_s2=0`; 
+        }
+        
+        const extractRakutenId = (url: string) => {
+            if (!url) return null;
+            const match = url.match(/hotelinfo\/plan\/(\d+)/) || url.match(/HOTEL\/(\d+)/) || url.match(/no=(\d+)/);
+            return match ? match[1] : null;
+        };
 
-      // ★ 3. 食事条件：検索条件をパラメータ(f_s1:朝食, f_s2:夕食)に変換する
-      let f_s1 = 0;
-      let f_s2 = 0;
-      if (conditions.mealType === 'half_board') {
-          f_s1 = 1; f_s2 = 1; // 2食付
-      } else if (conditions.mealType === 'breakfast') {
-          f_s1 = 1; f_s2 = 0; // 朝食のみ
-      }
+        const hotelId = extractRakutenId(spot.url || "") || ( /^\d+$/.test(String(spot.id)) ? spot.id : null);
+        
+        if (hotelId) return `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotelId}?${finalParams}`;
+        return `https://search.travel.rakuten.co.jp/ds/hotel/search?f_query=${encodeURIComponent(spot.name)}&${finalParams}`;
+    }, [roomId]);
 
-      const paramString = `f_flg=PLAN&f_otona_su=${otonaSu}&f_heya_su=1&f_kin=&f_kin2=&f_s1=${f_s1}&f_s2=${f_s2}&f_y1=0&f_y2=0&f_y3=0&f_y4=0&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_hak=1&f_tel=&f_tscm_flg=&f_p_no=&f_custom_code=&f_search_type=&f_service=&f_rm_equip=&f_sort=minNo`;
+    const getUnitPrice = useCallback((spot: any, price: number) => {
+        if (!price || price <= 0) return 0;
 
-      const extractRakutenId = (url: string) => {
-          if (!url) return null;
-          const match = url.match(/hotelinfo\/plan\/(\d+)/) || url.match(/HOTEL\/(\d+)/) || url.match(/no=(\d+)/);
-          return match ? match[1] : null;
-      };
+        let indConditions: Record<string, any> = {};
+        try {
+            const savedInd = localStorage.getItem(`rh_ind_hotel_conditions_${roomId || 'default'}`);
+            if (savedInd) indConditions = JSON.parse(savedInd);
+        } catch (e) {}
 
-      let hotelId = null;
-      if (spot.url) hotelId = extractRakutenId(spot.url);
-      if (!hotelId && spot.id && /^\d+$/.test(String(spot.id))) hotelId = spot.id;
+        const savedSettings = JSON.parse(localStorage.getItem(`rh_settings_${roomId}`) || '{}');
+        const savedConditions = JSON.parse(localStorage.getItem(`rh_hotel_conditions_${roomId}`) || '{}');
+        
+        // ▼ エラー箇所を修正: adultNum を直接参照せず、ローカルストレージから取得する
+        const fallbackAdults = savedSettings.adultNum || savedConditions.adults || 2;
+        const adults = indConditions[spot.id]?.adults || fallbackAdults;
 
-      if (hotelId) return `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotelId}?${paramString}`;
-      return `https://search.travel.rakuten.co.jp/ds/hotel/search?f_query=${encodeURIComponent(spot.name)}&${paramString}`;
-  };
-
+        return Math.round(price / Math.max(1, adults));
+    }, [roomId]);
   const rakutenHomeUrl = "https://travel.rakuten.co.jp/";
 
   const updateHotelMarkers = (hotelList: any[]) => {
@@ -470,16 +467,14 @@ export default function HotelListView({
     return (
         <div className="relative w-full h-full p-2">
             <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-full font-sans overflow-visible">
-                {priceTicks.map((p, i) => (<line key={`grid-y-${i}`} x1={paddingLeft} y1={getY(p)} x2={width - paddingRight} y2={getY(p)} stroke="#f0f0f0" strokeWidth="1" strokeDasharray="4 4"/>))}
-                {ratingTicks.map(r => (<line key={`grid-x-${r}`} x1={getX(r)} y1={paddingTop} x2={getX(r)} y2={height - paddingBottom} stroke="#f0f0f0" strokeWidth="1" strokeDasharray="4 4"/>))}
-                <line x1={paddingLeft} y1={height - paddingBottom} x2={width - paddingRight} y2={height - paddingBottom} stroke="#e5e7eb" strokeWidth="1"/>
-                <line x1={paddingLeft} y1={paddingTop} x2={paddingLeft} y2={height - paddingBottom} stroke="#e5e7eb" strokeWidth="1"/>
-                
-                <text x={(width + paddingLeft) / 2} y={height + 15} fontSize="10" textAnchor="middle" fill="#9ca3af" fontWeight="bold">評価</text>
-                <text x={5} y={height / 2} fontSize="10" textAnchor="middle" fill="#9ca3af" fontWeight="bold" transform={`rotate(-90, 5, ${height / 2})`}>価格</text>
-                {ratingTicks.map(r => (<text key={`x-${r}`} x={getX(r)} y={height - paddingBottom + 12} fontSize="9" textAnchor="middle" fill="#9ca3af">{r.toFixed(1)}</text>))}
-                {priceTicks.map((p, i) => (<text key={`y-${i}`} x={paddingLeft - 6} y={getY(p) + 3} fontSize="9" textAnchor="end" fill="#9ca3af">{p >= 10000 ? `${(p / 10000).toFixed(1)}万` : `¥${(p/1000).toFixed(0)}k`}</text>))}
-
+               {priceTicks.map((p, i) => (<line key={`grid-y-${i}`} x1={paddingLeft} y1={getY(p)} x2={width - paddingRight} y2={getY(p)} stroke="#d1d5db" strokeWidth="1" strokeDasharray="4 4"/>))}
+{ratingTicks.map(r => (<line key={`grid-x-${r}`} x1={getX(r)} y1={paddingTop} x2={getX(r)} y2={height - paddingBottom} stroke="#d1d5db" strokeWidth="1" strokeDasharray="4 4"/>))}
+<line x1={paddingLeft} y1={height - paddingBottom} x2={width - paddingRight} y2={height - paddingBottom} stroke="#9ca3af" strokeWidth="1.5"/>
+<line x1={paddingLeft} y1={paddingTop} x2={paddingLeft} y2={height - paddingBottom} stroke="#9ca3af" strokeWidth="1.5"/>
+                <text x={(width + paddingLeft) / 2} y={height + 15} fontSize="10" textAnchor="middle" fill="#4b5563" fontWeight="bold">評価</text>
+<text x={5} y={height / 2} fontSize="10" textAnchor="middle" fill="#4b5563" fontWeight="bold" transform={`rotate(-90, 5, ${height / 2})`}>価格</text>
+{ratingTicks.map(r => (<text key={`x-${r}`} x={getX(r)} y={height - paddingBottom + 12} fontSize="9" textAnchor="middle" fill="#4b5563" fontWeight="bold">{r.toFixed(1)}</text>))}
+{priceTicks.map((p, i) => (<text key={`y-${i}`} x={paddingLeft - 6} y={getY(p) + 3} fontSize="9" textAnchor="end" fill="#4b5563" fontWeight="bold">{p >= 10000 ? `${(p / 10000).toFixed(1)}万` : `¥${(p/1000).toFixed(0)}k`}</text>))}
                 {hotels.map((h, i) => {
                     const x = getX(h.rating || 3.0);
                     const unitPrice = Math.round(h.price / Math.max(1, searchedAdults));
@@ -494,7 +489,7 @@ export default function HotelListView({
                     if (isActive) baseColor = "#EF4444"; 
 
                     const reviewRatio = Math.min((h.review_count || 0) / maxReviews, 1);
-                    const opacity = 0.3 + (reviewRatio * 0.7);
+const opacity = 0.6 + (reviewRatio * 0.4);
 
                     return (
                         <circle 

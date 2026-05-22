@@ -4,7 +4,8 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { 
     Star, MapPin, BedDouble, ExternalLink, X, Info, TrendingUp, 
-    ArrowLeft, Map as MapIcon, Trash2, Calendar, User, ThumbsUp 
+    ArrowLeft, Map as MapIcon, Trash2, Calendar, User, ThumbsUp, RefreshCw,
+    SlidersHorizontal, Search, Loader2 // ←追加
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import RadarChart from './RadarChart'; 
@@ -37,14 +38,30 @@ export default function HotelCompareView({
     const roomId = searchParams.get('room');
 
     const [fetchedData, setFetchedData] = useState<Record<string, any>>({});
+    const [isUpdatingPrices, setIsUpdatingPrices] = useState(false);
+    const [updateProgress, setUpdateProgress] = useState(0); 
     
+    // ▼ 追加: ホテルごとの個別条件をローカルストレージから復元して保持
+    const [hotelConditions, setHotelConditions] = useState<Record<string, {adults: number, mealType: string}>>(() => {
+        try {
+            const saved = localStorage.getItem(`rh_ind_hotel_conditions_${roomId || 'default'}`);
+            return saved ? JSON.parse(saved) : {};
+        } catch (e) { return {}; }
+    });
+
     const spots = initialSpots.map(s => fetchedData[s.id] ? { ...s, ...fetchedData[s.id] } : s);
 
     const attemptedFetch = useRef<Set<string>>(new Set());
     const [fetchingSpotIds, setFetchingSpotIds] = useState<Set<string>>(new Set());
+    const isUpdatingRef = useRef(false);
+
     const [reviewModalData, setReviewModalData] = useState<{ spot: any, key: string, label: string } | null>(null);
     const [selectedSpotId, setSelectedSpotId] = useState<string | null>(null);
     
+    // ▼ 追加: 個別条件設定ポップアップ用の状態
+    const [conditionModalSpot, setConditionModalSpot] = useState<any | null>(null);
+    const [tempCondition, setTempCondition] = useState<{ adults: number, mealType: string }>({ adults: 2, mealType: 'half_board' });
+
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const mapScrollContainerRef = useRef<HTMLDivElement>(null);
     const [detailModalSpot, setDetailModalSpot] = useState<any | null>(null);
@@ -59,9 +76,60 @@ export default function HotelCompareView({
     const isLongPress = useRef(false);
     const touchStartPos = useRef<{x: number, y: number} | null>(null);
 
+    // 個別条件が変更されたらローカルストレージに保存
+    useEffect(() => {
+        localStorage.setItem(`rh_ind_hotel_conditions_${roomId || 'default'}`, JSON.stringify(hotelConditions));
+    }, [hotelConditions, roomId]);
+
+    const parseUrlParams = (urlStr: string) => {
+        const defaultDate = new Date();
+        defaultDate.setDate(defaultDate.getDate() + 30);
+        
+        const result = {
+            checkinDate: defaultDate.toISOString().split('T')[0],
+            adults: adultNum || 2,
+            mealType: 'half_board'
+        };
+
+        if (!urlStr) return result;
+        try {
+            const url = new URL(urlStr);
+            const params = new URLSearchParams(url.search);
+            
+            const yen1 = params.get('f_nen1');
+            const tsuki1 = params.get('f_tuki1');
+            const hi1 = params.get('f_hi1');
+            if (yen1 && tsuki1 && hi1) {
+                const d = new Date(Number(yen1), Number(tsuki1) - 1, Number(hi1));
+                if (!isNaN(d.getTime())) result.checkinDate = d.toISOString().split('T')[0];
+            }
+            
+            const otona = params.get('f_otona_su');
+            if (otona) {
+                result.adults = Number(otona) || result.adults;
+            } 
+            const s1 = params.get('f_s1');
+            const s2 = params.get('f_s2');
+            if (s1 === '1' && s2 === '1') result.mealType = 'half_board';
+            else if (s1 === '1' && s2 === '0') result.mealType = 'breakfast';
+            else if (s1 === '0' && s2 === '0') result.mealType = 'room_only';
+        } catch (e) {
+            try {
+                const savedSettings = localStorage.getItem(`rh_hotel_conditions_${roomId || ''}`);
+                if (savedSettings) {
+                    const parsed = JSON.parse(savedSettings);
+                    if (parsed.checkin) result.checkinDate = parsed.checkin;
+                    if (parsed.adults) result.adults = parsed.adults;
+                    if (parsed.mealType) result.mealType = parsed.mealType;
+                }
+            } catch (err) {}
+        }
+        return result;
+    };
+
     useEffect(() => {
         const fetchMissingData = async () => {
-            const missingSpots = spots.filter(s =>
+            const missingSpots = initialSpots.filter(s =>
                 (!s.detailed_ratings || !s.price || s.price === 0) &&
                 !attemptedFetch.current.has(s.id) &&
                 (s.url || /^\d+$/.test(String(s.id)))
@@ -70,13 +138,13 @@ export default function HotelCompareView({
             if (missingSpots.length === 0) return;
             setFetchingSpotIds(prev => new Set([...prev, ...missingSpots.map(s => s.id)]));
 
-            await Promise.all(missingSpots.map(async (spot) => {
+            for (const spot of missingSpots) {
                 attemptedFetch.current.add(spot.id);
                 try {
                     const { data: dbSpot } = await supabase.from('spots').select('detailed_ratings, price, rating, image_url').eq('id', spot.id).maybeSingle();
                     if (dbSpot && dbSpot.detailed_ratings && dbSpot.price > 0) {
                         setFetchedData(prev => ({ ...prev, [spot.id]: dbSpot }));
-                        return; 
+                        continue; 
                     }
 
                     const targetUrl = spot.url || `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${spot.id}`;
@@ -122,42 +190,273 @@ export default function HotelCompareView({
                         return next;
                     });
                 }
-            }));
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
         };
-        if (spots.length > 0) fetchMissingData();
-    }, [spots]);
+        if (initialSpots.length > 0) fetchMissingData();
+    }, [initialSpots]);
 
-    const getAffiliateUrl = (spot: any) => {
-        const parseLocalYMD = (ymd: string) => {
-            if (!ymd) return null;
-            const parts = ymd.split('-').map(Number);
-            if (parts.length !== 3) return null;
-            return new Date(parts[0], parts[1] - 1, parts[2]);
-        };
+    // ▼ 日付のタイムゾーンズレ（過去日になってしまうバグ）を防ぐためのフォーマット関数
+    const formatLocalYMD = (d: Date) => {
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${y}-${m}-${day}`;
+    };
 
-        let targetDate = new Date();
-        targetDate.setDate(targetDate.getDate() + 30);
-        let roomStartDate = "";
-        let roomAdultNum = adultNum || 2;
-        
-        if (typeof window !== 'undefined' && roomId) {
-            try {
-                const savedSettings = localStorage.getItem(`rh_settings_${roomId}`);
-                if (savedSettings) {
-                    const parsed = JSON.parse(savedSettings);
-                    if (parsed.start) roomStartDate = parsed.start;
-                    if (parsed.adultNum) roomAdultNum = parsed.adultNum;
+    // ▼ 追加: ホテル単体の料金を再取得する関数（条件変更時に発火）
+    const updateSingleHotelPrice = async (spot: any, condition: { adults: number, mealType: string }) => {
+        setFetchingSpotIds(prev => new Set([...prev, spot.id]));
+        try {
+            const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+            let latestPrice = spot.price;
+
+            const targetUrl = spot.url || `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${spot.id}`;
+            const match = targetUrl.match(/hotelinfo\/plan\/(\d+)/) || targetUrl.match(/HOTEL\/(\d+)/) || targetUrl.match(/no=(\d+)/);
+            const hotelNo = match ? match[1] : ( /^\d+$/.test(String(spot.id)) ? spot.id : undefined );
+
+            const savedSettings = JSON.parse(localStorage.getItem(`rh_settings_${roomId}`) || '{}');
+            const savedConditions = JSON.parse(localStorage.getItem(`rh_hotel_conditions_${roomId}`) || '{}');
+            const defaultDate = formatLocalYMD(new Date());
+            const checkinDateStr = savedSettings.start || savedConditions.checkin || defaultDate;
+            
+            if (spot.coordinates && spot.coordinates.length === 2) {
+                const parts = checkinDateStr.split('-').map(Number);
+                // ローカルタイムでDateオブジェクトを生成
+                let inDate = new Date(parts[0], parts[1] - 1, parts[2]);
+                const dayNum = Number(spot.day || 1);
+                if (dayNum > 0) inDate.setDate(inDate.getDate() + (dayNum - 1));
+                const outDate = new Date(inDate);
+                outDate.setDate(inDate.getDate() + 1);
+
+                // ▼ 修正: toISOStringの罠を回避し、正しい日本の日付文字列を生成
+                const checkin_date = formatLocalYMD(inDate);
+                const checkout_date = formatLocalYMD(outDate);
+
+                const vacantRes = await fetch(`${API_BASE_URL}/api/search_hotels_vacant`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        latitude: spot.coordinates[1], 
+                        longitude: spot.coordinates[0],
+                        radius: 0.5,
+                        hotel_no: hotelNo,
+                        checkin_date,
+                        checkout_date,
+                        adult_num: condition.adults,
+                        meal_type: condition.mealType === 'none' ? undefined : condition.mealType,
+                        hotel_type: 'all',
+                        min_rating: 0,
+                        min_reviews: 0,
+                        force_refresh: true
+                    })
+                });
+                
+                if (vacantRes.ok) {
+                    const vData = await vacantRes.json();
+                    if (vData.hotels && vData.hotels.length > 0) {
+                        // ▼ 修正: 文字列型(String)に変換して厳密に比較し、取りこぼしを防ぐ
+                        const exactHotel = vData.hotels.find((h: any) => String(h.id) === String(spot.id) || String(h.id) === String(hotelNo));
+                        if (exactHotel && exactHotel.price > 0) {
+                            latestPrice = exactHotel.price;
+                        } else {
+                            latestPrice = -1; // 実際に指定条件でのプランなし
+                        }
+                    } else {
+                        latestPrice = -1;
+                    }
                 }
-            } catch(e) {}
-        }
+            }
 
-        if (roomStartDate) {
-            const parsedStart = parseLocalYMD(roomStartDate);
-            if (parsedStart) targetDate = parsedStart;
-        }
+            setFetchedData(prev => ({
+                ...prev,
+                [spot.id]: {
+                    ...prev[spot.id],
+                    price: latestPrice,
+                }
+            }));
 
-        const dayNum = Number(spot.day);
-        if (!isNaN(dayNum) && dayNum > 0) {
+            if (latestPrice > 0) {
+                await supabase.from('spots').update({ price: latestPrice }).eq('id', spot.id);
+            }
+
+        } catch (e) {
+            console.error("Failed to update single hotel", e);
+        } finally {
+            setFetchingSpotIds(prev => {
+                const next = new Set(prev);
+                next.delete(spot.id);
+                return next;
+            });
+            setConditionModalSpot(null); // モーダルを閉じる
+        }
+    };
+
+    const updateHotelPrices = useCallback(async (force = false) => {
+        // ▼ 修正: ここでもローカル日付関数を使用
+        const today = formatLocalYMD(new Date());
+        const storageKey = `last_price_update_${roomId || 'default'}`;
+        const lastUpdate = localStorage.getItem(storageKey);
+
+        if (isUpdatingRef.current) return;
+        if (!force && lastUpdate === today) return;
+
+        const hotelSpots = initialSpots.filter(s => s.url || /^\d+$/.test(String(s.id)));
+        if (hotelSpots.length === 0) return;
+
+        isUpdatingRef.current = true;
+        setIsUpdatingPrices(true);
+        setUpdateProgress(0);
+        
+        const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+        const total = hotelSpots.length;
+        let count = 0;
+
+        try {
+            for (const spot of hotelSpots) {
+                try {
+                    let detailed_ratings = spot.detailed_ratings;
+                    let rating = spot.rating;
+                    let latestPrice = spot.price;
+
+                    const targetUrl = spot.url || `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${spot.id}`;
+                    const match = targetUrl.match(/hotelinfo\/plan\/(\d+)/) || targetUrl.match(/HOTEL\/(\d+)/) || targetUrl.match(/no=(\d+)/);
+                    const hotelNo = match ? match[1] : ( /^\d+$/.test(String(spot.id)) ? spot.id : undefined );
+                    
+                    const basicRes = await fetch(`${API_BASE_URL}/api/import_rakuten_hotel`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ url: targetUrl, force_refresh: true }) 
+                    });
+
+                    if (basicRes.ok) {
+                        const data = await basicRes.json();
+                        if (data.spot) {
+                            detailed_ratings = data.spot.detailed_ratings || detailed_ratings;
+                            rating = data.spot.rating || rating;
+                        }
+                    }
+
+                    const savedSettings = JSON.parse(localStorage.getItem(`rh_settings_${roomId}`) || '{}');
+                    const savedConditions = JSON.parse(localStorage.getItem(`rh_hotel_conditions_${roomId}`) || '{}');
+                    const defaultDate = formatLocalYMD(new Date());
+                    const checkinDateStr = savedSettings.start || savedConditions.checkin || defaultDate;
+                    
+                    const currentAdults = hotelConditions[spot.id]?.adults || adultNum || savedSettings.adultNum || savedConditions.adults || 2;
+                    const currentMealType = hotelConditions[spot.id]?.mealType || savedConditions.mealType || 'half_board';
+
+                    if (spot.coordinates && spot.coordinates.length === 2) {
+                        const parts = checkinDateStr.split('-').map(Number);
+                        let inDate = new Date(parts[0], parts[1] - 1, parts[2]);
+                        
+                        const dayNum = Number(spot.day || 1);
+                        if (dayNum > 0) {
+                            inDate.setDate(inDate.getDate() + (dayNum - 1));
+                        }
+                        
+                        const outDate = new Date(inDate);
+                        outDate.setDate(inDate.getDate() + 1);
+
+                        // ▼ 修正: 正しい日本の日付文字列を生成
+                        const checkin_date = formatLocalYMD(inDate);
+                        const checkout_date = formatLocalYMD(outDate);
+
+                        const vacantRes = await fetch(`${API_BASE_URL}/api/search_hotels_vacant`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ 
+                                latitude: spot.coordinates[1], 
+                                longitude: spot.coordinates[0],
+                                radius: 0.5,
+                                hotel_no: hotelNo, 
+                                checkin_date,
+                                checkout_date,
+                                adult_num: currentAdults,
+                                meal_type: currentMealType === 'none' ? undefined : currentMealType,
+                                hotel_type: 'all',
+                                min_rating: 0,
+                                min_reviews: 0,
+                                force_refresh: true
+                            })
+                        });
+                        
+                        if (vacantRes.ok) {
+                            const vData = await vacantRes.json();
+                            if (vData.hotels && vData.hotels.length > 0) {
+                                // ▼ 修正: 文字列型(String)に変換して比較
+                                const exactHotel = vData.hotels.find((h: any) => String(h.id) === String(spot.id) || String(h.id) === String(hotelNo));
+                                if (exactHotel && exactHotel.price > 0) {
+                                    latestPrice = exactHotel.price;
+                                } else {
+                                    latestPrice = -1;
+                                }
+                            } else {
+                                latestPrice = -1;
+                            }
+                        }
+                    }
+
+                    setFetchedData(prev => ({
+                        ...prev,
+                        [spot.id]: {
+                            ...prev[spot.id],
+                            price: latestPrice,
+                            detailed_ratings,
+                            rating
+                        }
+                    }));
+
+                    if (latestPrice > 0) {
+                        await supabase.from('spots').update({
+                            price: latestPrice,
+                            detailed_ratings,
+                            rating,
+                        }).eq('id', spot.id);
+                    }
+
+                } catch (e) {
+                    console.error(`Failed to update data for spot: ${spot.id}`, e);
+                }
+                
+                count++;
+                setUpdateProgress(Math.round((count / total) * 100));
+                await new Promise(resolve => setTimeout(resolve, 1000)); 
+            }
+
+            localStorage.setItem(storageKey, today);
+            
+        } finally {
+            isUpdatingRef.current = false; 
+            setIsUpdatingPrices(false);
+            setUpdateProgress(0);
+        }
+    }, [initialSpots, roomId, adultNum, hotelConditions]);
+    useEffect(() => {
+        if (initialSpots.length > 0) {
+            updateHotelPrices(false);
+        }
+    }, [initialSpots.length, updateHotelPrices]);
+
+ const getAffiliateUrl = useCallback((spot: any) => {
+        const savedSettings = JSON.parse(localStorage.getItem(`rh_settings_${roomId}`) || '{}');
+        const savedConditions = JSON.parse(localStorage.getItem(`rh_hotel_conditions_${roomId}`) || '{}');
+        
+        let indConditions: Record<string, any> = {};
+        try {
+            const savedInd = localStorage.getItem(`rh_ind_hotel_conditions_${roomId || 'default'}`);
+            if (savedInd) indConditions = JSON.parse(savedInd);
+        } catch(e) {}
+
+        const checkinDate = savedSettings.start || savedConditions.checkin || new Date().toISOString().split('T')[0];
+        
+        const fallbackAdults = typeof adultNum !== 'undefined' ? adultNum : (savedSettings.adultNum || savedConditions.adults || 2);
+        const adults = indConditions[spot.id]?.adults || fallbackAdults;
+
+        const parts = checkinDate.split('-').map(Number);
+        let targetDate = new Date(parts[0], parts[1] - 1, parts[2]);
+
+        const dayNum = Number(spot.day || 1);
+        if (dayNum > 0) {
             targetDate.setDate(targetDate.getDate() + (dayNum - 1));
         }
 
@@ -166,27 +465,32 @@ export default function HotelCompareView({
 
         const y1 = targetDate.getFullYear(); const m1 = targetDate.getMonth() + 1; const d1 = targetDate.getDate();
         const y2 = checkOutDate.getFullYear(); const m2 = checkOutDate.getMonth() + 1; const d2 = checkOutDate.getDate();
-        const otonaSu = roomAdultNum || 2;
-        const paramString = `f_flg=PLAN&f_otona_su=${otonaSu}&f_heya_su=1&f_kin=&f_kin2=&f_s1=0&f_s2=0&f_y1=0&f_y2=0&f_y3=0&f_y4=0&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_hak=1&f_tel=&f_tscm_flg=&f_p_no=&f_custom_code=&f_search_type=&f_service=&f_rm_equip=&f_sort=minNo`;
-
+        
+        // ▼ 修正: 誤って小学生を追加していた f_s1, f_s2 の条件分岐を完全に削除！
+        // ▼ さらに、f_s1, f_s2 (小学生) と f_y1～f_y6 (幼児) をすべて「空」にして大人だけの検索に固定
+        const paramString = `f_flg=PLAN&f_otona_su=${adults}&f_heya_su=1&f_kin=&f_kin2=&f_s1=&f_s2=&f_y1=&f_y2=&f_y3=&f_y4=&f_y5=&f_y6=&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_hak=1&f_tel=&f_tscm_flg=&f_p_no=&f_custom_code=&f_search_type=&f_service=&f_rm_equip=&f_sort=minNo`;
+        
         const extractRakutenId = (url: string) => {
             if (!url) return null;
             const match = url.match(/hotelinfo\/plan\/(\d+)/) || url.match(/HOTEL\/(\d+)/) || url.match(/no=(\d+)/);
             return match ? match[1] : null;
         };
 
-        let hotelId = null;
-        if (spot.url) hotelId = extractRakutenId(spot.url);
-        if (!hotelId && spot.id && /^\d+$/.test(String(spot.id))) hotelId = spot.id;
+        const hotelId = extractRakutenId(spot.url || "") || ( /^\d+$/.test(String(spot.id)) ? spot.id : null);
+        
         if (hotelId) return `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotelId}?${paramString}`;
         return `https://search.travel.rakuten.co.jp/ds/hotel/search?f_query=${encodeURIComponent(spot.name)}&${paramString}`;
-    };
+    }, [roomId, typeof adultNum !== 'undefined' ? adultNum : null]);
 
-    const getUnitPrice = useCallback((price: number) => Math.round(price / Math.max(1, adultNum)), [adultNum]);
+    // ▼ 修正: ホテルごとの人数を参照して一人当たりの金額を計算
+    const getUnitPrice = useCallback((spot: any, price: number) => {
+        const adults = hotelConditions[spot.id]?.adults || adultNum || 2;
+        return Math.round(price / Math.max(1, adults));
+    }, [adultNum, hotelConditions]);
 
     const validSpots = spots.filter(s => s.price > 0 && s.rating > 0);
-    const minP = validSpots.length ? Math.min(...validSpots.map(s => getUnitPrice(s.price))) * 0.95 : 0;
-    const maxP = validSpots.length ? Math.max(...validSpots.map(s => getUnitPrice(s.price))) * 1.05 : 30000;
+    const minP = validSpots.length ? Math.min(...validSpots.map(s => getUnitPrice(s, s.price))) * 0.95 : 0;
+    const maxP = validSpots.length ? Math.max(...validSpots.map(s => getUnitPrice(s, s.price))) * 1.05 : 30000;
     const minR = 3.0; const maxR = 5.0;
 
     const ratingTicks = [3.0, 3.5, 4.0, 4.5, 5.0];
@@ -256,6 +560,20 @@ export default function HotelCompareView({
         }
     };
 
+    // ▼ 追加: 個別条件モーダルを開く処理
+    const handleOpenConditionModal = (spot: any) => {
+        setConditionModalSpot(spot);
+        const savedSettings = JSON.parse(localStorage.getItem(`rh_settings_${roomId}`) || '{}');
+        const savedConditions = JSON.parse(localStorage.getItem(`rh_hotel_conditions_${roomId}`) || '{}');
+        const defaultAdults = adultNum || savedSettings.adultNum || savedConditions.adults || 2;
+        const defaultMeal = savedConditions.mealType || 'half_board';
+        
+        setTempCondition({
+            adults: hotelConditions[spot.id]?.adults || defaultAdults,
+            mealType: hotelConditions[spot.id]?.mealType || defaultMeal
+        });
+    };
+
     useEffect(() => {
         if (!mapContainer.current) return;
         mapboxgl.accessToken = MAPBOX_TOKEN;
@@ -283,11 +601,11 @@ export default function HotelCompareView({
             const isSelected = selectedSpotId === spot.id;
             const color = isSelected ? '#EF4444' : '#F97316';
             const zIndex = isSelected ? 99 : 5;
-            const unitPrice = getUnitPrice(spot.price);
+            const unitPrice = getUnitPrice(spot, spot.price); // 修正
             const displayPrice = unitPrice >= 10000 ? `${(unitPrice/10000).toFixed(1)}万` : `¥${unitPrice.toLocaleString()}`;
 
             el.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;z-index:${zIndex};cursor:pointer;">
-                <div style="background:white;padding:2px 6px;border-radius:6px;font-size:10px;font-weight:bold;color:${color};box-shadow:0 2px 4px rgba(0,0,0,0.2);margin-bottom:2px;white-space:nowrap;border:1px solid ${color};">${displayPrice}</div>
+                <div style="background:white;padding:2px 6px;border-radius:6px;font-size:10px;font-weight:bold;color:${color};box-shadow:0 2px 4px rgba(0,0,0,0.2);margin-bottom:2px;white-space:nowrap;border:1px solid ${color};">${spot.price > 0 ? displayPrice : '満室'}</div>
                 <svg width="28" height="28" viewBox="0 0 24 24" fill="${color}" stroke="white" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3" fill="white"></circle></svg>
             </div>`;
             el.onclick = () => handlePlotClick(spot);
@@ -328,6 +646,32 @@ export default function HotelCompareView({
                     </div>
                     <div className="flex items-center gap-2">
                         <button 
+                            onClick={() => updateHotelPrices(true)} 
+                            disabled={isUpdatingPrices}
+                            className="px-3 py-1.5 rounded-full text-[11px] font-bold flex items-center gap-1.5 transition-colors bg-slate-100 text-gray-600 hover:bg-slate-200 disabled:opacity-50 min-w-[100px] justify-center"
+                        >
+                            {isUpdatingPrices ? (
+                                <div className="relative flex items-center justify-center w-3.5 h-3.5">
+                                    <svg className="w-full h-full transform -rotate-90" viewBox="0 0 24 24">
+                                        <circle cx="12" cy="12" r="10" fill="none" className="stroke-current text-gray-300" strokeWidth="4" />
+                                        <circle 
+                                            cx="12" cy="12" r="10" fill="none" 
+                                            className="stroke-current text-blue-500 transition-all duration-300 ease-out" 
+                                            strokeWidth="4" strokeLinecap="round"
+                                            pathLength="100" strokeDasharray="100" 
+                                            strokeDashoffset={100 - updateProgress} 
+                                        />
+                                    </svg>
+                                </div>
+                            ) : (
+                                <RefreshCw size={14} />
+                            )}
+                            <span className="w-12 text-left">
+                                {isUpdatingPrices ? `更新 ${updateProgress}%` : '料金を更新'}
+                            </span>
+                        </button>
+
+                        <button 
                             onClick={() => setShowMap(!showMap)} 
                             className={`px-3 py-1.5 rounded-full text-[11px] font-bold flex items-center gap-1.5 transition-colors ${showMap ? 'bg-orange-600 text-white shadow-md' : 'bg-slate-100 text-gray-600 hover:bg-slate-200'}`}
                         >
@@ -367,7 +711,7 @@ export default function HotelCompareView({
                             <text x="5" y="75" fontSize="8" fill="#9ca3af" transform="rotate(-90, 5, 75)" textAnchor="middle" fontWeight="bold">価格</text>
                             {validSpots.map((spot, i) => {
                                 const x = 30 + ((spot.rating - minR) / (maxR - minR)) * 260;
-                                const unitPrice = getUnitPrice(spot.price);
+                                const unitPrice = getUnitPrice(spot, spot.price); // 修正
                                 const y = 140 - ((unitPrice - minP) / (maxP - minP)) * 130;
                                 const isSelected = selectedSpotId === spot.id;
                                 return (
@@ -383,7 +727,7 @@ export default function HotelCompareView({
 
                 <div ref={activeScrollRef} className="flex gap-4 overflow-x-auto px-2 pb-4 no-scrollbar mask-gradient" style={{ scrollBehavior: 'smooth' }}>
                     {spots.map((spot, index) => {
-                        const unitPrice = getUnitPrice(spot.price);
+                        const unitPrice = getUnitPrice(spot, spot.price); // 修正
                         const isSelected = selectedSpotId === spot.id;
                         const targetUrl = getAffiliateUrl(spot);
                         const isLoading = fetchingSpotIds.has(spot.id); 
@@ -414,16 +758,24 @@ export default function HotelCompareView({
                                 <div className="pointer-events-none">
                                     <h4 className={`font-black text-sm line-clamp-2 leading-tight mb-1 ${isSelected ? 'text-red-600' : 'text-gray-800'}`}>{spot.name}</h4>
                                     <div className="flex items-center gap-1 text-[10px] text-gray-400 font-bold mb-2"><MapPin size={10} className="shrink-0"/> <span className="truncate">{spot.description}</span></div>
-                                    {spot.price > 0 && <p className="text-orange-500 font-black text-lg leading-none mt-1">¥{unitPrice.toLocaleString()}<span className="text-[10px] text-gray-400 font-bold ml-1">~ /人</span></p>}
+                                    
+                                    {/* ▼ 修正: -1 の場合は「条件に合うプランなし」と表示 */}
+                                    {spot.price > 0 ? (
+                                        <p className="text-orange-500 font-black text-lg leading-none mt-1">¥{unitPrice.toLocaleString()}<span className="text-[10px] text-gray-400 font-bold ml-1">~ /人</span></p>
+                                    ) : spot.price === -1 ? (
+                                        <p className="text-red-500 font-bold text-sm mt-1">指定条件でのプランなし</p>
+                                    ) : null}
                                 </div>
                                 <div className={`flex items-center justify-center rounded-2xl py-2 h-[160px] transition-colors pointer-events-none ${isSelected ? 'bg-red-50' : 'bg-gray-50/50'}`}>
                                   <RadarChart ratings={spot.detailed_ratings} color={isSelected ? "#EF4444" : "#F97316"} isLoading={isLoading} onLabelClick={(key, label) => setReviewModalData({ spot, key, label })} />
                                 </div>
+
+                                {/* ▼ 修正: 「詳細」ボタンを廃止し、「条件設定」に変更 */}
                                 <div className="flex gap-2 mt-auto pt-2">
                                     <button 
-                                        onClick={(e) => { e.stopPropagation(); setDetailModalSpot(spot); }}
-                                        className="flex-[1] bg-gray-800 text-white py-3 rounded-xl font-bold text-[11px] flex items-center justify-center gap-1 hover:bg-gray-700 transition-colors"
-                                    ><Info size={14} /> 詳細</button>
+                                        onClick={(e) => { e.stopPropagation(); handleOpenConditionModal(spot); }}
+                                        className="flex-[1] bg-gray-100 text-gray-600 py-3 rounded-xl font-bold text-[11px] flex items-center justify-center gap-1 hover:bg-gray-200 transition-colors"
+                                    ><SlidersHorizontal size={14} /> 条件設定</button>
                                     <a 
                                         href={targetUrl} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}
                                         className="flex-[1.2] bg-[#BF0000] text-white py-3 rounded-xl font-bold text-[11px] flex items-center justify-center gap-1 hover:bg-red-800 transition-colors"
@@ -448,6 +800,62 @@ export default function HotelCompareView({
                     <div className="flex-1 overflow-y-auto px-6 pb-24 pt-2">{showMap && renderCompareViewContent(true)}</div>
                 </div>
             </div>
+
+            {/* ▼ 追加: ホテル個別条件設定用モーダル */}
+            {conditionModalSpot && (
+                <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in p-4" onClick={() => setConditionModalSpot(null)}>
+                    <div className="bg-white w-full max-w-sm rounded-3xl p-6 shadow-2xl flex flex-col gap-5 animate-in zoom-in-95" onClick={(e) => e.stopPropagation()}>
+                        <div>
+                            <h3 className="font-black text-gray-800 text-lg leading-tight mb-1">{conditionModalSpot.name}</h3>
+                            <p className="text-xs font-bold text-gray-500">このホテルの検索条件（人数・食事）</p>
+                        </div>
+                        
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-xs font-bold text-gray-600 mb-1">宿泊人数（大人）</label>
+                                <select 
+                                    value={tempCondition.adults} 
+                                    onChange={(e) => setTempCondition(prev => ({...prev, adults: Number(e.target.value)}))}
+                                    className="w-full bg-gray-50 border border-gray-200 text-gray-800 text-sm rounded-xl focus:ring-orange-500 focus:border-orange-500 block p-3 font-bold"
+                                >
+                                    {[1, 2, 3, 4, 5, 6].map(n => <option key={n} value={n}>{n}名</option>)}
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-xs font-bold text-gray-600 mb-1">食事条件</label>
+                                <select 
+                                    value={tempCondition.mealType} 
+                                    onChange={(e) => setTempCondition(prev => ({...prev, mealType: e.target.value}))}
+                                    className="w-full bg-gray-50 border border-gray-200 text-gray-800 text-sm rounded-xl focus:ring-orange-500 focus:border-orange-500 block p-3 font-bold"
+                                >
+                                    <option value="half_board">朝夕食あり</option>
+                                    <option value="breakfast">朝食のみ</option>
+                                    <option value="room_only">素泊まり</option>
+                                    <option value="none">指定なし（全プラン）</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div className="flex gap-2 mt-2">
+                            <button 
+                                onClick={() => setConditionModalSpot(null)} 
+                                className="flex-1 bg-gray-100 text-gray-600 py-3.5 rounded-xl font-bold text-sm hover:bg-gray-200 transition-colors"
+                            >キャンセル</button>
+                            <button 
+                                onClick={() => {
+                                    setHotelConditions(prev => ({...prev, [conditionModalSpot.id]: tempCondition}));
+                                    updateSingleHotelPrice(conditionModalSpot, tempCondition);
+                                }} 
+                                disabled={fetchingSpotIds.has(conditionModalSpot.id)}
+                                className="flex-[1.5] bg-orange-500 text-white py-3.5 rounded-xl font-bold text-sm flex items-center justify-center gap-1 shadow-md hover:bg-orange-600 transition-colors disabled:opacity-50"
+                            >
+                                {fetchingSpotIds.has(conditionModalSpot.id) ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />}
+                                再計算する
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {longPressMenuSpot && (
                 <div 
@@ -518,39 +926,6 @@ export default function HotelCompareView({
                 </div>
             )}
             
-            {detailModalSpot && (
-                <div className="fixed inset-0 z-[200] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in" onClick={() => setDetailModalSpot(null)}>
-                    <div className="bg-gray-50 w-full sm:max-w-md h-[85vh] sm:h-auto sm:max-h-[90vh] rounded-t-3xl sm:rounded-3xl flex flex-col overflow-hidden animate-in slide-in-from-bottom-8 shadow-2xl relative" onClick={(e) => e.stopPropagation()}>
-                        <div className="w-full h-56 relative shrink-0 bg-gray-200">
-                            <button onClick={() => setDetailModalSpot(null)} className="absolute top-4 left-4 z-10 bg-black/50 backdrop-blur-md px-4 py-2 rounded-full flex items-center gap-2 text-white hover:bg-black/70 transition-colors text-xs font-bold shadow-lg"><ArrowLeft size={16} /> 戻る</button>
-                            {detailModalSpot.image_url ? <img src={detailModalSpot.image_url} className="w-full h-full object-cover" alt="" /> : <div className="flex h-full items-center justify-center text-gray-400"><BedDouble size={48}/></div>}
-                            <div className="absolute bottom-3 right-3 bg-black/60 backdrop-blur-md text-white px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-lg"><Star size={12} className="text-yellow-400" fill="currentColor"/> {detailModalSpot.rating > 0 ? detailModalSpot.rating : "評価なし"}</div>
-                        </div>
-                        <div className="flex-1 overflow-y-auto p-5 space-y-6">
-                            <div>
-                                <h3 className="text-xl font-black text-gray-800 leading-tight mb-2">{detailModalSpot.name}</h3>
-                                <div className="flex items-start gap-1.5 text-xs text-gray-500 font-medium mb-3"><MapPin size={14} className="shrink-0 mt-0.5 text-orange-500"/> <span>{detailModalSpot.description}</span></div>
-                                {detailModalSpot.price > 0 && <p className="text-orange-600 font-black text-2xl leading-none">¥{getUnitPrice(detailModalSpot.price).toLocaleString()}<span className="text-xs text-gray-400 font-bold ml-1">~ /人</span></p>}
-                            </div>
-                            <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
-                                <h4 className="text-xs font-bold text-gray-500 mb-2 flex items-center gap-1"><TrendingUp size={14}/> 評価バランス</h4>
-                                <div className="flex justify-center h-[180px]"><RadarChart ratings={detailModalSpot.detailed_ratings} color="#F97316" isLoading={fetchingSpotIds.has(detailModalSpot.id)} onLabelClick={(key, label) => setReviewModalData({ spot: detailModalSpot, key, label })} /> </div>
-                            </div>
-                            {detailModalSpot.comment && (
-                                <div className="bg-orange-50/50 rounded-2xl p-4 border border-orange-100">
-                                    <h4 className="text-xs font-bold text-orange-800 mb-2 flex items-center gap-1"><Info size={14}/> プラン・ホテルの特徴</h4>
-                                    <p className="text-sm text-gray-700 leading-relaxed font-medium whitespace-pre-wrap">{detailModalSpot.comment.replace(/<[^>]*>?/gm, '')}</p>
-                                </div>
-                            )}
-                            <div className="h-4"></div>
-                        </div>
-                        <div className="p-4 bg-white border-t border-gray-100 shrink-0">
-                            <a href={getAffiliateUrl(detailModalSpot)} target="_blank" rel="noopener noreferrer" className="w-full bg-[#BF0000] text-white py-4 rounded-2xl font-black text-center flex items-center justify-center gap-2 shadow-lg hover:bg-red-800 active:scale-95 transition-all">全ての写真・プランを楽天で見る <ExternalLink size={18} /></a>
-                        </div>
-                    </div>
-                </div>
-            )}
-
             {reviewModalData && (
                 <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in p-4" onClick={() => setReviewModalData(null)}>
                     <div className="bg-white w-full max-w-sm rounded-3xl p-6 shadow-2xl flex flex-col gap-4 animate-in zoom-in-95" onClick={(e) => e.stopPropagation()}>

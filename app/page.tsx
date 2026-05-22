@@ -3,7 +3,7 @@
 // ビルドエラー回避：動的レンダリングを強制
 export const dynamic = 'force-dynamic';
 
-import React, { Suspense, useEffect, useRef, useState, useMemo } from 'react';
+import React, { Suspense, useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import mapboxgl from 'mapbox-gl';
 // @ts-ignore
 import 'mapbox-gl/dist/mapbox-gl.css';
@@ -1385,71 +1385,50 @@ useEffect(() => {
 
  // ... (前略)
 
- const getAffiliateUrl = (spot: any) => {
-      // 日付パース
-      const parseLocalYMD = (ymd: string) => {
-          if (!ymd) return null;
-          const parts = ymd.split('-').map(Number);
-          if (parts.length !== 3) return null;
-          return new Date(parts[0], parts[1] - 1, parts[2]);
-      };
+const getAffiliateUrl = useCallback((spot: any) => {
+        const savedSettings = JSON.parse(localStorage.getItem(`rh_settings_${roomId}`) || '{}');
+        const savedConditions = JSON.parse(localStorage.getItem(`rh_hotel_conditions_${roomId}`) || '{}');
+        
+        let indConditions: Record<string, any> = {};
+        try {
+            const savedInd = localStorage.getItem(`rh_ind_hotel_conditions_${roomId || 'default'}`);
+            if (savedInd) indConditions = JSON.parse(savedInd);
+        } catch(e) {}
 
-      // 1. 基準日
-      let targetDate = new Date();
-      targetDate.setDate(targetDate.getDate() + 30);
+        const checkinDate = savedSettings.start || savedConditions.checkin || new Date().toISOString().split('T')[0];
+        
+        const fallbackAdults = typeof adultNum !== 'undefined' ? adultNum : (savedSettings.adultNum || savedConditions.adults || 2);
+        const adults = indConditions[spot.id]?.adults || fallbackAdults;
 
-      if (startDate) {
-          const parsedStart = parseLocalYMD(startDate);
-          if (parsedStart) targetDate = parsedStart;
-      }
+        const parts = checkinDate.split('-').map(Number);
+        let targetDate = new Date(parts[0], parts[1] - 1, parts[2]);
 
-      // 2. Dayによる日付加算
-      const dayNum = Number(spot.day);
-      if (!isNaN(dayNum) && dayNum > 0) {
-          targetDate.setDate(targetDate.getDate() + (dayNum - 1));
-      }
+        const dayNum = Number(spot.day || 1);
+        if (dayNum > 0) {
+            targetDate.setDate(targetDate.getDate() + (dayNum - 1));
+        }
 
-      // 3. チェックアウト日
-      const checkOutDate = new Date(targetDate);
-      checkOutDate.setDate(targetDate.getDate() + 1);
+        const checkOutDate = new Date(targetDate);
+        checkOutDate.setDate(targetDate.getDate() + 1);
 
-      // 4. パラメータ用変数
-      const y1 = targetDate.getFullYear();
-      const m1 = targetDate.getMonth() + 1;
-      const d1 = targetDate.getDate();
-      const y2 = checkOutDate.getFullYear();
-      const m2 = checkOutDate.getMonth() + 1;
-      const d2 = checkOutDate.getDate();
+        const y1 = targetDate.getFullYear(); const m1 = targetDate.getMonth() + 1; const d1 = targetDate.getDate();
+        const y2 = checkOutDate.getFullYear(); const m2 = checkOutDate.getMonth() + 1; const d2 = checkOutDate.getDate();
+        
+        // ▼ 修正: 誤って小学生を追加していた f_s1, f_s2 の条件分岐を完全に削除！
+        // ▼ さらに、f_s1, f_s2 (小学生) と f_y1～f_y6 (幼児) をすべて「空」にして大人だけの検索に固定
+        const paramString = `f_flg=PLAN&f_otona_su=${adults}&f_heya_su=1&f_kin=&f_kin2=&f_s1=&f_s2=&f_y1=&f_y2=&f_y3=&f_y4=&f_y5=&f_y6=&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_hak=1&f_tel=&f_tscm_flg=&f_p_no=&f_custom_code=&f_search_type=&f_service=&f_rm_equip=&f_sort=minNo`;
+        
+        const extractRakutenId = (url: string) => {
+            if (!url) return null;
+            const match = url.match(/hotelinfo\/plan\/(\d+)/) || url.match(/HOTEL\/(\d+)/) || url.match(/no=(\d+)/);
+            return match ? match[1] : null;
+        };
 
-      // ★ご指定のパラメータ文字列（順序・構成を完全に一致）
-      const paramString = `f_flg=PLAN&f_otona_su=${adultNum}&f_heya_su=1&f_kin=&f_kin2=&f_s1=0&f_s2=0&f_y1=0&f_y2=0&f_y3=0&f_y4=0&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_hak=1&f_tel=&f_tscm_flg=&f_p_no=&f_custom_code=&f_search_type=&f_service=&f_rm_equip=&f_sort=minNo`;
-      // 5. 楽天IDの抽出ロジック（強化版）
-      const extractRakutenId = (url: string) => {
-          if (!url) return null;
-          // plan/数字, HOTEL/数字, no=数字 などのパターンに対応
-          const match = url.match(/hotelinfo\/plan\/(\d+)/) || url.match(/HOTEL\/(\d+)/) || url.match(/no=(\d+)/);
-          return match ? match[1] : null;
-      };
-
-      let hotelId = null;
-      
-      // 保存されたURLからIDを探す
-      if (spot.url) {
-          hotelId = extractRakutenId(spot.url);
-      }
-      // spot.id 自体が数値（楽天ID）の場合
-      if (!hotelId && spot.id && /^\d+$/.test(String(spot.id))) {
-          hotelId = spot.id;
-      }
-
-      // ★ IDがある場合（これが本命）
-      if (hotelId) {
-          return `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotelId}?${paramString}`;
-      } 
-      
-      // IDがどうしても不明な場合のみ検索URLにする（ただし後ろのパラメータ順序は合わせる）
-      return `https://search.travel.rakuten.co.jp/ds/hotel/search?f_query=${encodeURIComponent(spot.name)}&${paramString}`;
-  };
+        const hotelId = extractRakutenId(spot.url || "") || ( /^\d+$/.test(String(spot.id)) ? spot.id : null);
+        
+        if (hotelId) return `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotelId}?${paramString}`;
+        return `https://search.travel.rakuten.co.jp/ds/hotel/search?f_query=${encodeURIComponent(spot.name)}&${paramString}`;
+    }, [roomId, typeof adultNum !== 'undefined' ? adultNum : null]);
 
  // page.tsx 690行目付近の allParticipants を以下に書き換え
 
@@ -3325,7 +3304,7 @@ useEffect(() => {
             // ★修正：どのタブであっても「確定済み」なら青いピンを表示する
             el.innerHTML = `
                 <div style="position:relative; display:flex; flex-direction:column; align-items:center;">
-                    ${hotelInfoHtml}
+                    
                     <div style="width:${size + 6}px; height:${size + 6}px; background:${confirmedColor}; border-radius:${isDayView ? '6px' : '50%'}; display:flex; align-items:center; justify-content:center; box-shadow:0 4px 10px rgba(0,0,0,0.5);">
                         <div style="width:${size}px; height:${size}px; background:${confirmedColor}; border-radius:${isDayView ? '5px' : '50%'}; display:flex; align-items:center; justify-content:center; color:white; font-weight:800; font-size:${currentFontSize}; border:1px solid rgba(255,255,255,0.3);">
                             ${displayLabel}
