@@ -2644,6 +2644,7 @@ const now = new Date().toISOString(); // ★現在時刻
   };
 
   // ★修正: focusSpotInList をここに定義（handlePreviewSpotの後）
+  // ★修正: focusSpotInList をここに定義（handlePreviewSpotの後）
   const focusSpotInList = (spot: any) => {
     // 1. Refを使って判定（2回目タップなら詳細表示）
     if (focusedSpotIdRef.current === String(spot.id)) {
@@ -2654,39 +2655,7 @@ const now = new Date().toISOString(); // ★現在時刻
     focusedSpotIdRef.current = String(spot.id);
     isFocusingSpotRef.current = true;
 
-    // --- ステータス判定 ---
-    const isSpotHotel = spot.is_hotel || isHotel(spot.name);
-    let targetStatus: FilterStatus = 'candidate';
-    let targetDay = spot.day || 0;
-
-    if (filterStatus === 'candidate') {
-        const canShowInCandidate = spot.status === 'candidate' || (spot.status === 'confirmed' && !isSpotHotel);
-        if (canShowInCandidate) {
-            targetStatus = 'candidate';
-        } else {
-            if (spot.status === 'confirmed') targetStatus = 'confirmed';
-            else if (spot.status === 'hotel_candidate') targetStatus = 'hotel_candidate';
-        }
-    } else {
-        if (spot.status === 'confirmed') targetStatus = 'confirmed';
-        else if (spot.status === 'hotel_candidate') targetStatus = 'hotel_candidate';
-        else targetStatus = 'candidate';
-    }
-
-    setFilterStatus(targetStatus);
-
-    // --- Day・エリアの維持判定 ---
-    if (targetStatus === 'confirmed') {
-        setSelectedConfirmDay(targetDay);
-    } else if (targetStatus === 'hotel_candidate') {
-        setSelectedHotelDay(targetDay);
-    } else if (targetStatus === 'candidate') {
-        const spotArea = getSpotArea(spot, groupingMode);
-        const isVisibleInCurrentArea = (selectedCandidateArea === 'all') || (selectedCandidateArea === spotArea);
-        if (!isVisibleInCurrentArea) {
-            setSelectedCandidateArea(spotArea);
-        }
-    }
+    // ▼▼▼ 変更点: 勝手にタブ(filterStatus)やDayを切り替える処理をすべて削除しました ▼▼▼
 
     // --- 高さ制御 ---
     const MIN_OPEN_HEIGHT = 260;
@@ -2722,8 +2691,8 @@ const now = new Date().toISOString(); // ★現在時刻
         const element = document.getElementById(`spot-item-${spot.id}`);
         
         if (container && element) {
-            // 確定リストの時だけ詰める、それ以外は余白を持つ
-            const offset = targetStatus === 'confirmed' ? 0 : 80;
+            // 現在開いているリストの中にそのスポットが存在する場合はスクロールする
+            const offset = filterStatus === 'confirmed' ? 0 : 80;
             const topPos = element.offsetTop - offset;
             container.scrollTo({ top: topPos, behavior: 'smooth' });
             
@@ -2731,10 +2700,13 @@ const now = new Date().toISOString(); // ★現在時刻
             setTimeout(() => {
                 element.classList.remove('ring-2', 'ring-red-500', 'bg-red-50');
             }, 2000);
+        } else {
+            // ★追加: もし開いているリストに該当のスポットが存在しない場合は、リストを移動させずに詳細モーダルを直接開く
+            handlePreviewSpot(spot);
         }
         
         setTimeout(() => { isFocusingSpotRef.current = false; }, 1000);
-    }, 250); 
+    }, 150); 
   };
 
   // ★修正: handleLocateOnMap をここに定義
@@ -3256,7 +3228,7 @@ useEffect(() => {
         const isConfirmed = spot.status === 'confirmed';
         const isSpotHotel = isHotel(spot.name) || spot.is_hotel;
         const size = 24; 
-        const confirmedColor = '#2563EB';
+        const confirmedColor = '#60A5FA';
 
         let displayLabel: string = "";
         let participants: string[] = [];
@@ -3272,7 +3244,7 @@ useEffect(() => {
             voteCount = participants.length;
         }
 
-        let currentFontSize = '14px';
+      let currentFontSize = '14px';
 
         // ★ラベル(数字)の表示ロジック
         if (isDayView && isConfirmed) {
@@ -3289,6 +3261,18 @@ useEffect(() => {
             displayLabel = String(voteCount);
         }
 
+        // ▼▼▼ 追加・移動: グラデーション生成ロジックを共通化 ▼▼▼
+        let gradientString = '#9CA3AF'; // 投票がない場合のデフォルト（グレー）
+        if (participants.length > 0) {
+            const segmentSize = 100 / participants.length;
+            const gradientParts = participants.map((name, i) => { 
+                const color = getUserColor(name); 
+                return `${color} ${i * segmentSize}% ${(i + 1) * segmentSize}%`; 
+            });
+            gradientString = `conic-gradient(${gradientParts.join(', ')})`;
+        }
+        // ▲▲▲ 追加・移動ここまで ▲▲▲
+
         let hotelInfoHtml = ''; 
         if (!isNearby && isSpotHotel && spot.price > 0) {
             hotelInfoHtml = `<div style="position:absolute; bottom:100%; left:50%; transform:translateX(-50%) translateY(-8px); background:white; padding:2px 6px; border-radius:6px; font-size:10px; font-weight:bold; color:#d32f2f; white-space:nowrap; box-shadow:0 2px 4px rgba(0,0,0,0.2); display:flex; flex-direction:column; align-items:center;"><span>¥${Number(spot.price).toLocaleString()}</span><div style="position:absolute; top:100%; left:50%; transform:translateX(-50%); width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:4px solid white;"></div></div>`;
@@ -3301,29 +3285,19 @@ useEffect(() => {
         if (isNearby) {
             el.innerHTML = `<div style="position:relative; display:flex; flex-direction:column; align-items:center;"><div style="width:24px; height:24px; background:black; border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 5px rgba(0,0,0,0.3);"><div style="width:20px; height:20px; background:white; border-radius:50%; display:flex; align-items:center; justify-content:center; color:black; font-weight:bold; font-size:10px;">?</div></div><div style="width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:6px solid black; margin-top:-1px;"></div></div>`;
         } else if (isConfirmed) {
-            // ★修正：どのタブであっても「確定済み」なら青いピンを表示する
+            // ↓ 変更点: color を #1E3A8A から #000000 (黒) に変更しました
             el.innerHTML = `
                 <div style="position:relative; display:flex; flex-direction:column; align-items:center;">
                     
-                    <div style="width:${size + 6}px; height:${size + 6}px; background:${confirmedColor}; border-radius:${isDayView ? '6px' : '50%'}; display:flex; align-items:center; justify-content:center; box-shadow:0 4px 10px rgba(0,0,0,0.5);">
-                        <div style="width:${size}px; height:${size}px; background:${confirmedColor}; border-radius:${isDayView ? '5px' : '50%'}; display:flex; align-items:center; justify-content:center; color:white; font-weight:800; font-size:${currentFontSize}; border:1px solid rgba(255,255,255,0.3);">
+                    <div style="width:${size + 6}px; height:${size + 6}px; background:${gradientString}; border-radius:${isDayView ? '6px' : '50%'}; display:flex; align-items:center; justify-content:center; box-shadow:0 4px 10px rgba(0,0,0,0.5);">
+                        <div style="width:${size}px; height:${size}px; background:${confirmedColor}; border-radius:${isDayView ? '5px' : '50%'}; display:flex; align-items:center; justify-content:center; color:#000000; font-weight:800; font-size:${currentFontSize}; border:1px solid rgba(255,255,255,0.8);">
                             ${displayLabel}
                         </div>
                     </div>
                     <div style="width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent; border-top:7px solid ${confirmedColor}; margin-top:-1px;"></div>
                 </div>`;
         } else {
-            // 候補ピン（グラデーション/黄色）
-            let gradientString = '#9CA3AF';
-            if (participants.length > 0) {
-                const segmentSize = 100 / participants.length;
-                const gradientParts = participants.map((name, i) => { 
-                    const color = getUserColor(name); 
-                    return `${color} ${i * segmentSize}% ${(i + 1) * segmentSize}%`; 
-                });
-                gradientString = `conic-gradient(${gradientParts.join(', ')})`;
-            }
-
+            // ▼▼▼ 変更: 候補ピンの中にあった let gradientString = ... を削除 ▼▼▼
             el.innerHTML = `
                 <div style="position:relative; display:flex; flex-direction:column; align-items:center;">
                     ${hotelInfoHtml}
@@ -3854,39 +3828,41 @@ el.onclick = (e) => {
           
           {/* ▼▼▼ 修正: マップ右上のボタン群 ▼▼▼ */}
           {/* ▼▼▼ 修正: マップ右上のボタン群 ▼▼▼ */}
+         {/* ▼▼▼ 修正: マップ右上のボタン群 ▼▼▼ */}
           <div className="absolute top-32 right-4 z-20 flex flex-col gap-3 items-end">
              {/* 囲って検索（ペンツール）ボタン */}
              <button 
                 onClick={() => isDrawing ? stopDrawing() : startDrawing()} 
-                className={`shadow-xl font-bold transition-all duration-300 flex items-center justify-center border-2 ${
+                // ↓変更点1: flex の次に flex-col を追加して縦並びにする
+                className={`shadow-xl font-bold transition-all duration-300 flex flex-col items-center justify-center border-2 ${
                     isDrawing 
                     ? 'w-12 h-12 rounded-full bg-red-500 border-red-400 text-white animate-pulse scale-110' // 描画中（そのまま）
                     : isTrial 
-                        ? 'w-16 h-16 rounded-full bg-white text-emerald-600 shadow-2xl scale-105 hover:scale-110 border-4 border-emerald-100' // ★ お試し時: 大きく、テーマカラーのエメラルド色で目立たせる
+                        ? 'w-16 h-16 rounded-full bg-white text-emerald-600 shadow-2xl scale-105 hover:scale-110 border-4 border-emerald-100' // ★ お試し時
                         : 'w-12 h-12 rounded-full bg-white border-white text-gray-700 hover:scale-110' // 通常（本番）
                 }`}
              >
-                 {isDrawing ? <X size={24}/> : (
-                     <PenTool size={isTrial ? 28 : 20}/> // ★ アイコンサイズもお試し時は大きく
+                 {/* ↓変更点2: アイコンを少し小さくし、テキストを追加 */}
+                 {isDrawing ? (
+                     <>
+                         <X size={20}/>
+                         <span className="text-[8px] leading-none mt-0.5 tracking-tighter scale-90 whitespace-nowrap">やめる</span>
+                     </>
+                 ) : (
+                     <>
+                         <PenTool size={isTrial ? 22 : 16}/>
+                         <span className="text-[8px] leading-none mt-0.5 tracking-tighter scale-90 whitespace-nowrap">囲って検索</span>
+                     </>
                  )}
              </button>
              
              {/* ▼▼▼ ログイン（本番）時のみ表示するボタン ▼▼▼ */}
+             
+             {/* ▼▼▼ ログイン（本番）時のみ表示するボタン ▼▼▼ */}
+             {/* ▼▼▼ ログイン（本番）時のみ表示するボタン ▼▼▼ */}
              {!isTrial && (
                  <>
-                     {/* 周辺を探すボタン */}
-                     <button 
-                        onClick={handleSearchNearby} 
-                        className={`w-12 h-12 rounded-full shadow-xl transition-all duration-300 flex items-center justify-center border-2 
-                            ${nearbyCandidates.length > 0 
-                                ? 'bg-black text-white border-black hover:bg-gray-800' // 表示中
-                                : 'bg-white text-gray-700 border-white hover:bg-gray-50 hover:scale-110' // 通常
-                            } 
-                            ${isSearchingNearby ? 'animate-bounce' : ''}`}
-                        title="この周辺のスポットを探す"
-                     >
-                         {isSearchingNearby ? <Loader2 size={20} className="animate-spin text-blue-500"/> : <Binoculars size={20}/>}
-                     </button>
+                     
 
                      {/* 全体を表示ボタン */}
                      <button 
@@ -3897,10 +3873,13 @@ el.onclick = (e) => {
                                 map.current?.flyTo({ center: [lng, lat], zoom: 14 });
                             }
                         }}
-                        className="w-12 h-12 rounded-full shadow-xl bg-white text-gray-700 hover:scale-110 hover:bg-gray-50 border-2 border-white transition-all duration-300 flex items-center justify-center"
+                        // ↓変更点: flex-col を追加
+                        className="w-12 h-12 rounded-full shadow-xl bg-white text-gray-700 hover:scale-110 hover:bg-gray-50 border-2 border-white transition-all duration-300 flex flex-col items-center justify-center"
                         title="全体を表示"
                      >
-                         <Maximize size={20}/>
+                         {/* ↓変更点: アイコンを16にし、テキストを追加 */}
+                         <Maximize size={16}/>
+                         <span className="text-[8px] leading-none mt-0.5 tracking-tighter scale-90 whitespace-nowrap">全体表示</span>
                      </button>
                  </>
              )}
@@ -3996,25 +3975,7 @@ el.onclick = (e) => {
                 
                 {query && <button onClick={resetSearchState} className="p-2 hover:bg-gray-100 rounded-full text-gray-400 transition shrink-0"><X size={16}/></button>}
                 
-                {/* AIローディング表示の切り替え */}
-<div className="flex items-center shrink-0">
-  {isSearching ? (
-    // 🔍 検索中（AI補正中）の表示
-    <div className="flex items-center gap-1 bg-indigo-50 px-2 py-1.5 rounded-full border border-indigo-100 animate-pulse">
-      <Loader2 size={16} className="animate-spin text-indigo-600" />
-      <span className="text-[10px] font-black text-indigo-600 mr-1">AI</span>
-    </div>
-  ) : (
-    // 通常時のAI提案タブへの移動ボタン
-    <button 
-      onClick={() => setCurrentTab('swipe')} 
-      className="bg-gradient-to-tr from-indigo-500 to-purple-600 text-white w-10 h-10 rounded-full font-black text-xs shadow-md hover:scale-110 transition active:scale-95 flex items-center justify-center shrink-0"
-      title="AI提案ページへ"
-    >
-      AI
-    </button>
-  )}
-</div>
+         
 
 
 
