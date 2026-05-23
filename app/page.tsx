@@ -2655,7 +2655,22 @@ const now = new Date().toISOString(); // ★現在時刻
     focusedSpotIdRef.current = String(spot.id);
     isFocusingSpotRef.current = true;
 
-    // ▼▼▼ 変更点: 勝手にタブ(filterStatus)やDayを切り替える処理をすべて削除しました ▼▼▼
+    // ▼▼▼ 追加: リストが閉じていたら（all かつ高さが低い場合）、該当するリストへ切り替える ▼▼▼
+    if (filterStatus === 'all' && sheetHeight < 200) {
+        const status = spot.status === 'confirmed' ? 'confirmed' : 
+                       (spot.is_hotel || isHotel(spot.name) ? 'hotel_candidate' : 'candidate');
+        setFilterStatus(status);
+        
+        // 確定リストならDayも自動設定
+        if (status === 'confirmed' && spot.day) {
+            setSelectedConfirmDay(spot.day);
+        }
+        // 宿ならDayを設定
+        if (status === 'hotel_candidate' && spot.day) {
+            setSelectedHotelDay(spot.day);
+        }
+    }
+    // ▲▲▲ 追加ここまで ▲▲▲
 
     // --- 高さ制御 ---
     const MIN_OPEN_HEIGHT = 260;
@@ -2672,7 +2687,6 @@ const now = new Date().toISOString(); // ★現在時刻
         const el = document.createElement('div');
         el.innerHTML = `<div style="width:24px; height:24px; background:#EF4444; border:3px solid white; border-radius:50%; box-shadow:0 4px 10px rgba(239,68,68,0.4);"></div>`;
         
-        // 赤ピンをクリックしたら詳細を開く
         el.onclick = (e) => {
             e.stopPropagation();
             handlePreviewSpot(spot);
@@ -2691,7 +2705,6 @@ const now = new Date().toISOString(); // ★現在時刻
         const element = document.getElementById(`spot-item-${spot.id}`);
         
         if (container && element) {
-            // 現在開いているリストの中にそのスポットが存在する場合はスクロールする
             const offset = filterStatus === 'confirmed' ? 0 : 80;
             const topPos = element.offsetTop - offset;
             container.scrollTo({ top: topPos, behavior: 'smooth' });
@@ -2701,7 +2714,6 @@ const now = new Date().toISOString(); // ★現在時刻
                 element.classList.remove('ring-2', 'ring-red-500', 'bg-red-50');
             }, 2000);
         } else {
-            // ★追加: もし開いているリストに該当のスポットが存在しない場合は、リストを移動させずに詳細モーダルを直接開く
             handlePreviewSpot(spot);
         }
         
@@ -4009,7 +4021,12 @@ el.onclick = (e) => {
                           setFilterStatus('confirmed'); 
                           setSheetHeight(window.innerHeight * 0.65); 
                       }} 
-                      className={`px-5 py-2.5 rounded-full text-xs font-black shadow-lg backdrop-blur-md transition border flex items-center gap-1.5 hover:scale-105 active:scale-95 relative ${filterStatus === 'confirmed' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white/90 text-gray-600 border-white hover:bg-white'}`}
+                      // ▼▼▼ 修正: 選択されていない時は確定色(#60A5FA)でアンダーラインが出るように設定 ▼▼▼
+                      className={`px-5 py-2.5 rounded-full text-xs font-black shadow-lg backdrop-blur-md transition border flex items-center gap-1 hover:scale-105 active:scale-95 relative ${
+                          filterStatus === 'confirmed' 
+                          ? 'bg-blue-600 text-white border-blue-600' 
+                          : 'bg-white/90 text-gray-600 border-white hover:bg-white underline decoration-2 decoration-[#60A5FA] underline-offset-4'
+                      }`}
                   >
                       <CheckCircle size={14}/> 確定
                       {filterStatus !== 'confirmed' && unreadCounts.confirmed > 0 && (
@@ -4033,7 +4050,12 @@ el.onclick = (e) => {
                           setFilterStatus('hotel_candidate'); 
                           setSheetHeight(window.innerHeight * 0.65); 
                       }} 
-                      className={`px-5 py-2.5 rounded-full text-xs font-black shadow-lg backdrop-blur-md transition border flex items-center gap-1.5 hover:scale-105 active:scale-95 relative ${filterStatus === 'hotel_candidate' ? 'bg-orange-500 text-white border-orange-500' : 'bg-white/90 text-gray-600 border-white hover:bg-white'}`}
+                      // ▼▼▼ 修正: アンダーラインの色を #F59E0B に変更 ▼▼▼
+                      className={`px-5 py-2.5 rounded-full text-xs font-black shadow-lg backdrop-blur-md transition border flex items-center gap-1 hover:scale-105 active:scale-95 relative ${
+                          filterStatus === 'hotel_candidate' 
+                          ? 'bg-orange-500 text-white border-orange-500' 
+                          : 'bg-white/90 text-gray-600 border-white hover:bg-white underline decoration-2 decoration-[#F59E0B] underline-offset-4'
+                      }`}
                   >
                       <BedDouble size={14}/> 宿
                       {filterStatus !== 'hotel_candidate' && unreadCounts.hotel_candidate > 0 && (
