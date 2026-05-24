@@ -1033,31 +1033,45 @@ const onDrop = async (e: React.DragEvent, targetTimelineIndex: number) => {
 
   // ▼▼▼ 修正: 出発時間が変更されたら滞在時間を自動計算 ▼▼▼
   // ▼▼▼ 修正: 出発時間が変更されたら滞在時間を自動計算（空ならリセット） ▼▼▼
-  const handleDepartureChange = (index: number, newDeparture: string) => {
+  // ▼▼▼ 修正: 出発時間が変更されたら滞在時間を自動計算 ＆ DB同期 ▼▼▼
+  const handleDepartureChange = async (index: number, newDeparture: string) => {
     const newTimeline = [...timeline];
     if (newTimeline[index]) {
         newTimeline[index].departure = newDeparture;
         
-        // 片方でも空なら滞在時間を未定(null)に戻す
+        let stayTime = newTimeline[index].stay_min;
         if (!newDeparture || !newTimeline[index].arrival) {
             newTimeline[index].stay_min = null;
+            stayTime = null;
         } else {
-            // 両方揃っていれば計算
             const diff = calculateTimeDiff(newTimeline[index].arrival, newDeparture);
             if (diff >= 0) {
                 newTimeline[index].stay_min = diff;
                 if (newTimeline[index].spot) {
                     newTimeline[index].spot.stay_time = diff;
                 }
+                stayTime = diff;
             }
         }
         setTimeline(newTimeline);
+
+        // ★追加: 変更された出発時間と滞在時間をDBに同期
+        if (newTimeline[index].type === 'spot' && roomId) {
+            const spotId = newTimeline[index].spot.id;
+            if (spotId && !String(spotId).startsWith('spot-') && !String(spotId).startsWith('temp-')) {
+                await supabase.from('spots').update({
+                    departure: newDeparture,
+                    stay_time: stayTime
+                }).eq('id', spotId);
+            }
+        }
     }
   };
 
   // ▼▼▼ 修正: 到着・出発時間をリセットしたら滞在時間も未定に戻す ▼▼▼
 // ▼▼▼ 修正: 時間リセット前に確認を入れる ▼▼▼
-  const handleTimeReset = (index: number) => {
+  // ▼▼▼ 修正: 時間リセット時もDBをクリア ▼▼▼
+  const handleTimeReset = async (index: number) => {
       if (!confirm("時間をリセットしてもよろしいですか？")) return;
 
       const newTimeline = [...timeline];
@@ -1069,29 +1083,53 @@ const onDrop = async (e: React.DragEvent, targetTimelineIndex: number) => {
               newTimeline[index].spot.stay_time = null;
           }
           setTimeline(newTimeline);
+
+          // ★追加: DB上の時間設定をクリア
+          if (newTimeline[index].type === 'spot' && roomId) {
+              const spotId = newTimeline[index].spot.id;
+              if (spotId && !String(spotId).startsWith('spot-') && !String(spotId).startsWith('temp-')) {
+                  await supabase.from('spots').update({
+                      arrival: null,
+                      departure: null,
+                      stay_time: null
+                  }).eq('id', spotId);
+              }
+          }
       }
   };
 
-  // ▼▼▼ 修正: 到着時間が変更されたら滞在時間を自動計算（空ならリセット） ▼▼▼
-  const handleArrivalChange = (index: number, newArrival: string) => {
+  // ▼▼▼ 修正: 到着時間が変更されたら滞在時間を自動計算 ＆ DB同期 ▼▼▼
+  const handleArrivalChange = async (index: number, newArrival: string) => {
     const newTimeline = [...timeline];
     if (newTimeline[index]) {
         newTimeline[index].arrival = newArrival;
 
-        // 片方でも空なら滞在時間を未定(null)に戻す
+        let stayTime = newTimeline[index].stay_min;
         if (!newArrival || !newTimeline[index].departure) {
             newTimeline[index].stay_min = null;
+            stayTime = null;
         } else {
-            // 両方揃っていれば計算
             const diff = calculateTimeDiff(newArrival, newTimeline[index].departure);
             if (diff >= 0) {
                 newTimeline[index].stay_min = diff;
                 if (newTimeline[index].spot) {
                     newTimeline[index].spot.stay_time = diff;
                 }
+                stayTime = diff;
             }
         }
         setTimeline(newTimeline);
+
+        // ★追加: 変更された到着時間と滞在時間をDBに同期
+        if (newTimeline[index].type === 'spot' && roomId) {
+            const spotId = newTimeline[index].spot.id;
+            if (spotId && !String(spotId).startsWith('spot-') && !String(spotId).startsWith('temp-')) {
+                await supabase.from('spots').update({
+                    arrival: newArrival,
+                    stay_time: stayTime
+                }).eq('id', spotId);
+            }
+        }
     }
   };
 

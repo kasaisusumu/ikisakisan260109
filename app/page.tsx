@@ -130,10 +130,20 @@ const TRANSPORT_MODES = [
   { id: 'ship', icon: <Ship size={12}/>, label: '船' },
 ];
 
+// ▼▼▼ 修正: 参加者の色分けを50色に拡張 ▼▼▼
 const UD_COLORS = [
+    // 1〜20色目（これまで通り、一番見分けがつきやすい鮮やかなベースカラー）
     '#F59E0B', '#3B82F6', '#10B981', '#EF4444', '#8B5CF6', '#EC4899', '#6366F1', '#14B8A6',
     '#F97316', '#06B6D4', '#84CC16', '#EAB308', '#D946EF', '#64748B', '#A855F7', '#FB7185',
-    '#22C55E', '#0EA5E9', '#F43F5E', '#78716C'
+    '#22C55E', '#0EA5E9', '#F43F5E', '#78716C',
+    
+    // 21〜35色目（ベースより一段階「濃い」または「深い」トーンの色）
+    '#B91C1C', '#1D4ED8', '#047857', '#B45309', '#6D28D9', '#BE185D', '#4338CA', '#0F766E',
+    '#C2410C', '#0369A1', '#4D7C0F', '#A16207', '#A21CAF', '#334155', '#7E22CE', 
+    
+    // 36〜50色目（ベースより一段階「明るい」または色相をずらしたトーンの色）
+    '#15803D', '#0E7490', '#BE123C', '#F87171', '#60A5FA', '#34D399', '#FBBF24', '#A78BFA',
+    '#F472B6', '#818CF8', '#2DD4BF', '#FB923C', '#38BDF8', '#A3E635', '#C084FC'
 ];
 const getUDColor = (name: string) => {
   if (!name) return '#9CA3AF';
@@ -162,7 +172,8 @@ const calculateSimpleSchedule = (items: any[], startTime: string = "") => {
             ...item,
             arrival: item.arrival || null,
             departure: item.departure || null,
-            stay_min: item.stay_min || (item.spot ? item.spot.stay_time : 60) || 60
+            // ▼ 60分の上書きを削除し、設定値があればそれを、なければ null を維持する（??演算子を使用）
+            stay_min: item.stay_min ?? (item.spot ? (item.spot.stay_time || null) : null)
         }));
     }
     let currentTime = new Date(`2000-01-01T${startTime}:00`);
@@ -1189,13 +1200,15 @@ const [arrivalModalSpots, setArrivalModalSpots] = useState<any[]>([]); // ★追
                 
                 tempTimeline = savedData.timeline.map((item: any) => {
                     if (item.type === 'spot') {
-                        // ★重要: ここでDBに存在しない（Day移動した）スポットは freshSpot が undefined になる
                         const freshSpot = validSpotsInDB.find(s => String(s.id) === String(item.spot.id));
                         
-                        // DBにない(=移動した)スポットは null を返して消去する
+                        // ★修正: 他のメンバーがDB上の時間を更新した際、ローカルのタイムラインにもリアルタイムで上書き反映する
                         return freshSpot ? { 
                             ...item, 
                             spot: { ...item.spot, ...freshSpot },
+                            arrival: freshSpot.arrival !== undefined ? freshSpot.arrival : item.arrival,
+                            departure: freshSpot.departure !== undefined ? freshSpot.departure : item.departure,
+                            stay_min: freshSpot.stay_time !== undefined ? freshSpot.stay_time : item.stay_min,
                             image: freshSpot.image_url || item.image 
                         } : null; 
                     }
@@ -1225,16 +1238,24 @@ const [arrivalModalSpots, setArrivalModalSpots] = useState<any[]>([]); // ★追
     
     let finalTimeline = cleanTimeline;
 
-    // 3. 新規またはDB順での初期生成
+    /// 3. 新規またはDB順での初期生成
+   // 3. 新規またはDB順での初期生成
     if (finalTimeline.length === 0 && validSpotsInDB.length > 0) {
         validSpotsInDB.sort((a, b) => (a.order || 0) - (b.order || 0));
         validSpotsInDB.forEach((spot, i) => {
-             finalTimeline.push({ type: 'spot', spot, stay_min: spot.stay_time || null });
+             // ★修正: DBに保存されている到着・出発・滞在時間を初期値としてタイムラインに流し込む
+             finalTimeline.push({ 
+                 type: 'spot', 
+                 spot, 
+                 arrival: spot.arrival || null,
+                 departure: spot.departure || null,
+                 stay_min: spot.stay_time || null 
+             });
             if (i < validSpotsInDB.length - 1) { 
                  finalTimeline.push({ type: 'travel', duration_min: null, transport_mode: 'walk' }); 
             }
          });
-         finalTimeline = calculateSimpleSchedule(finalTimeline, "09:00");
+         finalTimeline = calculateSimpleSchedule(finalTimeline, "");
     } else {
         // DBにあるのにタイムラインにない（新しくこのDayに移動してきた）スポットを追加
         const timelineSpotIds = new Set(finalTimeline.filter(t => t.type === 'spot').map(t => String(t.spot.id)));
@@ -3862,8 +3883,9 @@ el.onclick = (e) => {
                      </>
                  ) : (
                      <>
+                         <span className="text-[8px] leading-none mt-0.5 tracking-tighter scale-90 whitespace-nowrap">かこって</span>
                          <PenTool size={isTrial ? 22 : 16}/>
-                         <span className="text-[8px] leading-none mt-0.5 tracking-tighter scale-90 whitespace-nowrap">囲って検索</span>
+                         <span className="text-[8px] leading-none mt-0.5 tracking-tighter scale-90 whitespace-nowrap">宿検索</span>
                      </>
                  )}
              </button>

@@ -35,6 +35,24 @@ const generateUUID = () => {
   });
 };
 
+// ▼▼▼ 追加: アイコンの色を生成する関数 ▼▼▼
+const UD_COLORS = [
+    '#F59E0B', '#3B82F6', '#10B981', '#EF4444', '#8B5CF6', '#EC4899', '#6366F1', '#14B8A6',
+    '#F97316', '#06B6D4', '#84CC16', '#EAB308', '#D946EF', '#64748B', '#A855F7', '#FB7185',
+    '#22C55E', '#0EA5E9', '#F43F5E', '#78716C',
+    '#B91C1C', '#1D4ED8', '#047857', '#B45309', '#6D28D9', '#BE185D', '#4338CA', '#0F766E',
+    '#C2410C', '#0369A1', '#4D7C0F', '#A16207', '#A21CAF', '#334155', '#7E22CE', 
+    '#15803D', '#0E7490', '#BE123C', '#F87171', '#60A5FA', '#34D399', '#FBBF24', '#A78BFA',
+    '#F472B6', '#818CF8', '#2DD4BF', '#FB923C', '#38BDF8', '#A3E635', '#C084FC'
+];
+
+const getUserColor = (name: string) => {
+    if (!name) return '#9CA3AF';
+    let hash = 0;
+    for (let i = 0; i < name.length; i++) { hash = name.charCodeAt(i) + ((hash << 5) - hash); }
+    return UD_COLORS[Math.abs(hash) % UD_COLORS.length];
+};
+
 export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
   const router = useRouter();
   const searchParams = useSearchParams(); 
@@ -697,6 +715,31 @@ export default function WelcomePage({ inviteRoomId }: WelcomePageProps) {
                                 <AlertTriangle size={12} /> この名前は既に使用されています
                             </p>
                         )}
+
+                        {/* ▼▼▼ 追加: 参加中メンバーの表示UI ▼▼▼ */}
+                        {existingMembers.length > 0 && (
+                            <div className="mt-6 bg-slate-50 rounded-2xl p-4 border border-slate-100">
+                                <p className="text-xs font-bold text-slate-500 mb-3 text-center">
+                                    現在参加中のメンバー ({existingMembers.length}人)
+                                </p>
+                                <div className="flex flex-wrap justify-center gap-3">
+                                    {existingMembers.map(member => (
+                                        <div key={member} className="flex flex-col items-center gap-1">
+                                            <div 
+                                                className="w-10 h-10 rounded-full flex items-center justify-center text-white text-sm font-bold shadow-sm"
+                                                style={{ backgroundColor: getUserColor(member) }}
+                                            >
+                                                {member.slice(0, 1)}
+                                            </div>
+                                            <span className="text-[10px] font-bold text-slate-600 truncate max-w-[50px]">
+                                                {member}
+                                            </span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                        {/* ▲▲▲ 追加ここまで ▲▲▲ */}
                     </div>
                 )}
 
