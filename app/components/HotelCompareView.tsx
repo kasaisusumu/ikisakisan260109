@@ -779,7 +779,7 @@ export default function HotelCompareView({
                                     <a 
                                         href={targetUrl} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}
                                         className="flex-[1.2] bg-[#BF0000] text-white py-3 rounded-xl font-bold text-[11px] flex items-center justify-center gap-1 hover:bg-red-800 transition-colors"
-                                    >楽天で見る <ExternalLink size={14} /></a>
+                                    >楽天で見る(PR) <ExternalLink size={14} /></a>
                                 </div>
                             </div>
                         );

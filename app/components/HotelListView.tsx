@@ -875,7 +875,7 @@ const opacity = 0.6 + (reviewRatio * 0.4);
                                             onClick={(e) => { e.stopPropagation(); logAffiliateClick(hotel.name, "hotel_search_list"); }}
                                             className="bg-[#BF0000] text-white py-2.5 rounded-xl font-bold text-[11px] flex items-center justify-center gap-1 shadow-sm hover:bg-red-800 transition-colors"
                                         >
-                                            楽天で見る <ExternalLink size={14} />
+                                            楽天で見る(PR) <ExternalLink size={14} />
                                         </a>
                                         <button 
                                             onClick={(e) => { e.stopPropagation(); setDetailModalHotel(hotel); }}
@@ -988,7 +988,7 @@ const opacity = 0.6 + (reviewRatio * 0.4);
                           onClick={() => logAffiliateClick(detailModalHotel.name, "hotel_search_detail")}
                           className={`bg-[#BF0000] text-white py-3.5 rounded-2xl font-bold text-sm active:scale-95 transition-all shadow-md flex items-center justify-center gap-2 hover:bg-red-800 ${isTrial ? 'w-full' : 'flex-[1]'}`}
                       >
-                          <span>楽天で見る</span><ExternalLink size={16}/>
+                          <span>楽天で見る(PR)</span><ExternalLink size={16}/>
                       </a>
                   </div>
               </div>
