@@ -725,12 +725,11 @@ if (step === 'intro') {
                     </button>
 
                     <button 
-                        onClick={() => checkIncognitoAndExecute(() => router.push('/?trial=true'))}
-                        className="flex-1 bg-white text-emerald-800 border-2 border-emerald-100 py-4 rounded-[1.2rem] font-bold text-xs shadow-sm hover:bg-emerald-50 active:scale-95 transition-all flex items-center justify-center gap-2 leading-tight"
-                    >
-                        <MapPinned size={16} className="shrink-0"/>
-                        <span>機能をお試し</span>
-                    </button>
+    onClick={() => checkIncognitoAndExecute(() => router.push('/?room=7deb455b-6bf9-4271-847d-990e451b68f7&trial=true'))}
+    className="flex-1 bg-white text-emerald-800 border-2 border-emerald-100 py-4 rounded-[1.2rem] font-bold text-xs shadow-sm hover:bg-emerald-50 active:scale-95 transition-all flex items-center justify-center gap-2 leading-tight"
+>
+    機能をお試し
+</button>
                 </div>
             </div>
         </div>
