@@ -629,7 +629,7 @@ if (step === 'intro') {
                                 </div>
                                 <div className="px-2 pb-2">
                                     <h4 className="text-lg font-black text-slate-800 mb-2">
-                                        宿は、指で囲って探す。<br/><span className="text-emerald-600">「コスパ最強」</span>が一目でわかる
+                                        宿は、指で囲って探す。<br/>散布図で<span className="text-emerald-600">「コスパ最強」</span>の宿が<br/>一目瞭然
                                     </h4>
                                     <p className="text-xs text-slate-500 font-medium leading-relaxed">
                                         泊まりたいエリアをマップ上で指でなぞるだけで、一気に空室検索。結果は「評価 × 価格」の散布図になるので、一番コスパの良い宿を瞬時に見つけ出せます。
