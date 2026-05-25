@@ -18,7 +18,7 @@ import {
   Save, XCircle, Edit3, ArrowRight, Maximize,
   Car, Train, Footprints, Zap, Plane, Ship, Camera, Globe, ArrowLeftCircle, Database,
   Banknote, ExternalLink as ExternalLinkIcon, StickyNote, Sparkles,Bus,
-  CalendarCheck, CalendarX, User, AlertCircle, Check // ← ★これらを追加 // ← ★ここに追加
+  CalendarCheck, CalendarX, User, AlertCircle, Check, Utensils // ← ★これらを追加 // ← ★ここに追加
 } from 'lucide-react';
 import TutorialModal from './components/TutorialModal'; // ★追加
 import BottomNav from './components/BottomNav';
@@ -1836,6 +1836,33 @@ const handleSearch = async (overrideQuery?: string) => {
             console.error("Backend search failed", e);
         }
 
+        // ▼▼▼ ここから追加: ホットペッパーグルメの検索結果をマージ ▼▼▼
+try {
+    // ※バックエンドに用意したホットペッパー検索用のAPIを叩く想定
+    const hotpepperRes = await fetch(`${API_BASE_URL}/api/search_hotpepper?query=${encodeURIComponent(activeQuery)}&lat=${lat}&lng=${lng}`);
+    if (hotpepperRes.ok) {
+        const hpData = await hotpepperRes.json();
+        // hpDataの構造は実際のAPIレスポンスに合わせてください
+        if (hpData.results && Array.isArray(hpData.results)) {
+            const hpSpots = hpData.results.map((s: any) => ({
+                id: `hp-${s.id}`,
+                name: s.name,
+                place_name: s.address,
+                center: [s.lng, s.lat], // [経度, 緯度] の配列
+                image_url: s.logo_image, // APIから画像URLが取れるなら入れる
+                is_hotpepper: true // 出し分け用のフラグ
+            }));
+            
+            // 既存のresultsと名前がかぶっていないものだけ追加
+            const uniqueHpSpots = hpSpots.filter((hp: any) => !results.some(r => r.name === hp.name));
+            results = [...results, ...uniqueHpSpots];
+        }
+    }
+} catch (e) {
+    console.error("Hotpepper search failed", e);
+}
+// ▲▲▲ 追加ここまで ▲▲▲
+
         // ★★★ 3. フォールバック: キャッシュもバックエンドも「0件」だった場合のみMapbox APIを叩く ★★★
         if (results.length === 0 && MAPBOX_TOKEN) {
             try {
@@ -1940,7 +1967,14 @@ const handleSearch = async (overrideQuery?: string) => {
         showResultOnMap(name, address, center, isSaved);
         
         const img = await fetchSpotImage(name);
+        // ▼▼▼ 修正: すでに画像URLを持っていればそれを使い、無ければ取得しにいく ▼▼▼
+    if (suggestion.image_url) {
+        setSelectedResult((prev: any) => ({...prev, image_url: suggestion.image_url}));
+    } else {
+        const img = await fetchSpotImage(name);
         if(img) setSelectedResult((prev: any) => ({...prev, image_url: img}));
+    }
+    // ▲▲▲ 修正ここまで ▲▲▲
         
         // 履歴に追加
         addToSearchHistory({
@@ -2778,12 +2812,16 @@ const now = new Date().toISOString(); // ★現在時刻
       }
   };
 
-  const getIconForSuggestion = (item: any) => {
+ // 1150行目付近: getIconForSuggestion 関数
+const getIconForSuggestion = (item: any) => {
     if (item.is_room_cache) return <Database size={16} className="text-blue-500 mt-0.5 shrink-0" />;
     if (item.is_history) return <History size={16} className="text-gray-600 mt-0.5 shrink-0" />;
+    
+    // ▼▼▼ 追加 ▼▼▼
+    if (item.is_hotpepper) return <Utensils size={16} className="text-orange-500 mt-0.5 shrink-0" />; 
+    
     return <MapIcon size={16} className="text-gray-600 mt-0.5 shrink-0" />;
-  };
-
+};
   
 
   const updateDrawSource = (coords: number[][]) => {
@@ -4300,6 +4338,26 @@ el.onclick = (e) => {
         </button>
     )
 )}
+
+{/* ▼▼▼ ここから追加: ホットペッパーグルメ用の詳細ボタン ▼▼▼ */}
+{/* URLにhotpepperが含まれているか、またはIDがhp-から始まるかで判定 */}
+{(selectedResult.is_hotpepper || (selectedResult.url && selectedResult.url.includes('hotpepper.jp')) || (selectedResult.id && String(selectedResult.id).startsWith('hp-'))) && (
+    <button 
+        onClick={() => {
+            let hpUrl = selectedResult.url;
+            if (!hpUrl || !hpUrl.includes('hotpepper.jp')) {
+                const hpId = String(selectedResult.id).replace('hp-', '');
+                hpUrl = `https://www.hotpepper.jp/str${hpId}/`;
+            }
+            window.open(hpUrl, '_blank');
+        }} 
+        className="flex items-center gap-1 bg-[#FF7F00] text-white px-3 py-2 rounded-lg text-[10px] font-bold hover:bg-[#E06F00] transition whitespace-nowrap shrink-0 shadow-sm"
+    >
+        <span className="opacity-75 text-[9px] border border-white/50 px-0.5 rounded-[2px] mr-0.5">PR</span>
+        ホットペッパーで見る <ExternalLink size={12}/>
+    </button>
+)}
+{/* ▲▲▲ ここまで追加 ▲▲▲ */}
                       {/* ▲▲▲ 修正ここまで ▲▲▲ */}
 {/* ▲▲▲ 修正ここまで ▲▲▲ */}
 
@@ -4357,17 +4415,24 @@ el.onclick = (e) => {
                   ) : (
                      <button
     onClick={() => { 
+        // ★追加: ホットペッパーの検索結果ならURLを生成して保存する
+        const isHp = selectedResult.is_hotpepper || (selectedResult.id && String(selectedResult.id).startsWith('hp-'));
+        const generatedUrl = isHp ? `https://www.hotpepper.jp/str${String(selectedResult.id).replace('hp-', '')}/` : "";
+
         addSpot({ 
             name: selectedResult.text, 
             description: selectedResult.place_name, 
-            // ▼▼▼ 修正: 座標のフォールバックを追加
             coordinates: selectedResult.center || selectedResult.coordinates, 
-            // ▼▼▼ 追加: 画像とホテル情報も保存
             image_url: selectedResult.image_url,
             is_hotel: selectedResult.is_hotel,
+            url: selectedResult.url || generatedUrl, // ★ここでURLを保存
             status: 'candidate' 
         }); 
-        setSelectedResult((prev: any) => ({...prev, is_saved: true})); 
+        setSelectedResult((prev: any) => ({
+            ...prev, 
+            is_saved: true,
+            url: prev.url || generatedUrl // 画面上にも即座に反映
+        })); 
     }} 
     className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 shadow-lg hover:bg-blue-700 transition active:scale-95"
 >
@@ -5116,6 +5181,27 @@ el.onclick = (e) => {
             )
         )}
         {/* ▲▲▲ 修正ここまで ▲▲▲ */}
+
+        {/* ▼▼▼ ここから追加: リスト内のグルメボタン ▼▼▼ */}
+{/* ▼▼▼ ここから追加: リスト内のグルメボタン ▼▼▼ */}
+{(spot.is_hotpepper || (spot.url && spot.url.includes('hotpepper.jp')) || (spot.id && String(spot.id).startsWith('hp-'))) && (
+    <button 
+        onClick={(e) => { 
+            e.stopPropagation();
+            let hpUrl = spot.url;
+            if (!hpUrl || !hpUrl.includes('hotpepper.jp')) {
+                const hpId = String(spot.id).replace('hp-', '');
+                hpUrl = `https://www.hotpepper.jp/str${hpId}/`;
+            }
+            window.open(hpUrl, '_blank'); 
+        }}
+        className="flex items-center gap-1 bg-[#FF7F00] text-white px-2 py-0.5 rounded text-[9px] font-bold hover:bg-[#E06F00] transition shrink-0 shadow-sm"
+    >
+        <span className="opacity-75 text-[8px] border border-white/50 px-0.5 rounded-[2px]">PR</span>
+        グルメ <ExternalLink size={8}/>
+    </button>
+)}
+{/* ▲▲▲ ここまで追加 ▲▲▲ */}
         
         {/* 削除ボタン */}
         <button onClick={(e) => { e.stopPropagation(); removeSpot(spot); }} className="p-1 text-gray-300 hover:text-red-500 transition">

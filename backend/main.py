@@ -29,6 +29,8 @@ MAPBOX_ACCESS_TOKEN = os.getenv("MAPBOX_ACCESS_TOKEN")
 GEOAPIFY_API_KEY = os.getenv("GEOAPIFY_API_KEY")
 RAKUTEN_APP_ID = os.getenv("RAKUTEN_APP_ID")
 
+HOTPEPPER_API_KEY = os.getenv("HOTPEPPER_API_KEY")
+
 # HTTPクライアント
 http_client = None
 
@@ -1043,3 +1045,79 @@ async def get_spot_info(query: str, lat: Optional[float] = None, lng: Optional[f
         data["comment"] = data.get("comment") or wiki.get("summary") or ""
         return data
     return {"name": query, "description": "", "image_url": wiki.get("image_url"), "comment": wiki.get("summary") or ""}
+
+ # ==========================================
+# ホットペッパーグルメ検索API (ファイルの末尾に配置)
+# ==========================================
+@app.get("/api/search_hotpepper")
+async def search_hotpepper(query: str, lat: Optional[float] = None, lng: Optional[float] = None):
+    """ホットペッパーグルメAPIでの店舗検索 (周辺検索 -> 全国検索の2段構え)"""
+    global http_client
+
+    if not HOTPEPPER_API_KEY:
+        return {"results": []}
+
+    if http_client is None: 
+        return {"results": []}
+
+    cache_key = f"hotpepper_v2:{query}:{lat}:{lng}"
+    cached = get_cache(cache_key)
+    if cached: 
+        return cached
+
+    url = "https://webservice.recruit.co.jp/hotpepper/gourmet/v1/"
+
+    # API呼び出し用の内部関数
+    async def fetch_hp(use_location: bool):
+        params = {
+            "key": HOTPEPPER_API_KEY,
+            "keyword": query,
+            "format": "json",
+            "count": 10
+        }
+        if use_location and lat is not None and lng is not None:
+            params["lat"] = lat
+            params["lng"] = lng
+            params["range"] = 5 # 3000m圏内
+
+        res = await fetch_with_retry(http_client, url, params=params, initial_timeout=5.0)
+        if res and res.status_code == 200:
+            data = res.json()
+            return data.get("results", {}).get("shop", [])
+        return []
+
+    try:
+        # 【ステップ1】まずは画面の中心点（lat/lng）を基準に周辺検索
+        shops = await fetch_hp(use_location=True)
+
+        # 【ステップ2】結果が0件で、かつ位置情報が指定されていた場合は「全国検索」に切り替え
+        if not shops and lat is not None and lng is not None:
+            print(f"🔄 周辺に見つからないため、全国検索に切り替えます: {query}")
+            shops = await fetch_hp(use_location=False)
+
+        results = []
+        for shop in shops:
+            # 高画質な画像(photo.pc.l)があれば優先し、なければロゴ画像
+            image_url = shop.get("photo", {}).get("pc", {}).get("l") or shop.get("logo_image")
+
+            results.append({
+                "id": shop.get("id"),
+                "name": shop.get("name"),
+                "address": shop.get("address"),
+                "lat": float(shop.get("lat", 0)),
+                "lng": float(shop.get("lng", 0)),
+                "logo_image": image_url,
+                "is_hotpepper": True
+            })
+
+        response_data = {"results": results}
+        
+        # 結果がある場合のみキャッシュ
+        if results:
+            set_cache(cache_key, response_data)
+            
+        return response_data
+
+    except Exception as e:
+        print(f"Hotpepper Search Error: {e}")
+        return {"results": []}
