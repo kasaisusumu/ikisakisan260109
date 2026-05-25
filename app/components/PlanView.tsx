@@ -365,20 +365,21 @@ const [reservationTargetSpot, setReservationTargetSpot] = useState<any | null>(n
   // 1. calculateSchedule を先に定義 (useEffectで使用するため)
  // PlanView.tsx
 
-  const calculateSchedule = (currentTimeline: any[]) => {
-      if (!startTime) {
-        return currentTimeline.map((item) => ({
-            ...item,
-            arrival: item.arrival || null,
-            departure: item.departure || null,
-            // ▼▼▼ 修正: デフォルトの60分フォールバックを削除 (undefinedならそのまま) ▼▼▼
-            stay_min: item.stay_min ?? (item.type === 'spot' ? (item.spot.stay_time || null) : undefined),
-            
-            // ▼▼▼ 修正: ここが 30 になっていたのを null に変更 ▼▼▼
-            // 修正前: duration_min: item.duration_min ?? (item.type === 'travel' ? 30 : undefined),
-            duration_min: item.duration_min ?? (item.type === 'travel' ? null : undefined),
-        }));
-    }
+  // PlanView.tsx (140行目付近)
+const calculateSchedule = (currentTimeline: any[]) => {
+    if (!startTime) {
+      return currentTimeline.map((item) => ({
+          ...item,
+          // ★修正: ここでも秒数付きの文字列を hh:mm に丸める
+          arrival: item.arrival ? item.arrival.slice(0, 5) : null,
+          departure: item.departure ? item.departure.slice(0, 5) : null,
+          stay_min: item.stay_min ?? (item.type === 'spot' ? (item.spot.stay_time || null) : undefined),
+          duration_min: item.duration_min ?? (item.type === 'travel' ? null : undefined),
+          transport_departure: item.transport_departure ? item.transport_departure.slice(0, 5) : null,
+          transport_arrival: item.transport_arrival ? item.transport_arrival.slice(0, 5) : null,
+      }));
+  }
+  // --- 省略（startTimeがある場合のロジックはそのまま） ---
       let currentTime = new Date(`2000-01-01T${startTime}:00`);
       const newTimeline = currentTimeline.map((item) => {
           const newItem = { ...item };
@@ -469,90 +470,58 @@ const [reservationTargetSpot, setReservationTargetSpot] = useState<any | null>(n
   // 4. 同期処理 (activeDaySpots を使用)
 // 4. 同期処理 (activeDaySpots を使用)
   // ★修正: 型変換を厳密に行い、データの変更（予約状態など）を確実に反映させる
-  useEffect(() => {
-      // 1. この日の有効なスポットリストを取得（dayを数値に変換して比較）
-      let currentActiveSpots = spots.filter(s => s.status === 'confirmed' && Number(s.day) === selectedDay);
+ // PlanView.tsx (430行目付近のuseEffect内を差し替え)
+// PlanView.tsx (430行目付近)
+useEffect(() => {
+    let currentActiveSpots = spots.filter(s => s.status === 'confirmed' && Number(s.day) === selectedDay);
 
-      // 前日の宿を取得してリストの先頭に追加
-      if (selectedDay > 1) {
-          const prevDayHotel = spots.find(s => 
-              s.status === 'confirmed' && 
-              Number(s.day) === selectedDay - 1 && 
-              (s.is_hotel || s.category === 'hotel' || /ホテル|旅館|宿/.test(s.name))
-          );
-          // まだリストに含まれていなければ追加
-          if (prevDayHotel && !currentActiveSpots.find(s => String(s.id) === String(prevDayHotel.id))) {
-              currentActiveSpots = [prevDayHotel, ...currentActiveSpots];
-          }
-      }
-
-      const activeSpotIds = new Set(currentActiveSpots.map(s => String(s.id)));
-      const seenSpotIds = new Set<string>();
-      let cleanTimeline: any[] = [];
-
-      // 既存のタイムラインを走査して、最新のスポット情報で更新
-      timeline.forEach(item => {
-          if (item.type === 'travel') {
-              cleanTimeline.push(item);
-              return;
-          }
-          
-          if (!item.spot.id) return;
-          const sId = String(item.spot.id);
-          
-          // この日に存在するスポットなら維持＆最新データマージ
-          if (activeSpotIds.has(sId) && !seenSpotIds.has(sId)) {
-              const freshSpot = currentActiveSpots.find(s => String(s.id) === sId);
-              cleanTimeline.push({
-                  ...item,
-                  // ★重要: ここで最新の freshSpot 情報（予約ステータス等）を確実に上書きマージする
-                  spot: { ...item.spot, ...(freshSpot || {}) },
-                  image: (freshSpot && freshSpot.image_url) || item.image
-              });
-              seenSpotIds.add(sId);
-          }
-      });
-
-      // 新規追加されたスポットがあれば末尾に追加
-      // 新規追加されたスポットがあれば末尾に追加
-      const newSpots = currentActiveSpots.filter(s => !seenSpotIds.has(String(s.id)));
-      newSpots.forEach(s => {
-          if (cleanTimeline.length > 0 && cleanTimeline[cleanTimeline.length - 1].type === 'spot') {
-              // ▼▼▼ 修正: デフォルトを徒歩に変更 ▼▼▼
-              cleanTimeline.push({ type: 'travel', duration_min: null, transport_mode: 'walk' });
-          }
-          cleanTimeline.push({ type: 'spot', spot: s, stay_min: null });
-      });
-
-      // 構造の正規化（スポット-移動-スポット の形に整える）
-     // 構造の正規化（スポット-移動-スポット の形に整える）
-      const normalized: any[] = [];
-      cleanTimeline.forEach((item) => {
-          if (item.type === 'spot') {
-              if (normalized.length > 0 && normalized[normalized.length - 1].type === 'spot') {
-    normalized.push({ type: 'travel', duration_min: null, transport_mode: 'car' });
-}
-              normalized.push(item);
-          } else if (item.type === 'travel') {
-              if (normalized.length === 0) return;
-              // ▼▼▼ 修正: 連続する移動を許可するため、重複チェックを削除 ▼▼▼
-              // if (normalized[normalized.length - 1].type === 'travel') return; <-- これを削除
-              normalized.push(item);
-          }
-      });
-      if (normalized.length > 0 && normalized[normalized.length - 1].type === 'travel') {
-          normalized.pop();
-      }
-
-      if (JSON.stringify(normalized) !== JSON.stringify(timeline)) {
-        setTimeline(calculateSchedule(normalized));
-        // ▼ ここを追加：タイムラインが作成されたら表示フラグをオンにする
-        if (normalized.length > 0) {
-            setIsPlanGenerated(true);
+    if (selectedDay > 1) {
+        const prevDayHotel = spots.find(s => 
+            s.status === 'confirmed' && 
+            Number(s.day) === selectedDay - 1 && 
+            (s.is_hotel || s.category === 'hotel' || /ホテル|旅館|宿/.test(s.name))
+        );
+        if (prevDayHotel && !currentActiveSpots.find(s => String(s.id) === String(prevDayHotel.id))) {
+            currentActiveSpots = [prevDayHotel, ...currentActiveSpots];
         }
     }
 
-  }, [activeDaySpots, timeline.length]); // 依存配列は activeDaySpots 推奨 (前の修正同様)
+    currentActiveSpots.sort((a, b) => (a.order || 0) - (b.order || 0));
+
+    const cleanTimeline: any[] = [];
+    
+    currentActiveSpots.forEach((spot, idx) => {
+        if (idx > 0) {
+            cleanTimeline.push({
+                type: 'travel',
+                duration_min: spot.transport_duration ?? null,
+                transport_mode: spot.transport_mode || 'walk',
+                // ★秒数をカット
+                transport_departure: spot.transport_departure ? spot.transport_departure.slice(0, 5) : null,
+                transport_arrival: spot.transport_arrival ? spot.transport_arrival.slice(0, 5) : null,
+                cost: spot.transport_cost || null,
+                note: spot.transport_note || null
+            });
+        }
+        
+        cleanTimeline.push({
+            type: 'spot',
+            spot: spot,
+            // ★秒数をカット (これがないとリロードで消えます)
+            arrival: spot.arrival ? spot.arrival.slice(0, 5) : null,
+            departure: spot.departure ? spot.departure.slice(0, 5) : null,
+            stay_min: spot.stay_time ?? null,
+            image: spot.image_url || null
+        });
+    });
+
+    if (JSON.stringify(cleanTimeline) !== JSON.stringify(timeline)) {
+        setTimeline(calculateSchedule(cleanTimeline));
+        if (cleanTimeline.length > 0) {
+            setIsPlanGenerated(true);
+        }
+    }
+}, [spots, selectedDay]);
   // ▲▲▲▲▲ 修正ここまで ▲▲▲▲▲
 // ▼▼▼ 追加: 移動ブロックの追加・削除ハンドラ ▼▼▼
  // ▼▼▼ 追加: 移動ブロックの追加・削除ハンドラ ▼▼▼
@@ -755,24 +724,14 @@ const [reservationTargetSpot, setReservationTargetSpot] = useState<any | null>(n
     }
   }, [timeline, routeGeoJSON, isPlanGenerated, roomId, selectedDay]);
 
-  useEffect(() => {
+  // PlanView.tsx (400行目付近)
+// ★修正: ローカルストレージからの復元をやめ、常に初期化状態にする
+useEffect(() => {
     if (roomId) {
-        const storageKey = `rh_plan_${roomId}_day_${selectedDay}`;
-        const savedPlan = localStorage.getItem(storageKey);
-        if (savedPlan) {
-            try {
-                const data = JSON.parse(savedPlan);
-                setTimeline(Array.isArray(data.timeline) ? data.timeline : []);
-                setRouteGeoJSON(data.routeGeoJSON || null);
-                setIsPlanGenerated(true);
-                return;
-            } catch (e) { console.error("Restore error", e); }
-        }
-        setTimeline([]);
-        setRouteGeoJSON(null);
-        setIsPlanGenerated(false);
+        // 以前の localStorage.getItem() の処理は削除
+        setIsPlanGenerated(true);
     }
-  }, [roomId, selectedDay]); 
+}, [roomId, selectedDay]);
 
   const handleAutoGenerate = async () => {
     if (activeDaySpots.length < 2) return alert("この日のスポットが2つ以上必要です");
@@ -950,6 +909,8 @@ const onDrop = async (e: React.DragEvent, targetTimelineIndex: number) => {
     setDraggedItemIndex(null);
 
     // 8. データの永続化
+    // PlanView.tsx (onDrop関数内の最後)
+    // 8. データの永続化
     if (roomId) {
         const activeSpots = reconstructedTimeline
             .filter(t => t.type === 'spot')
@@ -970,11 +931,14 @@ const onDrop = async (e: React.DragEvent, targetTimelineIndex: number) => {
         fullSpotsList.sort((a, b) => (a.order || 0) - (b.order || 0));
         onUpdateSpots(fullSpotsList);
 
+        // ★修正: 以下の localStorage への保存は削除またはコメントアウト
+        /*
         const storageKey = `rh_plan_${roomId}_day_${selectedDay}`;
         localStorage.setItem(storageKey, JSON.stringify({ 
             timeline: reconstructedTimeline, 
             updatedAt: Date.now() 
         }));
+        */
     }
   };
 
@@ -985,56 +949,60 @@ const onDrop = async (e: React.DragEvent, targetTimelineIndex: number) => {
       newTimeline[editItem.index] = editItem.data;
       setTimeline(newTimeline); 
       
-      if (editItem.type === 'spot' && roomId) {
-          const spotId = editItem.data.spot.id;
-          
-          const updates = {
-              comment: editItem.data.spot.comment,
-              link: editItem.data.url,
-              price: editItem.data.spot.cost ? parseInt(editItem.data.spot.cost) : null
-          };
-
-          const newSpots = spots.map(s => {
-              if ((s.id && String(s.id) === String(spotId)) || s.name === editItem.data.spot.name) {
-                  return { ...s, ...updates };
-              }
-              return s;
-          });
-          onUpdateSpots(newSpots);
-
-          if (spotId && !String(spotId).startsWith('spot-') && !String(spotId).startsWith('ai-')) {
-              try {
-                  await supabase
-                      .from('spots')
-                      .update(updates)
-                      .eq('id', spotId);
-              } catch (e) {
-                  console.error("Failed to update spot details", e);
-              }
-          }
-      }
+     // PlanView.tsx (handleEditSave内、editItem.type === 'travel' の分岐)
+if (editItem.type === 'travel' && roomId) {
+    const nextSpotItem = timeline[editItem.index + 1];
+    if (nextSpotItem && nextSpotItem.type === 'spot') {
+        const spotId = nextSpotItem.spot.id;
+        const updates = {
+            transport_departure: editItem.data.transport_departure || null,
+            transport_arrival: editItem.data.transport_arrival || null,
+            transport_cost: editItem.data.cost ? parseInt(editItem.data.cost, 10) : null,
+            transport_note: editItem.data.note || null
+        };
+        
+        if (spotId && !String(spotId).startsWith('spot-') && !String(spotId).startsWith('temp-')) {
+            await supabase.from('spots').update(updates).eq('id', spotId);
+        }
+    }
+}
 
       setEditItem(null);
   };
 
-  const handleTimeChange = (index: number, value: string) => {
+  // 1. handleTimeChange (移動時間)
+const handleTimeChange = async (index: number, value: string) => {
     const val = value === '' ? 0 : parseInt(value, 10);
     if (isNaN(val)) return;
     
     const newTimeline = [...timeline];
     if (newTimeline[index].type === 'travel') {
         newTimeline[index].duration_min = val;
+        setTimeline(newTimeline);
+        
+        const nextSpotItem = newTimeline[index + 1];
+        if (nextSpotItem && nextSpotItem.type === 'spot') {
+            const spotId = nextSpotItem.spot.id;
+            
+            // ★追加: 親のspotsを即時更新して先祖返りを防ぐ
+            const updatedSpots = spots.map(s => 
+                String(s.id) === String(spotId) ? { ...s, transport_duration: val } : s
+            );
+            onUpdateSpots(updatedSpots);
+
+            if (spotId && !String(spotId).startsWith('spot-') && !String(spotId).startsWith('temp-')) {
+                await supabase.from('spots').update({ transport_duration: val }).eq('id', spotId);
+            }
+        }
     } else {
         newTimeline[index].stay_min = val;
         if(newTimeline[index].spot) newTimeline[index].spot.stay_time = val;
+        setTimeline(newTimeline);
     }
-    setTimeline(newTimeline);
   };
 
-  // ▼▼▼ 修正: 出発時間が変更されたら滞在時間を自動計算 ▼▼▼
-  // ▼▼▼ 修正: 出発時間が変更されたら滞在時間を自動計算（空ならリセット） ▼▼▼
-  // ▼▼▼ 修正: 出発時間が変更されたら滞在時間を自動計算 ＆ DB同期 ▼▼▼
-  const handleDepartureChange = async (index: number, newDeparture: string) => {
+  // 4. handleDepartureChange (出発時間)
+const handleDepartureChange = async (index: number, newDeparture: string) => {
     const newTimeline = [...timeline];
     if (newTimeline[index]) {
         newTimeline[index].departure = newDeparture;
@@ -1047,31 +1015,30 @@ const onDrop = async (e: React.DragEvent, targetTimelineIndex: number) => {
             const diff = calculateTimeDiff(newTimeline[index].arrival, newDeparture);
             if (diff >= 0) {
                 newTimeline[index].stay_min = diff;
-                if (newTimeline[index].spot) {
-                    newTimeline[index].spot.stay_time = diff;
-                }
+                if (newTimeline[index].spot) newTimeline[index].spot.stay_time = diff;
                 stayTime = diff;
             }
         }
         setTimeline(newTimeline);
 
-        // ★追加: 変更された出発時間と滞在時間をDBに同期
         if (newTimeline[index].type === 'spot' && roomId) {
             const spotId = newTimeline[index].spot.id;
+            
+            // ★追加: 親のspotsを即時更新
+            const updatedSpots = spots.map(s => 
+                String(s.id) === String(spotId) ? { ...s, departure: newDeparture, stay_time: stayTime } : s
+            );
+            onUpdateSpots(updatedSpots);
+
             if (spotId && !String(spotId).startsWith('spot-') && !String(spotId).startsWith('temp-')) {
-                await supabase.from('spots').update({
-                    departure: newDeparture,
-                    stay_time: stayTime
-                }).eq('id', spotId);
+                await supabase.from('spots').update({ departure: newDeparture, stay_time: stayTime }).eq('id', spotId);
             }
         }
     }
   };
 
-  // ▼▼▼ 修正: 到着・出発時間をリセットしたら滞在時間も未定に戻す ▼▼▼
-// ▼▼▼ 修正: 時間リセット前に確認を入れる ▼▼▼
-  // ▼▼▼ 修正: 時間リセット時もDBをクリア ▼▼▼
-  const handleTimeReset = async (index: number) => {
+  // 5. handleTimeReset (リセット)
+const handleTimeReset = async (index: number) => {
       if (!confirm("時間をリセットしてもよろしいですか？")) return;
 
       const newTimeline = [...timeline];
@@ -1079,27 +1046,27 @@ const onDrop = async (e: React.DragEvent, targetTimelineIndex: number) => {
           newTimeline[index].arrival = "";
           newTimeline[index].departure = "";
           newTimeline[index].stay_min = null;
-          if (newTimeline[index].spot) {
-              newTimeline[index].spot.stay_time = null;
-          }
+          if (newTimeline[index].spot) newTimeline[index].spot.stay_time = null;
           setTimeline(newTimeline);
 
-          // ★追加: DB上の時間設定をクリア
           if (newTimeline[index].type === 'spot' && roomId) {
               const spotId = newTimeline[index].spot.id;
+              
+              // ★追加: 親のspotsを即時更新
+              const updatedSpots = spots.map(s => 
+                  String(s.id) === String(spotId) ? { ...s, arrival: null, departure: null, stay_time: null } : s
+              );
+              onUpdateSpots(updatedSpots);
+
               if (spotId && !String(spotId).startsWith('spot-') && !String(spotId).startsWith('temp-')) {
-                  await supabase.from('spots').update({
-                      arrival: null,
-                      departure: null,
-                      stay_time: null
-                  }).eq('id', spotId);
+                  await supabase.from('spots').update({ arrival: null, departure: null, stay_time: null }).eq('id', spotId);
               }
           }
       }
   };
 
-  // ▼▼▼ 修正: 到着時間が変更されたら滞在時間を自動計算 ＆ DB同期 ▼▼▼
-  const handleArrivalChange = async (index: number, newArrival: string) => {
+  // 3. handleArrivalChange (到着時間)
+const handleArrivalChange = async (index: number, newArrival: string) => {
     const newTimeline = [...timeline];
     if (newTimeline[index]) {
         newTimeline[index].arrival = newArrival;
@@ -1112,31 +1079,48 @@ const onDrop = async (e: React.DragEvent, targetTimelineIndex: number) => {
             const diff = calculateTimeDiff(newArrival, newTimeline[index].departure);
             if (diff >= 0) {
                 newTimeline[index].stay_min = diff;
-                if (newTimeline[index].spot) {
-                    newTimeline[index].spot.stay_time = diff;
-                }
+                if (newTimeline[index].spot) newTimeline[index].spot.stay_time = diff;
                 stayTime = diff;
             }
         }
         setTimeline(newTimeline);
 
-        // ★追加: 変更された到着時間と滞在時間をDBに同期
         if (newTimeline[index].type === 'spot' && roomId) {
             const spotId = newTimeline[index].spot.id;
+            
+            // ★追加: 親のspotsを即時更新
+            const updatedSpots = spots.map(s => 
+                String(s.id) === String(spotId) ? { ...s, arrival: newArrival, stay_time: stayTime } : s
+            );
+            onUpdateSpots(updatedSpots);
+
             if (spotId && !String(spotId).startsWith('spot-') && !String(spotId).startsWith('temp-')) {
-                await supabase.from('spots').update({
-                    arrival: newArrival,
-                    stay_time: stayTime
-                }).eq('id', spotId);
+                await supabase.from('spots').update({ arrival: newArrival, stay_time: stayTime }).eq('id', spotId);
             }
         }
     }
   };
 
-  const handleTransportChange = (index: number, mode: string) => {
+  // 2. handleTransportChange (移動手段)
+const handleTransportChange = async (index: number, mode: string) => {
       const newTimeline = [...timeline];
       newTimeline[index].transport_mode = mode;
       setTimeline(newTimeline); 
+
+      const nextSpotItem = newTimeline[index + 1];
+      if (nextSpotItem && nextSpotItem.type === 'spot' && roomId) {
+          const spotId = nextSpotItem.spot.id;
+          
+          // ★追加: 親のspotsを即時更新
+          const updatedSpots = spots.map(s => 
+              String(s.id) === String(spotId) ? { ...s, transport_mode: mode } : s
+          );
+          onUpdateSpots(updatedSpots);
+
+          if (spotId && !String(spotId).startsWith('spot-') && !String(spotId).startsWith('temp-')) {
+              await supabase.from('spots').update({ transport_mode: mode }).eq('id', spotId);
+          }
+      }
   };
 
 // ... existing code ...

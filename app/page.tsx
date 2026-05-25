@@ -662,14 +662,7 @@ const onTimelineDrop = async (e: React.DragEvent, targetIndex: number) => {
     setDisplayTimeline(finalTimeline);
     setDraggedTimelineIndex(null);
     
-    // 保存処理 (既存ロジック)
-    if (roomId && selectedConfirmDay > 0) {
-        const storageKey = `rh_plan_${roomId}_day_${selectedConfirmDay}`;
-        localStorage.setItem(storageKey, JSON.stringify({ 
-            timeline: finalTimeline, 
-            updatedAt: Date.now() 
-        }));
-    }
+    
 
     const justSpots = pairs.map(p => p.item.spot);
     for (let i = 0; i < justSpots.length; i++) {
@@ -1156,26 +1149,23 @@ const [arrivalModalSpots, setArrivalModalSpots] = useState<any[]>([]); // ★追
 
  // page.tsx 870行目付近の useEffect (タイムライン表示用) を以下に置き換えてください
 
-// ★修正: タイムライン生成ロジック (Day変更時の即時反映対応版)
+// page.tsx (870行目付近)
+// ★修正: タイムライン生成ロジック (ローカルストレージ依存を廃止し、常にDBを正とする)
+// page.tsx (870行目付近)
+  // ★修正: タイムライン生成ロジック (移動情報のリアルタイム同期対応版)
+// page.tsx (870行目付近)
   useEffect(() => {
-    // 確定リスト表示モード以外なら何もしない
     if (filterStatus !== 'confirmed' || !roomId) return;
 
     const day = selectedConfirmDay === 0 ? 0 : selectedConfirmDay;
     
-    // Day 0 (未定) の場合は単純にリスト表示
     if (day === 0) {
          setDisplayTimeline(planSpots.filter(s => s.status === 'confirmed' && (s.day === 0 || !s.day)).map(s => ({ type: 'spot', spot: s })));
          return;
     }
     
-    // --- ここから Day 1以降のロジック ---
-
-    // 1. DB上の最新スポットリストを取得 (前日の宿も含む)
-    // ★重要: ここで filter をかけるため、Dayを変更したスポットは自動的に除外されます
     let validSpotsInDB = planSpots.filter(s => s.status === 'confirmed' && s.day === day);
     
-    // 前日の宿を含めるロジック
     if (day > 1) {
         const prevDayHotel = planSpots.find(s => 
             s.status === 'confirmed' && 
@@ -1187,102 +1177,37 @@ const [arrivalModalSpots, setArrivalModalSpots] = useState<any[]>([]); // ★追
         }
     }
 
-    // 2. ローカルストレージから「並び順」を取得
-    const storageKey = `rh_plan_${roomId}_day_${day}`;
-    const savedPlanStr = localStorage.getItem(storageKey);
-    
-    let tempTimeline: any[] = [];
+    validSpotsInDB.sort((a, b) => (a.order || 0) - (b.order || 0));
 
-    if (savedPlanStr) {
-        try {
-            const savedData = JSON.parse(savedPlanStr);
-            if (savedData.timeline && Array.isArray(savedData.timeline)) {
-                
-                tempTimeline = savedData.timeline.map((item: any) => {
-                    if (item.type === 'spot') {
-                        const freshSpot = validSpotsInDB.find(s => String(s.id) === String(item.spot.id));
-                        
-                        // ★修正: 他のメンバーがDB上の時間を更新した際、ローカルのタイムラインにもリアルタイムで上書き反映する
-                        return freshSpot ? { 
-                            ...item, 
-                            spot: { ...item.spot, ...freshSpot },
-                            arrival: freshSpot.arrival !== undefined ? freshSpot.arrival : item.arrival,
-                            departure: freshSpot.departure !== undefined ? freshSpot.departure : item.departure,
-                            stay_min: freshSpot.stay_time !== undefined ? freshSpot.stay_time : item.stay_min,
-                            image: freshSpot.image_url || item.image 
-                        } : null; 
-                    }
-                    return item; 
-                }).filter(Boolean); // nullを除去
-            }
-        } catch(e) { console.error("Parse error", e); }
-    }
-
-    // クリーニング処理
-    const cleanTimeline: any[] = [];
-    tempTimeline.forEach((item) => {
-        if (item.type === 'spot') {
-            if (cleanTimeline.length > 0 && cleanTimeline[cleanTimeline.length - 1].type === 'spot') {
-                cleanTimeline.push({ type: 'travel', duration_min: null, transport_mode: 'walk' });
-            }
-            cleanTimeline.push(item);
-        } else if (item.type === 'travel') {
-            if (cleanTimeline.length > 0) {
-                 cleanTimeline.push(item);
-            }
-        }
-    });
-    if (cleanTimeline.length > 0 && cleanTimeline[cleanTimeline.length - 1].type === 'travel') {
-        cleanTimeline.pop();
-    }
-    
-    let finalTimeline = cleanTimeline;
-
-    /// 3. 新規またはDB順での初期生成
-   // 3. 新規またはDB順での初期生成
-    if (finalTimeline.length === 0 && validSpotsInDB.length > 0) {
-        validSpotsInDB.sort((a, b) => (a.order || 0) - (b.order || 0));
-        validSpotsInDB.forEach((spot, i) => {
-             // ★修正: DBに保存されている到着・出発・滞在時間を初期値としてタイムラインに流し込む
-             finalTimeline.push({ 
-                 type: 'spot', 
-                 spot, 
-                 arrival: spot.arrival || null,
-                 departure: spot.departure || null,
-                 stay_min: spot.stay_time || null 
+    const finalTimeline: any[] = [];
+    validSpotsInDB.forEach((spot, idx) => {
+         if (idx > 0) {
+             // ★修正: タイムラインの移動時間の出発・到着も丸める
+             finalTimeline.push({
+                 type: 'travel',
+                 duration_min: spot.transport_duration ?? null,
+                 transport_mode: spot.transport_mode || 'walk',
+                 transport_departure: spot.transport_departure ? spot.transport_departure.slice(0, 5) : null,
+                 transport_arrival: spot.transport_arrival ? spot.transport_arrival.slice(0, 5) : null,
+                 cost: spot.transport_cost || null,
+                 note: spot.transport_note || null
              });
-            if (i < validSpotsInDB.length - 1) { 
-                 finalTimeline.push({ type: 'travel', duration_min: null, transport_mode: 'walk' }); 
-            }
-         });
-         finalTimeline = calculateSimpleSchedule(finalTimeline, "");
-    } else {
-        // DBにあるのにタイムラインにない（新しくこのDayに移動してきた）スポットを追加
-        const timelineSpotIds = new Set(finalTimeline.filter(t => t.type === 'spot').map(t => String(t.spot.id)));
-        const newSpots = validSpotsInDB.filter(s => !timelineSpotIds.has(String(s.id)));
+         }
 
-        if (newSpots.length > 0) {
-            newSpots.forEach(s => {
-                if (finalTimeline.length > 0) {
-                     finalTimeline.push({ type: 'travel', duration_min: null, transport_mode: 'walk' });
-                }
-               finalTimeline.push({ type: 'spot', spot: s, stay_min: null });
-            });
-        }
-    }
+         // ★修正: スポットの到着・出発時間を丸める
+         finalTimeline.push({ 
+             type: 'spot', 
+             spot, 
+             arrival: spot.arrival ? spot.arrival.slice(0, 5) : null,
+             departure: spot.departure ? spot.departure.slice(0, 5) : null,
+             stay_min: spot.stay_time ?? null,
+             image: spot.image_url || null 
+         });
+     });
 
     setDisplayTimeline(finalTimeline);
 
-    // ★追加: 最新の状態（移動して消えた状態など）を即座にローカルストレージへ保存
-    // これにより、リロードしても「移動前の日」にスポットが残るのを防ぐ
-    if (finalTimeline.length > 0 || validSpotsInDB.length === 0) {
-        localStorage.setItem(storageKey, JSON.stringify({ 
-            timeline: finalTimeline, 
-            updatedAt: Date.now() 
-        }));
-    }
-
-  }, [filterStatus, selectedConfirmDay, planSpots, roomId, currentTab]);
+  }, [filterStatus, selectedConfirmDay, planSpots, roomId]);
   const fetchSpotImage = async (name: string) => {
       try {
           const res = await fetch(`${API_BASE_URL}/api/get_spot_image?query=${encodeURIComponent(name)}`);
