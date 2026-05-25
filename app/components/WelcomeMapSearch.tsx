@@ -2,6 +2,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import mapboxgl from 'mapbox-gl';
+// @ts-ignore
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { X, PenTool, Loader2, ExternalLink, ArrowLeft, MapPin } from 'lucide-react';
 
@@ -31,6 +32,38 @@ export default function WelcomeMapSearch({ onBack }: Props) {
   const [isDrawing, setIsDrawing] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [hotels, setHotels] = useState<any[]>([]);
+
+  // ▼▼▼ ここから追加：検索日を完全に固定・同期するState ▼▼▼
+  const [searchDates, setSearchDates] = useState<{
+      checkinStr: string;
+      checkoutStr: string;
+      y1: number; m1: number; d1: number;
+      y2: number; m2: number; d2: number;
+  } | null>(null);
+
+  
+
+  useEffect(() => {
+      const today = new Date();
+      today.setDate(today.getDate() + 30);
+      const y1 = today.getFullYear();
+      const m1 = today.getMonth() + 1;
+      const d1 = today.getDate();
+      
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const y2 = tomorrow.getFullYear();
+      const m2 = tomorrow.getMonth() + 1;
+      const d2 = tomorrow.getDate();
+
+      setSearchDates({
+          checkinStr: today.toISOString().split('T')[0],
+          checkoutStr: tomorrow.toISOString().split('T')[0],
+          y1, m1, d1,
+          y2, m2, d2
+      });
+  }, []);
+  // ▲▲▲ ここまで追加 ▲▲▲
 
   // 初期化
   useEffect(() => {
@@ -98,12 +131,9 @@ export default function WelcomeMapSearch({ onBack }: Props) {
       setIsLoading(true);
       setHotels([]);
 
-      // 30日後の日付をダミーとして設定
-      const today = new Date();
-      today.setDate(today.getDate() + 30);
-      const checkin = today.toISOString().split('T')[0];
-      today.setDate(today.getDate() + 1);
-      const checkout = today.toISOString().split('T')[0];
+      // ▼▼▼ 修正：Stateに固定されている日付文字列を安全に取得 ▼▼▼
+      const checkin = searchDates?.checkinStr || "";
+      const checkout = searchDates?.checkoutStr || "";
 
       try {
           const body = {
@@ -114,7 +144,7 @@ export default function WelcomeMapSearch({ onBack }: Props) {
               checkin_date: checkin, 
               checkout_date: checkout, 
               adult_num: 2,
-              meal_type: 'half_board'
+              meal_type: 'none' // ← ここを 'half_board' から 'none' に変更
           };
 
           const res = await fetch(`${API_BASE_URL}/api/search_hotels_vacant`, {
@@ -163,17 +193,12 @@ export default function WelcomeMapSearch({ onBack }: Props) {
   };
 
   const getAffiliateUrl = (hotelId: string) => {
-      const today = new Date();
-      today.setDate(today.getDate() + 30);
-      const y1 = today.getFullYear();
-      const m1 = today.getMonth() + 1;
-      const d1 = today.getDate();
-      today.setDate(today.getDate() + 1);
-      const y2 = today.getFullYear();
-      const m2 = today.getMonth() + 1;
-      const d2 = today.getDate();
+      if (!searchDates) return "https://travel.rakuten.co.jp/";
+      const { y1, m1, d1, y2, m2, d2 } = searchDates;
 
-      const paramString = `f_flg=PLAN&f_otona_su=2&f_heya_su=1&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_hak=1&f_sort=minNo`;
+      // ▼ 余計なパラメータや重複をすべて排除し、明示的に子供を0に指定する
+      const paramString = `f_flg=PLAN&f_otona_su=2&f_heya_su=1&f_s1=0&f_s2=0&f_y1=0&f_y2=0&f_y3=0&f_y4=0&f_y5=0&f_y6=0&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_hak=1&f_sort=minNo`;
+      
       return `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotelId}?${paramString}`;
   };
 

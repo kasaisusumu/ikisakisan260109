@@ -1673,13 +1673,12 @@ const candidateAreas = useMemo(() => {
 
 // ★修正: Day変更時の処理（ID判定・通知・キャッシュ整合性を強化）
   const updateSpotDay = async (spot: any, newDay: number) => {
-      if (!roomId || !spot.id) return;
+      if (!spot.id) return; // ← roomIdのチェックを削除
       if (spot.day === newDay) return; // 変更がなければ終了
       
       const now = new Date().toISOString();
 
       // 1. 楽観的UI更新 (Optimistic Update)
-      // IDが完全に一致するものだけを更新することで、同名の別スポットを巻き込まない
       setPlanSpots(prev => prev.map(s => {
           if (String(s.id) === String(spot.id)) {
               return { ...s, day: newDay, updated_at: now };
@@ -1700,16 +1699,17 @@ const candidateAreas = useMemo(() => {
       });
       setTimeout(() => setNotification(null), 3000);
 
-      // 4. データベース更新
-      const { error } = await supabase
-          .from('spots')
-          .update({ day: newDay, updated_at: now })
-          .eq('id', spot.id); // 名前ではなくIDで指定
-      
-      if (error) { 
-          console.error("Day update failed:", error); 
-          // エラー時は強制リロードして整合性を保つ
-          loadRoomData(roomId); 
+      // 4. データベース更新 (★ roomId がある場合のみ実行)
+      if (roomId) {
+          const { error } = await supabase
+              .from('spots')
+              .update({ day: newDay, updated_at: now })
+              .eq('id', spot.id);
+          
+          if (error) { 
+              console.error("Day update failed:", error); 
+              loadRoomData(roomId); 
+          }
       }
   };
 
@@ -2437,9 +2437,8 @@ const now = new Date().toISOString(); // ★現在時刻
   };
  
 
- // ★修正: 削除処理もIDで厳密に判定する
-  const removeSpot = async (spot: any) => {
-    if (!roomId) return;
+ const removeSpot = async (spot: any) => {
+    // 削除: if (!roomId) return; 
     if (!spot.id) return; 
     
     // 確認メッセージ
@@ -2456,9 +2455,8 @@ const now = new Date().toISOString(); // ★現在時刻
         setViewMode('default');
     }
 
-    // 3. データベースから削除
-    // (一時IDやAI提案IDでない場合のみDB削除を実行)
-    if (!targetId.startsWith('temp-') && !targetId.startsWith('ai-')) {
+    // 3. データベースから削除 (★ roomId がある場合のみ実行するように修正)
+    if (roomId && !targetId.startsWith('temp-') && !targetId.startsWith('ai-')) {
         await supabase.from('spots').delete().eq('id', spot.id);
     }
   };

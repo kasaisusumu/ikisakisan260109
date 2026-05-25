@@ -139,7 +139,7 @@ export default function HotelListView({
           checkout: nextMonthNextDayStr,
           adults: 2,
           budgetMax: 50000,
-          mealType: 'half_board' as const, 
+          mealType: 'none' as const, // ← 'none'（指定なし）か 'room_only'（素泊まり）に変更
           minRating: 0,
           minReviewCount: 0,
           hotelType: 'all' as const,
@@ -371,8 +371,7 @@ export default function HotelListView({
         const y2 = checkOutDate.getFullYear(); const m2 = checkOutDate.getMonth() + 1; const d2 = checkOutDate.getDate();
         
         // 小学生・幼児パラメータを空にしてCookieリセット
-        const paramString = `f_flg=PLAN&f_otona_su=${adults}&f_heya_su=1&f_kin=&f_kin2=&f_y1=&f_y2=&f_y3=&f_y4=&f_y5=&f_y6=&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_hak=1&f_tel=&f_tscm_flg=&f_p_no=&f_custom_code=&f_search_type=&f_service=&f_rm_equip=&f_sort=minNo`;
-
+        const paramString = `f_flg=PLAN&f_otona_su=${adults}&f_heya_su=1&f_s1=0&f_s2=0&f_y1=0&f_y2=0&f_y3=0&f_y4=0&f_y5=0&f_y6=0&f_nen1=${y1}&f_tuki1=${m1}&f_hi1=${d1}&f_nen2=${y2}&f_tuki2=${m2}&f_hi2=${d2}&f_hak=1&f_sort=minNo`;
         let finalParams = paramString;
         if (mealType === 'half_board') { 
             finalParams += `&f_s1=1&f_s2=1`; 
@@ -786,7 +785,7 @@ const opacity = 0.6 + (reviewRatio * 0.4);
                                     onClick={() => logAffiliateClick("楽天トラベルトップ", "hotel_search_banner")}
                                     className="w-full bg-[#BF0000] text-white py-4 rounded-2xl font-black text-center flex items-center justify-center gap-3 shadow-lg active:scale-95 transition-transform"
                                 >
-                                    楽天トラベルで探す <ExternalLink size={18}/>
+                                    楽天トラベルで探す(PR) <ExternalLink size={18}/>
                                 </a>
                             </div>
                         </div>
