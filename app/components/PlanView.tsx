@@ -69,7 +69,7 @@ const SpotImage = ({ src, alt, className }: { src?: string | null, alt: string, 
                 onError={handleError}
                 className={`w-full h-full object-cover transition-opacity duration-300 ${isLoading ? 'opacity-0' : 'opacity-100'}`}
                 draggable={false} 
-                crossOrigin="anonymous"
+                
             />
         </div>
     );
@@ -82,13 +82,15 @@ const ReservationModal = ({
     roomId, 
     onUpdate, 
     currentUser, 
-    onClose 
+    onClose ,
+    isTrial = false //
 }: { 
     spot: any, 
     roomId: string, 
     onUpdate: (s: any) => void, 
     currentUser?: string, 
-    onClose: () => void 
+    onClose: () => void ,
+    isTrial?: boolean //
 }) => {
     const [nameInput, setNameInput] = useState(spot.reserved_by || currentUser || "Guest");
     const [isUpdating, setIsUpdating] = useState(false);
@@ -106,7 +108,7 @@ const ReservationModal = ({
             };
             
             // DB更新
-            if (!String(spot.id).startsWith('spot-') && !String(spot.id).startsWith('ai-')) {
+            if (!isTrial && !String(spot.id).startsWith('spot-') && !String(spot.id).startsWith('ai-')) {
                 await supabase.from('spots').update(updates).eq('id', spot.id);
             }
             
@@ -286,6 +288,7 @@ interface Props {
   startDate?: string;
   adultNum?: number;
   currentUser?: string;
+  isTrial?: boolean; // ★追加
 }
 
 const TRANSPORT_MODES = [
@@ -301,11 +304,12 @@ export default function PlanView({
     spots, onRemove, onUpdateSpots, roomId, travelDays = 1, 
     autoShowScreenshot, onScreenshotClosed,
     startDate, adultNum = 2,
-    currentUser
+    currentUser,
+    isTrial = false // ★追加
 }: Props) {  
 
   const logAffiliateClick = async (spotName: string) => {
-      if (!roomId) return;
+      if (!roomId || isTrial) return; // ★ isTrial を追加
       await supabase.from('affiliate_logs').insert({
           room_id: roomId,
           user_name: currentUser || 'Guest',
@@ -775,9 +779,12 @@ useEffect(() => {
       setRouteGeoJSON(data.route_geometry);
       setIsPlanGenerated(true);
       
+      // 2. 自動ルート最適化（handleAutoGenerate の最後付近）
       const newCount = optimizeCount + 1;
       setOptimizeCount(newCount);
-      supabase.from('rooms').update({ optimize_count: newCount }).eq('id', roomId).then();
+      if (!isTrial && roomId) { // ★ isTrialの条件を追加
+          supabase.from('rooms').update({ optimize_count: newCount }).eq('id', roomId).then();
+      }
     } catch (e: any) { alert(`エラー: ${e.message}`); } finally { setIsProcessing(false); }
   };
 
@@ -911,7 +918,9 @@ const onDrop = async (e: React.DragEvent, targetTimelineIndex: number) => {
     // 8. データの永続化
     // PlanView.tsx (onDrop関数内の最後)
     // 8. データの永続化
-    if (roomId) {
+    // 4. ドラッグ＆ドロップ（onDrop の最後付近）
+    // 8. データの永続化
+    if (roomId && !isTrial) { // ★ !isTrial を追加
         const activeSpots = reconstructedTimeline
             .filter(t => t.type === 'spot')
             .map(item => item.spot);
@@ -949,9 +958,10 @@ const onDrop = async (e: React.DragEvent, targetTimelineIndex: number) => {
       newTimeline[editItem.index] = editItem.data;
       setTimeline(newTimeline); 
       
-     // PlanView.tsx (handleEditSave内、editItem.type === 'travel' の分岐)
-if (editItem.type === 'travel' && roomId) {
-    const nextSpotItem = timeline[editItem.index + 1];
+     // 3. 編集の保存（handleEditSave の中）
+      // if (editItem.type === 'travel' && roomId) {
+      if (editItem.type === 'travel' && roomId && !isTrial) { // ★ !isTrial を追加
+          const nextSpotItem = timeline[editItem.index + 1];
     if (nextSpotItem && nextSpotItem.type === 'spot') {
         const spotId = nextSpotItem.spot.id;
         const updates = {
@@ -961,7 +971,7 @@ if (editItem.type === 'travel' && roomId) {
             transport_note: editItem.data.note || null
         };
         
-        if (spotId && !String(spotId).startsWith('spot-') && !String(spotId).startsWith('temp-')) {
+        if (spotId && !String(spotId).startsWith('spot-') && !String(spotId).startsWith('temp-') && !isTrial) {
             await supabase.from('spots').update(updates).eq('id', spotId);
         }
     }
@@ -990,7 +1000,7 @@ const handleTimeChange = async (index: number, value: string) => {
             );
             onUpdateSpots(updatedSpots);
 
-            if (spotId && !String(spotId).startsWith('spot-') && !String(spotId).startsWith('temp-')) {
+            if (spotId && !String(spotId).startsWith('spot-') && !String(spotId).startsWith('temp-') && !isTrial) {
                 await supabase.from('spots').update({ transport_duration: val }).eq('id', spotId);
             }
         }
@@ -1030,7 +1040,7 @@ const handleDepartureChange = async (index: number, newDeparture: string) => {
             );
             onUpdateSpots(updatedSpots);
 
-            if (spotId && !String(spotId).startsWith('spot-') && !String(spotId).startsWith('temp-')) {
+            if (spotId && !String(spotId).startsWith('spot-') && !String(spotId).startsWith('temp-') && !isTrial) {
                 await supabase.from('spots').update({ departure: newDeparture, stay_time: stayTime }).eq('id', spotId);
             }
         }
@@ -1058,7 +1068,7 @@ const handleTimeReset = async (index: number) => {
               );
               onUpdateSpots(updatedSpots);
 
-              if (spotId && !String(spotId).startsWith('spot-') && !String(spotId).startsWith('temp-')) {
+              if (spotId && !String(spotId).startsWith('spot-') && !String(spotId).startsWith('temp-') && !isTrial) {
                   await supabase.from('spots').update({ arrival: null, departure: null, stay_time: null }).eq('id', spotId);
               }
           }
@@ -1094,7 +1104,7 @@ const handleArrivalChange = async (index: number, newArrival: string) => {
             );
             onUpdateSpots(updatedSpots);
 
-            if (spotId && !String(spotId).startsWith('spot-') && !String(spotId).startsWith('temp-')) {
+            if (spotId && !String(spotId).startsWith('spot-') && !String(spotId).startsWith('temp-') && !isTrial) {
                 await supabase.from('spots').update({ arrival: newArrival, stay_time: stayTime }).eq('id', spotId);
             }
         }
@@ -1117,7 +1127,7 @@ const handleTransportChange = async (index: number, mode: string) => {
           );
           onUpdateSpots(updatedSpots);
 
-          if (spotId && !String(spotId).startsWith('spot-') && !String(spotId).startsWith('temp-')) {
+          if (spotId && !String(spotId).startsWith('spot-') && !String(spotId).startsWith('temp-') && !isTrial) {
               await supabase.from('spots').update({ transport_mode: mode }).eq('id', spotId);
           }
       }
@@ -1146,7 +1156,7 @@ const handleTransportChange = async (index: number, mode: string) => {
                 return s;
             });
             onUpdateSpots(newSpots);
-            if (!String(spot.id).startsWith('spot-') && !String(spot.id).startsWith('temp-')) {
+            if (!isTrial && !String(spot.id).startsWith('spot-') && !String(spot.id).startsWith('temp-')) {
                 supabase.from('spots').update({ day: selectedDay }).eq('id', spot.id).then();
             }
         }
@@ -1184,7 +1194,7 @@ const handleTransportChange = async (index: number, mode: string) => {
             });
             onUpdateSpots(newSpots);
 
-            if (!String(spot.id).startsWith('spot-') && !String(spot.id).startsWith('temp-')) {
+           if (!isTrial && !String(spot.id).startsWith('spot-') && !String(spot.id).startsWith('temp-')) {
                 supabase.from('spots').update({ day: 0 }).eq('id', spot.id).then();
             }
         }

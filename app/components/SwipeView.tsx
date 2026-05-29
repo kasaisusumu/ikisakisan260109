@@ -39,6 +39,7 @@ interface Props {
   // ★追加: 日付と人数を受け取れるようにする
   startDate?: string;
   adultNum?: number;
+  isTrial?: boolean; // ★追加
 }
 
 const UD_COLORS = [
@@ -54,7 +55,8 @@ export default function SwipeView({
   allParticipants = [],
   // ★追加: デフォルト値を設定して受け取る
   startDate, 
-  adultNum = 2
+  adultNum = 2,
+  isTrial = false // ★追加
 }: Props) {
   
   const [lastDirection, setLastDirection] = useState<string>();
@@ -220,6 +222,10 @@ export default function SwipeView({
 
             for (const line of lines) {
                 if (!line.trim()) continue;
+                
+                // ★追加: サーバーから受信したデータをブラウザのコンソールに出力
+                console.log("📥 [AI Stream Data]:", line);
+                
                 try {
                     const data = JSON.parse(line);
                     
@@ -248,7 +254,7 @@ export default function SwipeView({
                         return;
                     }
                 } catch (e) {
-                    console.error("JSON Parse Error", e);
+                    console.error("JSON Parse Error on chunk:", line, e);
                 }
             }
           }
@@ -374,11 +380,16 @@ export default function SwipeView({
     
     if (!spot.id) return;
     
+
+    // ★追加: お試しモード（isTrial）の場合は、DBへの投票保存をスキップして終了
+    if (isTrial) return;
     const voteType = direction === 'right' ? 'like' : 'nope';
     
     await supabase.from('votes').insert([{
       room_id: roomId, spot_id: spot.id, user_name: currentUser, vote_type: voteType
     }]);
+    
+
     
     if (direction === 'right') await supabase.rpc('increment_votes', { spot_id: spot.id });
   };

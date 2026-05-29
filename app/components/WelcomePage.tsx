@@ -911,9 +911,9 @@ if (step === 'intro') {
                     </p>
                 </div>
 
-                <button onClick={() => checkIncognitoAndExecute(handleJoin)} disabled={!!inviteRoomId && (!userName || existingMembers.includes(userName))} className={`w-full py-5 rounded-[1.5rem] font-black text-lg shadow-xl transition-all ${(inviteRoomId && (!userName || existingMembers.includes(userName))) ? 'bg-slate-100 text-slate-300 cursor-not-allowed shadow-none' : 'bg-emerald-600 text-white hover:bg-emerald-700 hover:scale-[1.02] active:scale-95'}`}>
-                    {inviteRoomId ? 'しおりに参加する' : '同意してはじめる'}
-                </button>
+                <button onClick={() => checkIncognitoAndExecute(handleJoin)} disabled={!!inviteRoomId && !userName} className={`w-full py-5 rounded-[1.5rem] font-black text-lg shadow-xl transition-all ${(inviteRoomId && !userName) ? 'bg-slate-100 text-slate-300 cursor-not-allowed shadow-none' : 'bg-emerald-600 text-white hover:bg-emerald-700 hover:scale-[1.02] active:scale-95'}`}>
+    {inviteRoomId ? 'しおりに参加する' : '同意してはじめる'}
+</button>
             </div>
         </div>
         {warningModal}

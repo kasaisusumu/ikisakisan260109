@@ -5281,6 +5281,7 @@ el.onclick = (e) => {
                            adultNum={adultNum}
                            // ★追加: ユーザー名を渡す
                            currentUser={userName}
+                           isTrial={isTrial} // ★追加: お試しモードフラグを渡す
                         />
                    </div>
                )}
@@ -5309,6 +5310,7 @@ el.onclick = (e) => {
                            onSearchOnMap={handleSearchFromChat} 
                            onReceiveCandidates={handleReceiveCandidates}
                            allParticipants={allParticipants}
+                           isTrial={isTrial} // ★追加: お試しモードフラグを渡す
                        />
                    </div>
                )}

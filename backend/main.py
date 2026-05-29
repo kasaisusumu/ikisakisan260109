@@ -877,11 +877,19 @@ async def search_hotels_vacant(req: VacantSearchRequest):
 async def suggest_spots(req: SuggestRequest):
     return StreamingResponse(suggest_spots_generator(req), media_type="application/x-ndjson")
 
+# ==========================================
+# 1. suggest_spots_generator 関数の書き換え
+# （main.py の 560行目付近にある同名の関数を以下に丸ごと置き換えてください）
+# ==========================================
+
 async def suggest_spots_generator(req: SuggestRequest):
     global http_client
     if http_client is None:
+        print("❌ [AI Suggestion] Error: http_client is None")
         yield json.dumps({"type": "error", "message": "Server starting..."}) + "\n"; return
     client = http_client
+    
+    print(f"🤖 [AI Suggestion] Start generating spots for theme: '{req.theme}'")
     yield json.dumps({"type": "status", "message": "AIが候補地をリストアップ中..."}) + "\n"
     
     existing_names = []
@@ -890,37 +898,60 @@ async def suggest_spots_generator(req: SuggestRequest):
         elif isinstance(item, str): existing_names.append(item)
         elif hasattr(item, "name"): existing_names.append(item.name)
 
+    print(f"   [AI Suggestion] Excluded existing spots: {len(existing_names)} items")
+
+    # ★JSON形式の指定をより厳格に修正
     prompt = f"""
     場所: {req.theme}
     タスク: 観光客に人気の「超有名・王道観光スポット」を人気順に15個挙げてください。
     条件:
     1. ホテルや宿泊施設は除外。
     2. 既存リスト: {", ".join(existing_names)} は絶対に除外。
-    3. 出力はJSON形式のオブジェクト配列とする。
-    4. 各スポット: {{"name": "正式名称", "search_query": "地図検索クエリ", "summary": "一言説明", "category": "カテゴリ"}}
+    3. 出力は必ず以下のJSON形式のオブジェクトとすること。Markdownのブロック（```json）などは不要です。
+    {{
+        "spots": [
+            {{"name": "正式名称", "search_query": "地図検索クエリ", "summary": "一言説明", "category": "カテゴリ"}}
+        ]
+    }}
     """
     target_spots = []
     try:
+        print("   [AI Suggestion] Requesting to OpenAI API...")
         ai_res = await aclient.chat.completions.create(
             model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}], response_format={"type": "json_object"}, max_tokens=1500
         )
-        json_data = json.loads(ai_res.choices[0].message.content)
+        content = ai_res.choices[0].message.content
+        print(f"   [AI Suggestion] OpenAI response received. Parsing JSON...")
+        
+        json_data = json.loads(content)
         raw_spots = json_data.get("spots", [])
+        print(f"   [AI Suggestion] Found {len(raw_spots)} spots from AI.")
+        
         seen_names = set(existing_names)
         for s in raw_spots:
-            if s["name"] not in seen_names: target_spots.append(s); seen_names.add(s["name"])
+            if s["name"] not in seen_names: 
+                target_spots.append(s)
+                seen_names.add(s["name"])
         target_spots = target_spots[:10]
+        
+        print(f"   [AI Suggestion] Final target spots for location fetch: {len(target_spots)} items")
         yield json.dumps({"type": "candidates", "names": [s["name"] for s in target_spots], "message": "位置情報を照合中..."}) + "\n"
     except Exception as e:
+        print(f"❌ [AI Suggestion] Error in OpenAI/JSON processing: {e}")
         yield json.dumps({"type": "error", "message": f"AI生成エラー: {str(e)}"}) + "\n"; return
 
-    found_count = 0; seen_coords = []
+    found_count = 0
+    seen_coords = []
+    
     async def fetch_and_enrich(spot_info):
+        print(f"   [AI Suggestion] 🔍 Fetching coordinates for: {spot_info['name']}")
         res = await fetch_spot_coordinates(client, spot_info["name"], spot_info["search_query"])
         if res:
+            print(f"   [AI Suggestion] ✅ Success: {spot_info['name']}")
             if spot_info.get("summary"): res["comment"] = spot_info.get("summary")
             res["category"] = spot_info.get("category", "観光スポット")
             return res
+        print(f"   [AI Suggestion] ❌ Failed to get location for: {spot_info['name']}")
         return None
 
     tasks = [fetch_and_enrich(s) for s in target_spots]
@@ -928,12 +959,27 @@ async def suggest_spots_generator(req: SuggestRequest):
         try:
             res = await future
             if res and res["coordinates"] != [0.0, 0.0]:
-                if res["coordinates"] in seen_coords: continue
+                if res["coordinates"] in seen_coords: 
+                    print(f"   [AI Suggestion] ⚠️ Duplicate coordinates skipped for: {res['name']}")
+                    continue
                 seen_coords.append(res["coordinates"])
                 found_count += 1
                 yield json.dumps({"type": "spot_found", "spot": {**res, "stay_time": 90, "source": "ai", "is_hotel": False, "status": "candidate"}}) + "\n"
-        except: continue
+        except Exception as e:
+            print(f"   [AI Suggestion] ❌ Error during async fetch: {e}")
+            continue
+            
+    print(f"🎯 [AI Suggestion] Process completed. Total valid spots: {found_count}")
     yield json.dumps({"type": "done", "count": found_count}) + "\n"
+
+
+# ==========================================
+# 2. 404エラーを解消する生存確認用エンドポイント
+# （main.py の一番最後、ファイルの末尾に追記してください）
+# ==========================================
+
+
+    
 
 @app.post("/api/verify_spots")
 async def verify_spots(req: VerifyRequest):
@@ -1121,3 +1167,6 @@ async def search_hotpepper(query: str, lat: Optional[float] = None, lng: Optiona
     except Exception as e:
         print(f"Hotpepper Search Error: {e}")
         return {"results": []}
+@app.get("/")
+async def root():
+    return {"status": "ok", "message": "Backend is awake and running."}
